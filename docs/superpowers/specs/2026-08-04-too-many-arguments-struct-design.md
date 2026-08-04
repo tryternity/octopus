@@ -96,10 +96,12 @@ pub struct ActionBarItemUpdate<'a> {
 
 ### B 组：CloudModel（crates/infra/src/db/models.rs）
 
+注意：desktop 已有 `CloudModelInput`（Tauri 命令 DTO，前端用）。infra 层为避免重名，用 `Db` 后缀。
+
 ```rust
-/// cloud model insert/update 公共字段。
+/// cloud model insert/update 公共字段（DB 层）。
 #[derive(Debug, Clone)]
-pub struct CloudModelFields<'a> {
+pub struct CloudModelDbFields<'a> {
     pub provider: &'a str,
     pub category: &'a str,
     pub model_name: &'a str,
@@ -110,15 +112,15 @@ pub struct CloudModelFields<'a> {
 }
 
 /// insert_cloud_model 输入——公共字段 + domain。
-pub struct CloudModelInput<'a> {
+pub struct CloudModelDbInput<'a> {
     pub domain: &'a str,
-    pub fields: CloudModelFields<'a>,
+    pub fields: CloudModelDbFields<'a>,
 }
 
 /// update_cloud_model 输入——公共字段 + id。
-pub struct CloudModelUpdate<'a> {
+pub struct CloudModelDbUpdate<'a> {
     pub id: i64,
-    pub fields: CloudModelFields<'a>,
+    pub fields: CloudModelDbFields<'a>,
 }
 ```
 
