@@ -1115,7 +1115,25 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
             }
             Some(db_f) => {
                 let local_updated = octopus_sync::store::iso_to_unix_ms(&db_f.updated_at);
-                if remote_updated > local_updated {
+                // 🔴 tombstone 单向优先（2026-08-05 fix 052c67cc/7da97a01 重新应用）：
+                // 远程 folder 已 tombstone 时，无论本地时间戳多新都 pull，不 push active 覆盖。
+                let remote_folder_is_tombstone = store::read_folder_file(uuid)
+                    .map(|f| f.is_deleted)
+                    .unwrap_or(false);
+                if remote_folder_is_tombstone {
+                    match store::read_folder_file(uuid) {
+                        Ok(folder_file) => {
+                            let mut row = folder_file.to_vault_folder();
+                            row.sync_md5 = Some(crate::sync::fingerprint::folder_md5(&row));
+                            upsert_folder_from_file(&row)?;
+                            report.pulled += 1;
+                        }
+                        Err(e) => {
+                            log::warn!("[sync] merge: folder {} tombstone pull 跳过：{}", uuid, e);
+                            report.skipped += 1;
+                        }
+                    }
+                } else if remote_updated > local_updated {
                     // .sync 更新 → pull 覆盖 DB
                     match store::read_folder_file(uuid) {
                         Ok(folder_file) => {
@@ -1185,7 +1203,24 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
             }
             Some(db_c) => {
                 let local_updated = octopus_sync::store::iso_to_unix_ms(&db_c.updated_at);
-                if remote_updated > local_updated {
+                // 🔴 tombstone 单向优先（2026-08-05 fix 052c67cc/7da97a01 重新应用）：
+                // 远程 cipher 已 tombstone 时，无论本地时间戳多新都 pull，不 push active 覆盖。
+                let remote_cipher_is_tombstone = store::read_cipher_file(uuid)
+                    .map(|f| f.to_vault_cipher().is_deleted)
+                    .unwrap_or(false);
+                if remote_cipher_is_tombstone {
+                    match store::read_cipher_file(uuid) {
+                        Ok(cipher_file) => {
+                            let row = cipher_file.to_vault_cipher();
+                            upsert_cipher_from_file(&row)?;
+                            report.pulled += 1;
+                        }
+                        Err(e) => {
+                            log::warn!("[sync] merge: cipher {} tombstone pull 跳过：{}", uuid, e);
+                            report.skipped += 1;
+                        }
+                    }
+                } else if remote_updated > local_updated {
                     // .sync 更新 → pull 覆盖 DB
                     match store::read_cipher_file(uuid) {
                         Ok(cipher_file) => {
