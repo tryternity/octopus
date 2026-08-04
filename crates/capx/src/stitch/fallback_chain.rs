@@ -539,6 +539,90 @@ mod tests {
     const TW: u32 = 400;
     const TH: u32 = 600;
 
+    // ===== FallbackStep 单元测试（2026-08-04 阶段 3）=====
+    // 验证各 step 的 outcome + 副作用，与 dispatcher 端到端测试互补。
+
+    /// 构造测试用 FallbackCtx（填占位 GrayBuf，多数 step 早退不触达匹配）。
+    /// 调用方负责保持 stitcher/frame/gray 借用链。
+    fn make_test_ctx<'a>(
+        stitcher: &'a mut Stitcher,
+        frame: &'a RgbaImage,
+        curr_gray: &'a GrayBuf,
+        canvas_gray: &'a GrayBuf,
+        sample_cols: &'a [usize],
+    ) -> FallbackCtx<'a> {
+        FallbackCtx {
+            stitcher,
+            frame,
+            curr_gray,
+            canvas_gray,
+            w: TW,
+            eff_top: 0,
+            eff_bottom: TH,
+            sample_cols,
+        }
+    }
+
+    #[test]
+    fn test_prev_frame_step_skip_when_no_prev_gray() {
+        // new 后 prev_gray = None（首帧 init 前）→ step 应早退 Skip
+        let f0 = make_frame(TW, TH, 0);
+        let mut stitcher = Stitcher::new(f0.clone(), StitchConfig::default());
+        assert!(stitcher.prev_gray.is_none(), "new 后 prev_gray 应为 None");
+
+        let curr_gray = GrayBuf { data: vec![128u8; TW as usize * TH as usize], width: TW as usize, y_offset: 0 };
+        let canvas_gray = stitcher.extract_canvas_bottom_gray(stitcher.eff_strip_h);
+        let sample_cols = verify_sample_cols(TW);
+
+        let mut step = PrevFrameStep;
+        let mut ctx = make_test_ctx(&mut stitcher, &f0, &curr_gray, &canvas_gray, &sample_cols);
+        let outcome = step.try_step(&mut ctx);
+        assert!(matches!(outcome, StepOutcome::Skip), "prev_gray=None 应返回 Skip，实际 {:?}", outcome);
+    }
+
+    #[test]
+    fn test_best_guess_step_skip_when_streak_exhausted() {
+        // best_guess_streak >= 3（熔断）→ step 应直接 Skip，不递增 streak
+        let f0 = make_frame(TW, TH, 0);
+        let mut stitcher = Stitcher::new(f0.clone(), StitchConfig::default());
+        stitcher.best_guess_streak = 3;
+        // 即使 dy_history 有内容（让 estimate_dy_hint 理论上能返 Some），门控应优先短路
+        stitcher.dy_history.push_back(-10.0);
+        stitcher.dy_history.push_back(-10.0);
+
+        let curr_gray = GrayBuf { data: vec![128u8; TW as usize * TH as usize], width: TW as usize, y_offset: 0 };
+        let canvas_gray = stitcher.extract_canvas_bottom_gray(stitcher.eff_strip_h);
+        let sample_cols = verify_sample_cols(TW);
+
+        let mut step = BestGuessStep;
+        let mut ctx = make_test_ctx(&mut stitcher, &f0, &curr_gray, &canvas_gray, &sample_cols);
+        let outcome = step.try_step(&mut ctx);
+        assert!(matches!(outcome, StepOutcome::Skip), "streak>=3 应返回 Skip，实际 {:?}", outcome);
+        assert_eq!(ctx.stitcher.best_guess_streak, 3, "熔断时 streak 不应递增");
+    }
+
+    #[test]
+    fn test_skip_step_returns_applied_ok_false() {
+        // 终步：永远返 Applied(Ok(false)) + 清 last_dy
+        let f0 = make_frame(TW, TH, 0);
+        let mut stitcher = Stitcher::new(f0.clone(), StitchConfig::default());
+        stitcher.last_dy = Some(-10.0); // 设非 None，验证 step 会清
+
+        let curr_gray = GrayBuf { data: vec![128u8; TW as usize * TH as usize], width: TW as usize, y_offset: 0 };
+        let canvas_gray = stitcher.extract_canvas_bottom_gray(stitcher.eff_strip_h);
+        let sample_cols = verify_sample_cols(TW);
+
+        let mut step = SkipStep;
+        let mut ctx = make_test_ctx(&mut stitcher, &f0, &curr_gray, &canvas_gray, &sample_cols);
+        let outcome = step.try_step(&mut ctx);
+        match outcome {
+            StepOutcome::Applied(Ok(false)) => (),
+            other => panic!("期望 Applied(Ok(false))，实际 {:?}", other),
+        }
+        assert!(ctx.stitcher.last_dy.is_none(), "skip 应清 last_dy");
+    }
+
+
     #[test]
     fn test_fallback_expanded_search_range() {
         // 构造超出 MAX_SCROLL 的快速滚动：init 后直接跳 300px

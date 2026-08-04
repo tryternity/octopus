@@ -277,3 +277,34 @@ fn prev_frame_step_applied_on_match() {
 - 阶段 1 plan：`docs/superpowers/plans/2026-08-04-stitch-refactor.md`
 - 现状代码：`crates/capx/src/stitch/fallback_chain.rs`（588 行）
 - research：`docs/superpowers/specs/research/2026-07-06-scroll-stitch-snow-shot-engineering-comparison.md`（snow-shot 对照）
+
+---
+
+## 9. 实施记录（2026-08-04）
+
+### 9.1 完成情况
+
+| 项 | spec 设计 | 实际实现 |
+|---|---|---|
+| `enum StepOutcome` | 4 变体 | ✅ Applied/Candidate/Stationary/Skip + derive(Debug) |
+| `struct FallbackCtx` | 8 字段 + `&mut Stitcher` | ✅ 与 spec 一致 |
+| `trait FallbackStep` | name + try_step | ✅ 与 spec 一致 |
+| 5 个 ZST impl | PrevFrame/Projection1D/Stationary/BestGuess/Skip | ✅ 全部实现 |
+| dispatcher 重写 | 25 行迭代 | ✅ 实际 35 行（多了 debug 日志 + Candidate 兜底分支） |
+
+### 9.2 与 spec 的偏差
+
+1. **`StepOutcome::Candidate` 加 `#[allow(dead_code)]`**——spec 说"保留扩展点"，本次所有步骤用 Applied；编译期 dead_code warning 用 allow 抑制 + 注释说明保留原因。
+2. **dispatcher 行数 35 而非 25**——加了 `log::debug!` 标注当前 step name（消化 `name()` 方法的 unused warning）；Candidate 分支虽未实际触发但保留 match arm 兜底。
+3. **单测从端到端补充**——spec §4.1 设想精确单 step 单测，实际因 Stitcher 私有字段 setup 复杂，改用"早退路径单测"（prev_gray=None / streak 熔断 / 终步行为），3 个单测覆盖关键门控点；主路径仍靠现有端到端测试覆盖。
+
+### 9.3 验证
+
+- `cargo test -p octopus-capx`：**52 passed**（49 原 + 3 新增 step 单测）
+- `cargo clippy -p octopus-capx --all-targets`：9 warnings（= baseline，0 新增）
+- 改动局限 `fallback_chain.rs` 单文件（+ `architecture.md` 一行更新）
+
+### 9.4 后续（不做）
+
+- `StepOutcome::Candidate` 真正使用场景：未来若某 step 需"先返回候选 dy 让 dispatcher 统一 apply"（如 trait 化 `apply_fallback_match`）可启用。本次保留仅为接口完整。
+
