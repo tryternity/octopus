@@ -111,16 +111,15 @@ pub async fn current_transcription_id() -> Option<i64> {
 
 /// 录音类型——决定录音结束后 finalize 的回调路径。
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub enum RecordType {
     /// 普通语音输入 → paste/剪贴板
+    #[default]
     Input,
     /// agent 桥接 → 录音结果作为 task 注入 agent 命令
     AgentBridge { task_id: String },
 }
 
-impl Default for RecordType {
-    fn default() -> Self { RecordType::Input }
-}
 
 /// flush-edit 同步原因——决定 EditFlushed/FlushTimeout 后走哪个续逻辑。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

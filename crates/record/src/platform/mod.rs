@@ -83,6 +83,6 @@ pub(crate) async fn run_helper_subcommand(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let first_line = stdout.lines().next().unwrap_or("");
     let value: serde_json::Value = serde_json::from_str(first_line)
-        .map_err(|e| crate::error::RecordError::Json(e))?;
+        .map_err(crate::error::RecordError::Json)?;
     Ok(value)
 }

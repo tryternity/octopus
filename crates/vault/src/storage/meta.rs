@@ -10,20 +10,20 @@ use anyhow::Result;
 use octopus_infra::db::{self, VaultMeta, VaultMetaInput};
 
 pub fn read_vault_meta() -> Result<Option<VaultMeta>> {
-    Ok(db::load_vault_meta()?)
+    db::load_vault_meta()
 }
 
 pub fn save_vault_meta(input: &VaultMetaInput) -> Result<()> {
     // 锁下沉到写函数内部——覆盖所有调用路径（复审 #2）。
     // ReentrantMutex 让 change_master_password 外层已持锁时内层再次 lock 不死锁。
     let _guard = crate::meta_lock::acquire_meta_write_lock();
-    Ok(db::upsert_vault_meta(input)?)
+    db::upsert_vault_meta(input)
 }
 
 pub fn update_security_stamp(stamp: &str) -> Result<()> {
     // 同 save_vault_meta——单字段 UPDATE 也加锁，防与整行覆盖写交错丢字段。
     let _guard = crate::meta_lock::acquire_meta_write_lock();
-    Ok(db::update_vault_security_stamp(stamp)?)
+    db::update_vault_security_stamp(stamp)
 }
 
 #[cfg(test)]

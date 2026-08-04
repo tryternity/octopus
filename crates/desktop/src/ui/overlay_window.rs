@@ -51,12 +51,12 @@ fn show_at_mouse(app: &AppHandle, payload: &OverlayPayload) {
                 let (cx, cy) = app.primary_monitor()
                     .ok()
                     .flatten()
-                    .and_then(|m| {
+                    .map(|m| {
                         let scale = m.scale_factor();
                         let pos = m.position();
                         let sz = m.size();
-                        Some(((pos.x as f64 + sz.width as f64 / scale / 2.0) - 160.0,
-                              (pos.y as f64 + sz.height as f64 / scale / 2.0) - 40.0))
+                        ((pos.x as f64 + sz.width as f64 / scale / 2.0) - 160.0,
+                              (pos.y as f64 + sz.height as f64 / scale / 2.0) - 40.0)
                     })
                     .unwrap_or((400.0, 300.0));
                 (cx, cy)

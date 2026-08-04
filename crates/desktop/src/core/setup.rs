@@ -579,7 +579,7 @@ impl<'a> AppSetup<'a> {
             }
             #[cfg(not(feature = "cloud"))]
             {
-                build_local_engine(&self.config, &engine_manager)
+                build_local_engine(self.config, &engine_manager)
             }
         };
 
@@ -708,7 +708,7 @@ impl<'a> AppSetup<'a> {
     fn init_tray(&self) {
         // 4. Initialize i18n + Create Tray
         crate::ui::i18n::init(&self.config.ui_language);
-        if let Err(e) = crate::ui::tray::create_tray(self.app.handle(), &self.config) {
+        if let Err(e) = crate::ui::tray::create_tray(self.app.handle(), self.config) {
             log::error!("Tray init failed ({}), running without tray menu", e);
         }
         // 麦克风子菜单设备项后台预热：cpal 枚举放后台线程，避免阻塞主线程

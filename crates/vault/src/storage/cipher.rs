@@ -51,7 +51,7 @@ pub fn load_cipher(id: &str, key: &DerivedKey) -> Result<Option<Cipher>> {
 /// 2026-07-21 v44：id 从 AUTOINCREMENT 改 UUID 字符串（git 同步跨设备无冲突）。
 pub fn create_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()> {
     let db_input = prepare_cipher_input(id, input, key)?;
-    Ok(db::insert_vault_cipher(&db_input)?)
+    db::insert_vault_cipher(&db_input)
 }
 
 /// 仅加密 + 算 sync_md5，不落库（L8 修复，2026-07-24）。
@@ -173,7 +173,7 @@ pub fn restore(id: &str) -> Result<()> {
 }
 
 pub fn permanent_delete(id: &str) -> Result<()> {
-    Ok(db::permanent_delete_vault_cipher(id)?)
+    db::permanent_delete_vault_cipher(id)
 }
 
 /// 清空回收站：批量永久删除所有 is_deleted = 1 的 cipher。

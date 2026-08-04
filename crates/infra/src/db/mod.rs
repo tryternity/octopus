@@ -64,7 +64,7 @@ static DB: OnceLock<parking_lot::ReentrantMutex<Connection>> = OnceLock::new();
 thread_local! {
     static TEST_DB_OVERRIDE: std::cell::RefCell<
         Option<std::sync::Arc<parking_lot::ReentrantMutex<Connection>>>
-    > = std::cell::RefCell::new(None);
+    > = const { std::cell::RefCell::new(None) };
 }
 
 /// 测试专用：注入一个 in-memory 连接（建表 + 标 v40），后续 `with_db` 调用会使用它。

@@ -67,7 +67,7 @@ fn row_to_hotword_set(row: &rusqlite::Row) -> rusqlite::Result<HotwordSet> {
 /// 列出全部活跃版本（is_deleted=0，按 name 升序）。设置页渲染用。
 pub fn list_hotword_sets() -> Result<Vec<HotwordSet>> {
     ensure_db()?;
-    with_db(|conn| list_hotword_sets_at(conn))
+    with_db(list_hotword_sets_at)
 }
 
 pub(crate) fn list_hotword_sets_at(conn: &Connection) -> Result<Vec<HotwordSet>> {
@@ -414,7 +414,7 @@ pub(crate) fn list_words_in_set_at(conn: &Connection, set_id: &str) -> Result<Ve
 /// hit_count 从 hotword_hits LEFT JOIN（无命中记录 = 0），用于 correct 多命中排序。
 pub fn list_active_words() -> Result<Vec<(String, String, i64)>> {
     ensure_db()?;
-    with_db(|conn| list_active_words_at(conn))
+    with_db(list_active_words_at)
 }
 
 pub(crate) fn list_active_words_at(conn: &Connection) -> Result<Vec<(String, String, i64)>> {
@@ -762,7 +762,7 @@ pub(crate) fn bump_hotword_hit_by_word_at(conn: &Connection, word: &str) -> Resu
 /// 全局命中计数（前端卡片命中展示用）。返回 word → hit_count。
 pub fn list_hotword_hits() -> Result<std::collections::HashMap<String, i64>> {
     ensure_db()?;
-    with_db(|conn| list_hotword_hits_at(conn))
+    with_db(list_hotword_hits_at)
 }
 
 pub(crate) fn list_hotword_hits_at(conn: &Connection) -> Result<std::collections::HashMap<String, i64>> {

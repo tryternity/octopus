@@ -365,7 +365,7 @@ where
 mod tests {
     use super::*;
     use portable_pty::CommandBuilder;
-    use std::sync::atomic::AtomicUsize;
+    
     use std::time::Instant;
 
     /// 辅助：spawn 一个一次性命令，等退出 + 收集输出。

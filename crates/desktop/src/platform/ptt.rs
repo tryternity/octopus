@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn toggle_long_press_ends_recording() {
         // toggle 录音中：keydown → ToggleInWait
-        let (fsm, _) = PttFsm::Idle.next_on_keydown(1);
+        let (_fsm, _) = PttFsm::Idle.next_on_keydown(1);
         // 模拟长按超时（≥260ms 未松开）
         let expired = PttFsm::ToggleInWait {
             timer_start: Instant::now() - Duration::from_millis(TAP_TIMEOUT_MS + 10),

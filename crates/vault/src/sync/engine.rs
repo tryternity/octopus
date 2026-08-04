@@ -863,7 +863,7 @@ fn meta_file_not_found(e: &anyhow::Error) -> bool {
     use std::io::ErrorKind;
     e.chain().any(|c| {
         c.downcast_ref::<std::io::Error>()
-            .map_or(false, |io| io.kind() == ErrorKind::NotFound)
+            .is_some_and(|io| io.kind() == ErrorKind::NotFound)
     })
 }
 
