@@ -22,3 +22,8 @@ pub const fn db_schema_sql() -> &'static str {
 pub const fn public_suffix_list() -> &'static [u8] {
     include_bytes!("../resources/dicts/public_suffix_list.dat")
 }
+
+/// OCR 常用词表（ocr 引擎识别后纠错用）。
+pub const fn ocr_words_common() -> &'static str {
+    include_str!("../resources/dicts/words_common.txt")
+}
