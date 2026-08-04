@@ -509,25 +509,29 @@ pub struct ScriptRun {
 /// stdout/stderr 截断上限（64KB）
 const SCRIPT_OUTPUT_LIMIT: usize = 65536;
 
-pub fn insert_script_run(
-    item_id: i64,
-    script_type: &str,
-    exit_code: Option<i32>,
-    stdout: &str,
-    stderr: &str,
-    error_msg: &str,
-    started_at: &str,
-    finished_at: Option<&str>,
-    duration_ms: Option<i64>,
-) -> Result<i64> {
-    let stdout_trunc: String = stdout.chars().take(SCRIPT_OUTPUT_LIMIT).collect();
-    let stderr_trunc: String = stderr.chars().take(SCRIPT_OUTPUT_LIMIT).collect();
+/// insert_script_run 输入——脚本运行记录（exit_code/stdout/stderr/error_msg/时间戳）。
+pub struct ScriptRunRecord<'a> {
+    pub item_id: i64,
+    pub script_type: &'a str,
+    pub exit_code: Option<i32>,
+    pub stdout: &'a str,
+    pub stderr: &'a str,
+    pub error_msg: &'a str,
+    pub started_at: &'a str,
+    pub finished_at: Option<&'a str>,
+    pub duration_ms: Option<i64>,
+}
+
+pub fn insert_script_run(record: &ScriptRunRecord) -> Result<i64> {
+    let stdout_trunc: String = record.stdout.chars().take(SCRIPT_OUTPUT_LIMIT).collect();
+    let stderr_trunc: String = record.stderr.chars().take(SCRIPT_OUTPUT_LIMIT).collect();
     ensure_db()?;
     with_db(|conn| {
         conn.execute(
             "INSERT INTO script_runs (item_id, script_type, exit_code, stdout, stderr, error_msg, started_at, finished_at, duration_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![item_id, script_type, exit_code, stdout_trunc, stderr_trunc, error_msg, started_at, finished_at, duration_ms],
+            params![record.item_id, record.script_type, record.exit_code, stdout_trunc, stderr_trunc,
+                    record.error_msg, record.started_at, record.finished_at, record.duration_ms],
         )?;
         Ok(conn.last_insert_rowid())
     })
