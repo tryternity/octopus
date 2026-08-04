@@ -291,11 +291,12 @@ mod tests {
     }
 
     /// 合成「暗色代码编辑器」帧：近黑背景 + 稀疏亮文字行（等宽字体感）。
+    ///
     /// - 背景 luma≈12（近黑）
     /// - 行周期 24px：16px 文字行 + 8px 纯黑行间
     /// - 文字行内字符周期 11px（6px 亮 luma=220 + 5px 黑），模拟代码字符
-    /// `scroll_offset` 模拟向下滚动。
-    /// 复刻真实暗色编辑器：高灰度对比但 Sobel 特征稀疏（大片纯黑行间）。
+    ///
+    /// `scroll_offset` 模拟向下滚动。复刻真实暗色编辑器：高灰度对比但 Sobel 特征稀疏（大片纯黑行间）。
     fn make_frame_dark_editor(width: u32, height: u32, scroll_offset: u32) -> RgbaImage {
         let mut img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::new(width, height);
         for y in 0..height {
@@ -369,7 +370,7 @@ mod tests {
             let mut img = make_frame(TW, h, scroll);
             for y in content_h..h {
                 for x in 0..TW {
-                    let n = ((x as u32 * y as u32 + noise_seed) % 6) as u8;
+                    let n = ((x * y + noise_seed) % 6) as u8;
                     img.put_pixel(x, y, Rgba([n, n, n, 255]));
                 }
             }
@@ -459,7 +460,7 @@ mod tests {
             let mut img = make_frame(TW, h, scroll);
             for y in content_h..h {
                 for x in 0..TW {
-                    let n = ((x as u32 * y as u32 + noise_seed) % 6) as u8;
+                    let n = ((x * y + noise_seed) % 6) as u8;
                     img.put_pixel(x, y, Rgba([n, n, n, 255]));
                 }
             }
@@ -512,7 +513,7 @@ mod tests {
             let mut img = make_frame(TW, h, scroll);
             for y in content_rows..h {
                 for x in 0..TW {
-                    let n = ((x as u32 * y as u32 + noise_seed) % 6) as u8;
+                    let n = ((x * y + noise_seed) % 6) as u8;
                     img.put_pixel(x, y, Rgba([n, n, n, 255]));
                 }
             }
