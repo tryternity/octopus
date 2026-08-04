@@ -3,15 +3,6 @@ name = "octopus-asr-local"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-default = ["vad_v6"]
-# Silero VAD 版本（互斥，compile_error! 守护）。
-# v6（2026-08-04）：state 单 tensor [2,1,128]，int8 量化 1.5MB（比 v4 fp32 1.8MB 小 17%）。
-# v4：h/c 双 tensor [2,1,64]，fp32 1.8MB。验证 v6 通过后删 v4 feature + 代码 + 模型文件。
-# 开发期切换：cargo build -p octopus-asr-local --no-default-features --features vad_v4
-vad_v6 = []
-vad_v4 = []
-
 [dependencies]
 # ort EP feature 按平台条件化（spec 2026-06-20）：与 config.rs apply_session_acceleration
 # 的 #[cfg(target_os)] 1:1 对齐（设计意图，非编译器硬约束——ort EP 类型无条件编译、仅 register()
