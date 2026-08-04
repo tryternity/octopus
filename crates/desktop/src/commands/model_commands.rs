@@ -742,11 +742,18 @@ pub async fn add_cloud_model(input: CloudModelInput) -> Result<i64, String> {
     // M-CLOUDKEY-PLAINTEXT 修复（2026-07-25）：vault 已初始化时加密 secret_key
     // 再落盘——之前 add/edit 明文直接写 DB（只 migrate 覆盖 setup 存量，增量明文残留）。
     let encrypted_key = crate::vault::vault_secret_access::encrypt_secret_global(&input.secret_key)?;
-    let id = octopus_infra::db::insert_cloud_model(
-        &input.domain, &input.provider, &input.category,
-        &input.model_name, &input.source, &encrypted_key,
-        input.is_streaming, input.is_thinking,
-    ).map_err(e2s)?;
+    let id = octopus_infra::db::insert_cloud_model(&octopus_infra::db::CloudModelDbInput {
+        domain: &input.domain,
+        fields: octopus_infra::db::CloudModelDbFields {
+            provider: &input.provider,
+            category: &input.category,
+            model_name: &input.model_name,
+            source: &input.source,
+            secret_key: &encrypted_key,
+            is_streaming: input.is_streaming,
+            is_thinking: input.is_thinking,
+        },
+    }).map_err(e2s)?;
     // 按域刷新 ACTIVE_ENGINES 缓存（新增不影响激活态，但 reload 无害）
     reload_engine_cache(&input.domain);
     Ok(id)
@@ -776,11 +783,18 @@ pub async fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), Str
     }
     // M-CLOUDKEY-PLAINTEXT 修复：加密 secret_key 再落盘（空值原样返回，DB 层保持现有值）
     let encrypted_key = crate::vault::vault_secret_access::encrypt_secret_global(&input.secret_key)?;
-    octopus_infra::db::update_cloud_model(
-        id, &input.provider, &input.category,
-        &input.model_name, &input.source, &encrypted_key,
-        input.is_streaming, input.is_thinking,
-    ).map_err(e2s)?;
+    octopus_infra::db::update_cloud_model(&octopus_infra::db::CloudModelDbUpdate {
+        id,
+        fields: octopus_infra::db::CloudModelDbFields {
+            provider: &input.provider,
+            category: &input.category,
+            model_name: &input.model_name,
+            source: &input.source,
+            secret_key: &encrypted_key,
+            is_streaming: input.is_streaming,
+            is_thinking: input.is_thinking,
+        },
+    }).map_err(e2s)?;
     // 按域刷新 ACTIVE_ENGINES（编辑可能改了激活模型的 secret_key/source）
     reload_engine_cache(&input.domain);
     Ok(())

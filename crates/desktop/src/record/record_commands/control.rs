@@ -283,6 +283,7 @@ pub async fn record_resume(state: State<'_, RecordSession>) -> Result<(), String
 ///
 /// 入库需要的 recording_id/width/height/source_type/has_* 字段由前端透传——
 /// 这些值在 record_start 时由前端配置决定，session.rs MVP 简化不存。
+#[allow(clippy::too_many_arguments)] // Tauri 命令参数平铺（前端 invoke JSON 传）
 #[command]
 pub async fn record_stop(
     state: State<'_, RecordSession>,

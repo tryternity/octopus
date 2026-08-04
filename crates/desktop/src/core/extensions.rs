@@ -231,6 +231,7 @@ pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
 }
 
 /// 安装扩展——保存时调用。复制到 extensions + 创建 DB 记录。
+#[allow(clippy::too_many_arguments)] // Tauri 命令参数平铺（前端 invoke JSON 传）
 #[tauri::command]
 pub fn install_extension(
     source_path: String,
@@ -262,39 +263,43 @@ pub fn install_extension(
     let script_abs = dest.join(&config.action.script);
     let is_enabled = is_enabled.unwrap_or(true);
     if let Some(id) = replace_id {
-        octopus_infra::db::update_action_bar_item(
+        octopus_infra::db::update_action_bar_item(&octopus_infra::db::ActionBarItemUpdate {
             id,
-            &name,
-            "",
-            "script",
-            &script_abs.to_string_lossy(),
-            is_enabled,
-            is_async,
-            write_output_to_clipboard,
-            "",
-            "text",
-            "",
-            false,  // need_voice——script 类型不需要语音
-            "",     // app_bundle_ids——扩展导入默认全局项
-        )
+            fields: octopus_infra::db::ActionBarItemFields {
+                title: &name,
+                icon: "",
+                action_type: "script",
+                action_data: &script_abs.to_string_lossy(),
+                is_async,
+                write_output_to_clipboard,
+                agent: "",
+                accepts: "text",
+                trigger_keyword: "",
+                is_enabled,
+                need_voice: false,  // script 类型不需要语音
+                app_bundle_ids: "", // 扩展导入默认全局项
+            },
+        })
         .map_err(e2s)?;
         Ok(id)
     } else {
-        octopus_infra::db::insert_action_bar_item(
+        octopus_infra::db::insert_action_bar_item(&octopus_infra::db::ActionBarItemInput {
             parent_id,
-            &name,
-            "",
-            "script",
-            &script_abs.to_string_lossy(),
-            is_async,
-            write_output_to_clipboard,
-            "",
-            "text",
-            "",
-            is_enabled,
-            false,  // need_voice——script 类型不需要语音
-            "",     // app_bundle_ids——扩展导入默认全局项
-        )
+            fields: octopus_infra::db::ActionBarItemFields {
+                title: &name,
+                icon: "",
+                action_type: "script",
+                action_data: &script_abs.to_string_lossy(),
+                is_async,
+                write_output_to_clipboard,
+                agent: "",
+                accepts: "text",
+                trigger_keyword: "",
+                is_enabled,
+                need_voice: false,  // script 类型不需要语音
+                app_bundle_ids: "", // 扩展导入默认全局项
+            },
+        })
         .map_err(e2s)
     }
 }

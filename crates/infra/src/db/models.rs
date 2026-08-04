@@ -399,47 +399,68 @@ pub(crate) fn set_model_secret_key_at(conn: &Connection, model_name: &str, json:
 
 // ── 云端模型 CRUD（用户自建，domain='asr'|'llm' AND source_type=2）──
 
+/// cloud model insert/update 公共字段（DB 层）。
+/// 注意：desktop 有同名 `CloudModelInput`（Tauri 命令 DTO），本 struct 是 DB 写入专用。
+#[derive(Debug, Clone)]
+pub struct CloudModelDbFields<'a> {
+    pub provider: &'a str,
+    pub category: &'a str,
+    pub model_name: &'a str,
+    pub source: &'a str,
+    pub secret_key: &'a str,
+    pub is_streaming: bool,
+    pub is_thinking: bool,
+}
+
+/// insert_cloud_model 输入——公共字段 + domain（update 通过 id 定位，无 domain）。
+pub struct CloudModelDbInput<'a> {
+    pub domain: &'a str,
+    pub fields: CloudModelDbFields<'a>,
+}
+
+/// update_cloud_model 输入——公共字段 + id。
+pub struct CloudModelDbUpdate<'a> {
+    pub id: i64,
+    pub fields: CloudModelDbFields<'a>,
+}
+
 /// 新增云端模型。is_available=1（前端已测试通过才保存=可用）；is_enabled=0（不自动激活，
 /// 用户在管理页显式激活）。返回新行 id。
-pub fn insert_cloud_model(
-    domain: &str, provider: &str, category: &str,
-    model_name: &str, source: &str, secret_key: &str,
-    is_streaming: bool, is_thinking: bool,
-) -> Result<i64> {
+pub fn insert_cloud_model(input: &CloudModelDbInput) -> Result<i64> {
+    let domain = input.domain;
+    let f = &input.fields;
     ensure_db()?;
     with_db(|conn| {
         conn.execute(
             "INSERT INTO models (domain, provider, category, model_name, source, secret_key, source_type, is_available, is_enabled, is_streaming, is_thinking)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 2, 1, 0, ?7, ?8)",
-            params![domain, provider, category, model_name, source, secret_key,
-                    is_streaming as i32, is_thinking as i32],
+            params![domain, f.provider, f.category, f.model_name, f.source, f.secret_key,
+                    f.is_streaming as i32, f.is_thinking as i32],
         )?;
         Ok(conn.last_insert_rowid())
     })
 }
 
 /// 更新云端模型（按 id）。secret_key 为空时不覆盖原值。
-pub fn update_cloud_model(
-    id: i64, provider: &str, category: &str,
-    model_name: &str, source: &str, secret_key: &str,
-    is_streaming: bool, is_thinking: bool,
-) -> Result<()> {
+pub fn update_cloud_model(update: &CloudModelDbUpdate) -> Result<()> {
+    let id = update.id;
+    let f = &update.fields;
     ensure_db()?;
     with_db(|conn| {
-        if secret_key.is_empty() {
+        if f.secret_key.is_empty() {
             // 不改 secret_key
             conn.execute(
                 "UPDATE models SET provider=?1, category=?2, model_name=?3, source=?4,
                  is_streaming=?5, is_thinking=?6 WHERE id=?7 AND source_type=2",
-                params![provider, category, model_name, source,
-                        is_streaming as i32, is_thinking as i32, id],
+                params![f.provider, f.category, f.model_name, f.source,
+                        f.is_streaming as i32, f.is_thinking as i32, id],
             )?;
         } else {
             conn.execute(
                 "UPDATE models SET provider=?1, category=?2, model_name=?3, source=?4,
                  secret_key=?5, is_streaming=?6, is_thinking=?7 WHERE id=?8 AND source_type=2",
-                params![provider, category, model_name, source, secret_key,
-                        is_streaming as i32, is_thinking as i32, id],
+                params![f.provider, f.category, f.model_name, f.source, f.secret_key,
+                        f.is_streaming as i32, f.is_thinking as i32, id],
             )?;
         }
         Ok(())

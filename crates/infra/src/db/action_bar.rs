@@ -30,6 +30,38 @@ pub struct ActionBarItem {
     pub app_bundle_ids: String,
 }
 
+// ── insert/update 输入 struct（too_many_arguments 治理，2026-08-04）──
+
+/// action_bar item insert/update 公共字段。
+/// 不含 id（自增）/ parent_id（仅 insert）/ sort_order（DB 默认）/ is_system（代码设）。
+#[derive(Debug, Clone)]
+pub struct ActionBarItemFields<'a> {
+    pub title: &'a str,
+    pub icon: &'a str,
+    pub action_type: &'a str,
+    pub action_data: &'a str,
+    pub is_async: bool,
+    pub write_output_to_clipboard: bool,
+    pub agent: &'a str,
+    pub accepts: &'a str,
+    pub trigger_keyword: &'a str,
+    pub is_enabled: bool,
+    pub need_voice: bool,
+    pub app_bundle_ids: &'a str,
+}
+
+/// insert_action_bar_item 输入——公共字段 + parent_id。
+pub struct ActionBarItemInput<'a> {
+    pub parent_id: Option<i64>,
+    pub fields: ActionBarItemFields<'a>,
+}
+
+/// update_action_bar_item 输入——公共字段 + id（无 parent_id）。
+pub struct ActionBarItemUpdate<'a> {
+    pub id: i64,
+    pub fields: ActionBarItemFields<'a>,
+}
+
 const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, agent, accepts, trigger_keyword, global_shortcut, need_voice, app_bundle_ids";
 
 fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem> {
@@ -128,101 +160,50 @@ pub(crate) fn load_action_bar_item_at(conn: &Connection, id: i64) -> Result<Opti
     }
 }
 
-pub fn insert_action_bar_item(
-    parent_id: Option<i64>,
-    title: &str,
-    icon: &str,
-    action_type: &str,
-    action_data: &str,
-    is_async: bool,
-    write_output_to_clipboard: bool,
-    agent: &str,
-    accepts: &str,
-    trigger_keyword: &str,
-    is_enabled: bool,
-    need_voice: bool,
-    app_bundle_ids: &str,
-) -> Result<i64> {
+pub fn insert_action_bar_item(input: &ActionBarItemInput) -> Result<i64> {
     ensure_db()?;
-    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, agent, accepts, trigger_keyword, is_enabled, need_voice, app_bundle_ids))
+    with_db(|conn| insert_action_bar_item_at(conn, input))
 }
 
-pub(crate) fn insert_action_bar_item_at(
-    conn: &Connection,
-    parent_id: Option<i64>,
-    title: &str,
-    icon: &str,
-    action_type: &str,
-    action_data: &str,
-    is_async: bool,
-    write_output_to_clipboard: bool,
-    agent: &str,
-    accepts: &str,
-    trigger_keyword: &str,
-    is_enabled: bool,
-    need_voice: bool,
-    app_bundle_ids: &str,
-) -> Result<i64> {
-    validate_action_bar_text("菜单标题", title)?;
-    validate_action_bar_text("命令名", trigger_keyword)?;
+pub(crate) fn insert_action_bar_item_at(conn: &Connection, input: &ActionBarItemInput) -> Result<i64> {
+    let f = &input.fields;
+    validate_action_bar_text("菜单标题", f.title)?;
+    validate_action_bar_text("命令名", f.trigger_keyword)?;
     let max_order: i64 = conn.query_row(
         "SELECT COALESCE(MAX(sort_order), -1) FROM action_bar_items WHERE parent_id IS ?1",
-        params![parent_id],
+        params![input.parent_id],
         |r| r.get(0),
     )?;
     // shortcut 列保留（兼容），不再写入——靠 DB DEFAULT ''。Alt+字母执行已废弃，改 slash 命令。
     conn.execute(
         "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, agent, accepts, trigger_keyword, need_voice, app_bundle_ids)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?12, ?7, ?8, ?9, ?10, ?11, ?13, ?14)",
-        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, agent, accepts, trigger_keyword, is_enabled as i32, need_voice as i32, app_bundle_ids],
+        params![input.parent_id, f.title, f.icon, f.action_type, f.action_data, max_order + 1,
+                f.is_async as i32, f.write_output_to_clipboard as i32, f.agent, f.accepts,
+                f.trigger_keyword, f.is_enabled as i32, f.need_voice as i32, f.app_bundle_ids],
     )?;
     Ok(conn.last_insert_rowid())
 }
 
-pub fn update_action_bar_item(
-    id: i64,
-    title: &str,
-    icon: &str,
-    action_type: &str,
-    action_data: &str,
-    is_enabled: bool,
-    is_async: bool,
-    write_output_to_clipboard: bool,
-    agent: &str,
-    accepts: &str,
-    trigger_keyword: &str,
-    need_voice: bool,
-    app_bundle_ids: &str,
-) -> Result<()> {
+pub fn update_action_bar_item(update: &ActionBarItemUpdate) -> Result<()> {
     ensure_db()?;
-    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard, agent, accepts, trigger_keyword, need_voice, app_bundle_ids))
+    with_db(|conn| update_action_bar_item_at(conn, update))
 }
 
-pub(crate) fn update_action_bar_item_at(
-    conn: &Connection,
-    id: i64,
-    title: &str,
-    icon: &str,
-    action_type: &str,
-    action_data: &str,
-    is_enabled: bool,
-    is_async: bool,
-    write_output_to_clipboard: bool,
-    agent: &str,
-    accepts: &str,
-    trigger_keyword: &str,
-    need_voice: bool,
-    app_bundle_ids: &str,
-) -> Result<()> {
+pub(crate) fn update_action_bar_item_at(conn: &Connection, update: &ActionBarItemUpdate) -> Result<()> {
+    let id = update.id;
+    let f = &update.fields;
     let row = load_action_bar_item_at(conn, id)?.context("菜单项不存在")?;
-    if row.is_system && row.action_type != action_type {
+    if row.is_system && row.action_type != f.action_type {
         anyhow::bail!("系统内置菜单项不可更改动作类型");
     }
-    validate_action_bar_text("菜单标题", title)?;
-    validate_action_bar_text("命令名", trigger_keyword)?;
+    validate_action_bar_text("菜单标题", f.title)?;
+    validate_action_bar_text("命令名", f.trigger_keyword)?;
     conn.execute(
         "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, agent=?8, accepts=?9, trigger_keyword=?10, need_voice=?11, app_bundle_ids=?12, updated_at=datetime('now') WHERE id=?13",
-        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, agent, accepts, trigger_keyword, need_voice as i32, app_bundle_ids, id],
+        params![f.title, f.icon, f.action_type, f.action_data, f.is_enabled as i32,
+                f.is_async as i32, f.write_output_to_clipboard as i32, f.agent, f.accepts,
+                f.trigger_keyword, f.need_voice as i32, f.app_bundle_ids, id],
     )?;
     Ok(())
 }
@@ -509,25 +490,29 @@ pub struct ScriptRun {
 /// stdout/stderr 截断上限（64KB）
 const SCRIPT_OUTPUT_LIMIT: usize = 65536;
 
-pub fn insert_script_run(
-    item_id: i64,
-    script_type: &str,
-    exit_code: Option<i32>,
-    stdout: &str,
-    stderr: &str,
-    error_msg: &str,
-    started_at: &str,
-    finished_at: Option<&str>,
-    duration_ms: Option<i64>,
-) -> Result<i64> {
-    let stdout_trunc: String = stdout.chars().take(SCRIPT_OUTPUT_LIMIT).collect();
-    let stderr_trunc: String = stderr.chars().take(SCRIPT_OUTPUT_LIMIT).collect();
+/// insert_script_run 输入——脚本运行记录（exit_code/stdout/stderr/error_msg/时间戳）。
+pub struct ScriptRunRecord<'a> {
+    pub item_id: i64,
+    pub script_type: &'a str,
+    pub exit_code: Option<i32>,
+    pub stdout: &'a str,
+    pub stderr: &'a str,
+    pub error_msg: &'a str,
+    pub started_at: &'a str,
+    pub finished_at: Option<&'a str>,
+    pub duration_ms: Option<i64>,
+}
+
+pub fn insert_script_run(record: &ScriptRunRecord) -> Result<i64> {
+    let stdout_trunc: String = record.stdout.chars().take(SCRIPT_OUTPUT_LIMIT).collect();
+    let stderr_trunc: String = record.stderr.chars().take(SCRIPT_OUTPUT_LIMIT).collect();
     ensure_db()?;
     with_db(|conn| {
         conn.execute(
             "INSERT INTO script_runs (item_id, script_type, exit_code, stdout, stderr, error_msg, started_at, finished_at, duration_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![item_id, script_type, exit_code, stdout_trunc, stderr_trunc, error_msg, started_at, finished_at, duration_ms],
+            params![record.item_id, record.script_type, record.exit_code, stdout_trunc, stderr_trunc,
+                    record.error_msg, record.started_at, record.finished_at, record.duration_ms],
         )?;
         Ok(conn.last_insert_rowid())
     })
@@ -762,9 +747,14 @@ mod tests {
     fn action_bar_insert_agent_type_default_accepts() {
         // 通过 insert 插入 agent 类型——不传 accepts 时默认 'text'
         let conn = open_init();
-        let id = insert_action_bar_item_at(
-            &conn, None, "我的agent", "bot", "agent", "{{voice}}", true, false, "claude", "file", "", true, false, "",
-        ).unwrap();
+        let id = insert_action_bar_item_at(&conn, &ActionBarItemInput {
+            parent_id: None,
+            fields: ActionBarItemFields {
+                title: "我的agent", icon: "bot", action_type: "agent", action_data: "{{voice}}",
+                is_async: true, write_output_to_clipboard: false, agent: "claude", accepts: "file",
+                trigger_keyword: "", is_enabled: true, need_voice: false, app_bundle_ids: "",
+            },
+        }).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.accepts, "file");
         assert_eq!(item.agent, "claude");
@@ -780,8 +770,22 @@ mod tests {
     #[test]
     fn action_bar_items_list_enabled_filters_disabled() {
         let conn = open_init();
-        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "url", "", true, false, "", "text", "", true, false, "").unwrap();
-        update_action_bar_item_at(&conn, id, "测试禁用", "test", "url", "", false, true, false, "", "text", "", false, "").unwrap();
+        let id = insert_action_bar_item_at(&conn, &ActionBarItemInput {
+            parent_id: None,
+            fields: ActionBarItemFields {
+                title: "测试禁用", icon: "test", action_type: "url", action_data: "",
+                is_async: true, write_output_to_clipboard: false, agent: "", accepts: "text",
+                trigger_keyword: "", is_enabled: true, need_voice: false, app_bundle_ids: "",
+            },
+        }).unwrap();
+        update_action_bar_item_at(&conn, &ActionBarItemUpdate {
+            id,
+            fields: ActionBarItemFields {
+                title: "测试禁用", icon: "test", action_type: "url", action_data: "",
+                is_async: true, write_output_to_clipboard: false, agent: "", accepts: "text",
+                trigger_keyword: "", is_enabled: false, need_voice: false, app_bundle_ids: "",
+            },
+        }).unwrap();
         let enabled = list_action_bar_items_at(&conn).unwrap();
         assert!(!enabled.iter().any(|i| i.id == id));
         let all = list_all_action_bar_items_at(&conn).unwrap();
@@ -799,8 +803,22 @@ mod tests {
     #[test]
     fn action_bar_items_move_swaps_order() {
         let conn = open_init();
-        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "url", "", true, false, "", "text", "", true, false, "").unwrap();
-        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "url", "", true, false, "", "text", "", true, false, "").unwrap();
+        let id_a = insert_action_bar_item_at(&conn, &ActionBarItemInput {
+            parent_id: None,
+            fields: ActionBarItemFields {
+                title: "AAA", icon: "test", action_type: "url", action_data: "",
+                is_async: true, write_output_to_clipboard: false, agent: "", accepts: "text",
+                trigger_keyword: "", is_enabled: true, need_voice: false, app_bundle_ids: "",
+            },
+        }).unwrap();
+        let id_b = insert_action_bar_item_at(&conn, &ActionBarItemInput {
+            parent_id: None,
+            fields: ActionBarItemFields {
+                title: "BBB", icon: "test", action_type: "url", action_data: "",
+                is_async: true, write_output_to_clipboard: false, agent: "", accepts: "text",
+                trigger_keyword: "", is_enabled: true, need_voice: false, app_bundle_ids: "",
+            },
+        }).unwrap();
         let a_before = load_action_bar_item_at(&conn, id_a).unwrap().unwrap();
         let b_before = load_action_bar_item_at(&conn, id_b).unwrap().unwrap();
         assert!(a_before.sort_order < b_before.sort_order);
