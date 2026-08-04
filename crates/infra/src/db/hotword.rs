@@ -131,16 +131,20 @@ pub(crate) fn insert_hotword_set_at(conn: &Connection, id: &str, name: &str) -> 
     Ok(())
 }
 
-/// 改名。同时刷新 updated_at。
-pub fn rename_hotword_set(id: &str, name: &str) -> Result<()> {
+/// 改名。同时刷新 updated_at + sync_md5（P3-4：调用方算好 md5 传入，DB 函数自包含）。
+pub fn rename_hotword_set(id: &str, name: &str, sync_md5: &str) -> Result<()> {
     ensure_db()?;
-    with_db(|conn| rename_hotword_set_at(conn, id, name))
+    with_db(|conn| rename_hotword_set_at(conn, id, name, sync_md5))
 }
 
-pub(crate) fn rename_hotword_set_at(conn: &Connection, id: &str, name: &str) -> Result<()> {
+/// 第十二轮 P3-4：加 sync_md5 参数（防御性对称化）——与 vault update_vault_folder_name 范式对齐。
+/// 原 impl 不刷 sync_md5，依赖 desktop 命令层 refill_sync_md5 兜底（10 处 caller 全用）。
+/// 零触发但残留风险：未来 cli/server 直调会 ping-pong（name 变 md5 不变 → merge 误判无 diff）。
+/// 现调用方算好 md5 传入，DB 函数自包含。
+pub(crate) fn rename_hotword_set_at(conn: &Connection, id: &str, name: &str, sync_md5: &str) -> Result<()> {
     let n = conn.execute(
-        "UPDATE hotword_sets SET name=?1, updated_at=datetime('now') WHERE id=?2",
-        params![name, id],
+        "UPDATE hotword_sets SET name=?1, sync_md5=?2, updated_at=datetime('now') WHERE id=?3",
+        params![name, sync_md5, id],
     )?;
     if n == 0 {
         anyhow::bail!("热词版本不存在");
@@ -871,8 +875,8 @@ mod tests {
         // 重名 → 唯一冲突
         assert!(insert_hotword_set_at(&conn, "test-uuid-项目A-002", "项目A").is_err());
 
-        // rename + toggle
-        rename_hotword_set_at(&conn, &id, "项目A2").unwrap();
+        // rename + toggle（P3-4：rename 现需 sync_md5 参数）
+        rename_hotword_set_at(&conn, &id, "项目A2", "dummy-md5").unwrap();
         toggle_hotword_set_at(&conn, &id, false).unwrap();
         assert!(!list_hotword_sets_at(&conn).unwrap()[0].enabled);
         toggle_hotword_set_at(&conn, &id, true).unwrap();

@@ -398,6 +398,7 @@
 | 8+9 | `63dfba46` | P0 folder 软删同步 + N2 背压 O(N²) + P1 SyncPanel confirm + P2-a alert + P2-b toast |
 | 10 | `1c6145e4` | P1-1 hotword spawn_blocking + P1-2 VaultPanel 监听器泄漏 + P2-3 Enter 守卫 + P2-4 翻译回滚 |
 | 11 | （本轮，待 commit） | P1 vault cipher+folder ping-pong 收敛（sync-only upsert 保留远程时间戳）+ P2 v57→v58 迁移事务 |
+| 12 | （本轮，待 commit） | P1-1 dock FLOAT_DEPTH 泄漏 + P1-2 MarkdownPreview 链接拦截 + P2-1 record stop 卡 Stopping + P2-2 OCR 编号不重置 + P2-3/4 坐标混算 + P3-1/2/3/4 + doc |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -487,3 +488,65 @@ tx.commit()?;
 ### 历史遗留项升级（文档化 → 已修）
 
 交接笔记原列「P2-3 vault 时间戳跨设备覆盖（VaultCipherInput 加字段 + SQL，较大改动）」为「文档化不修」——本轮 P1 已修复（采用 sync-only upsert 方式，比原设想的「VaultCipherInput 加字段」风险更低）。此项从「文档化不修」升级为「已修」。
+
+## 15. 第十二轮审查修复（2026-08-04，2 P1 + 4 P2 + 4 P3 + 1 doc）
+
+第十二轮全新核查（5 模块域：desktop 核心 / 前端 / ASR+OCR+polish / vault+infra / config+pty）。报告 10 个问题**全部 CONFIRMED**（每个证据点亲自 Read 核实）。全部修复。
+
+### P1-1. clipboard dock hotkey expanded→collapsed FLOAT_DEPTH 泄漏 🔴
+
+**根因**：`clipboard_window.rs:278-285` hotkey toggle 的 expanded→collapsed 分支只切 `DOCK_EXPANDED=false` + emit collapse，**不调 `after_floating_window_hide*`**；而 collapsed→expanded 分支（:291）调了 `before_floating_window_show`（depth+1，隐藏 Regular 窗口）。奇数次 toggle 后 depth>0 永久 → `restore_hidden_windows_only`（activation.rs:319）`if !float_depth_decrement_and_is_zero() { return }` early return → 被隐藏的 settings/compact_editor/terminal 窗口永久消失（托盘 open_settings 只 set_focus 无 show）。历史债（git 证实非本 PR 引入）。
+
+**修复**：expanded→collapsed 分支（:285 emit collapse 后）加 `after_floating_window_hide_keep_active(app)`。选 `keep_active` 变体（非普通 hide）：dock 收缩态 clipboard_window 仍 visible（只宽度收窄），不能 deactivate 交还前台焦点——会打断用户当前工作。`keep_active`（activation.rs:353）递减 depth + 恢复隐藏 Regular 窗口但不 deactivate。
+
+**作用域**：只改 hotkey toggle 路径。`clipboard_dock_expand`/`clipboard_dock_collapse` Tauri 命令（:223/:234）不碰 depth（不调 before_floating_window_show），无需改。
+
+### P1-2. MarkdownPreview 空内容挂载后链接拦截永久失效 🔴
+
+**根因**：`CompactEditor/MarkdownPreview.tsx` click listener effect（:34-68）绑到 `<article>`，但①effect deps 是 `[]`（仅挂载一次）②空内容分支（:70-76）不渲染 `<article>` → mount 时 `articleRef.current=null` → `if(!article) return` 早退、listener 不注册 → 后续内容到达 `<article>` 挂载但 effect 不重跑 → 点链接无 preventDefault → WKWebView 导航到外链，编辑上下文丢失。
+
+**修复**（方案 C，委托到容器）：listener 从 `<article>` 挪到外层 `<div>`（两分支都渲染的稳定容器）。新增 `containerRef` 指向根 `<div>`（两分支都加 ref），click 冒泡到 div，`closest("a")` 仍命中 article 内链接。空内容分支也生效（div 总在），保留「仅挂载一次」语义。锚点跳转 `article.querySelector` 改 `containerRef.current?.querySelector`（查询范围等价）。
+
+### P2-1. record stop() stdin 写失败卡 Stopping 🟠
+
+**根因**：`record/src/session.rs:281` `stdin.write_all(b"stop\n").await.map_err(RecordError::SpawnFailed)?` 失败时 `?` 早返回，state 已切 Stopping（:279）但无 `reset_to_idle`。对比超时分支（:300）有 `reset_to_idle`。helper 崩溃/被 kill/系统休眠后 ESC → state 卡 Stopping → 后续 ESC 撞同路径 → 须 tray「强制停止」恢复。
+
+**修复**：把 write 结果捕获到 lock 段外（锁先释放，reset_to_idle 内部再锁），失败时调 `self.reset_to_idle().await` 再返错。对齐超时分支模式。
+
+### P2-2. OCR ordered_counter 列表类型切换不重置 🟠
+
+**根因**：`ocr/src/layout.rs:104-149` 的 `need_split`（:107/:130）只看几何间距（`y - (py+ph) > median_h * PARAGRAPH_GAP_RATIO`），不看列表类型。ordered→unordered→ordered（小间距）时第二段 ordered 从残留计数继续（ordered_counter 仅 Heading/大间距/BodyParagraph 重置）。
+
+**修复**：`need_split` 加「前项列表类型不一致即重置」——Ordered 分支检查前项是 `ListItemUnordered` → true；Unordered 分支检查前项是 `ListItemOrdered` → true。用 `Some(Unit::ListItemUnordered(..)) => true` 简洁模式。回归测试 `end_to_end_list_type_switch_resets_counter`（ordered 3 项 + unordered 2 项 + ordered 2 项小间距，断言第二段从 1 开始）。
+
+### P2-3/P2-4. record_window + overlay_window 坐标混算 🟠
+
+**根因**：`record_window.rs:103` + `overlay_window.rs:58` 把 `pos.x`（`Monitor::position()` 物理像素）未除 scale 直接加 `mon_w=sz.width/scale`（逻辑），下游 `set_position(LogicalPosition)` 契约违反。主屏 origin≠0 + Retina 时偏移。这是 AGENTS.md「物理/逻辑坐标转换」已知 gotcha 的新实例（已修 compact_editor_window/window_position）。
+
+**修复**：`pos.x as f64` → `pos.x as f64 / scale`（position 也除 scale 统一逻辑）。两处同模式。
+
+### P3-1. Result/index.tsx toast timer ref
+
+`Result/index.tsx:101` `setTimeout` 未存 ref，连续不同 ms 的 toast 早到 timer 截短后到。照搬第九轮 Settings `toastTimerRef` 范式——`useRef<ReturnType<typeof setTimeout> | null>(null)`，showToast 先 clearTimeout 前次。
+
+### P3-2. ImagePreview prevNatW 闭包旧值
+
+`ImagePreview/index.tsx:229` full-load effect deps 仅 `[imageId]`，闭包里 `natW` 是前图旧值（缩略图 naturalWidth）。加 `natWRef` 镜像 + `setNatWSync` setter（对齐同文件 `setZoomSync` 范式），`:229 prevNatW = natWRef.current`（读最新值）。低风险（触发窗窄、不损数据）。
+
+### P3-3. ActionBarPanel triggerKeyword debounce
+
+`ActionBarPanel.tsx` 的 `titleDraft` 有 debounce（:280-288），`triggerKeyword` input 无（:454-457 每按键 IPC + refresh，慢时字符黏滞）。照搬 titleDraft 范式：加 `triggerDraft` state + ref + 300ms debounce effect，input `value={triggerDraft !== null ? triggerDraft : ...}` + onChange `setTriggerDraft`。
+
+### P3-4. rename_hotword_set_at 刷 sync_md5（防御性）
+
+`infra/db/hotword.rs:140` 不刷 sync_md5，与 vault `update_vault_folder_name` 不对称。当前 caller（desktop `refill_sync_md5`，10 处）全兜底，零触发；残留风险：未来 cli/server 直调会 ping-pong。修复：`rename_hotword_set_at` / `rename_hotword_set` 加 `sync_md5` 参数，UPDATE 含 `sync_md5=?2`。caller（desktop Tauri 命令 + 6 测试）算 md5 传入（`hotword_set_md5_from_fields`）。对齐 vault 范式。
+
+### P3-doc. engine.rs:2223 stale 注释
+
+`engine.rs:2223` 注释引用已删除的 `build_cipher_input_from_file`（第十一轮删），改 `upsert_cipher_from_file`。
+
+### 验证
+
+- `cargo build` infra/record/ocr/vault/sync/desktop(cloud,vault) —— 0 error 0 warning。
+- `cargo test`：infra 183 / record 50 / ocr 35（+1 P2-2）/ vault 262 / sync 126 / desktop 520 全过。
+- tsc exit 0 + vite build 成功。

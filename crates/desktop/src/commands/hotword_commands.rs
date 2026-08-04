@@ -99,8 +99,9 @@ pub fn create_hotword_set(name: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn rename_hotword_set(id: String, name: String) -> Result<(), String> {
-    db::rename_hotword_set(&id, &name).map_err(e2s)?;
-    refill_sync_md5(&id);
+    // P3-4：md5 内联进 rename_hotword_set（DB 函数自包含），不再事后 refill_sync_md5。
+    let md5 = octopus_sync::hotword::hotword_set_md5_from_fields(&id, &name);
+    db::rename_hotword_set(&id, &name, &md5).map_err(e2s)?;
     Ok(())
 }
 

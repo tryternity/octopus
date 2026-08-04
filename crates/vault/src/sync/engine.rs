@@ -2220,7 +2220,7 @@ mod tests {
 
     /// H2 补充：clone 也应保留软删状态（之前 clone_initial 硬编码 is_deleted: false）。
     ///
-    /// T1 修复（2026-07-24）：改用 build_cipher_input_from_file（生产构造点的单一真相源），
+    /// T1 修复（2026-07-24，第十一轮更新）：改用 upsert_cipher_from_file（生产构造点的单一真相源），
     /// 而非测试自带构造——若日后有人把 clone_initial 改回 false，此测试会真正报红。
     #[test]
     fn clone_preserves_soft_deleted_at() {
