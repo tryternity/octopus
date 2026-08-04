@@ -3,8 +3,53 @@
 //! 拆分自原 stitch.rs（2026-08-04），机械迁移无行为变更。
 //! dispatcher try_fallback 按序尝试：邻帧参考 NCC → 1D 投影 → 静止检测 → best-guess。
 //! 所有方法为 inherent method（split-impl），签名一字不改。
+//!
+//! 2026-08-04 阶段 3：try_fallback 重写为迭代 5 个 `FallbackStep` trait 实现。
+//! 每个 step 封装一种匹配策略 + 副作用（reset streak / clear history 等）。
 
 use super::*;
+
+// ===== 降级链 trait 抽象（2026-08-04 阶段 3）=====
+
+/// 降级链单步的输出。dispatcher 据此决定链路走向。
+#[derive(Debug)]
+pub(crate) enum StepOutcome {
+    /// 本步已应用（副作用 + apply_fallback_match 已在 step 内调用）。
+    Applied(Result<bool>),
+    /// 本步求出 dy 但未 apply，请求 dispatcher 走 apply_fallback_match(verify)。
+    /// 保留扩展点——本次所有步骤都用 Applied。
+    Candidate {
+        dy: f64,
+        confidence: f64,
+        sad: f64,
+        verify: bool,
+    },
+    /// 本步判定画面静止，链路应短路返回 Ok(false)。
+    Stationary,
+    /// 本步未匹配，继续下一步。
+    Skip,
+}
+
+/// 步骤执行上下文。聚合步骤所需输入 + Stitcher 可变引用。
+/// 显式列出字段，限制 step 只触与本步相关的输入。
+pub(crate) struct FallbackCtx<'a> {
+    pub stitcher: &'a mut Stitcher,
+    pub frame: &'a RgbaImage,
+    pub curr_gray: &'a GrayBuf,
+    pub canvas_gray: &'a GrayBuf,
+    pub w: u32,
+    pub eff_top: u32,
+    pub eff_bottom: u32,
+    pub sample_cols: &'a [usize],
+}
+
+/// 降级链单步。每个实现封装一种 fallback 策略 + 其副作用。
+pub(crate) trait FallbackStep {
+    /// 步骤名（日志用）。
+    fn name(&self) -> &'static str;
+    /// 尝试本步降级。
+    fn try_step(&mut self, ctx: &mut FallbackCtx) -> StepOutcome;
+}
 
 impl super::Stitcher {
     /// 相邻帧参考 fallback：用前一帧有效区底部 strip 当模板，在当前帧有效区做 NCC。
