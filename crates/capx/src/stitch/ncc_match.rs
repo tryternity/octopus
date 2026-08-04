@@ -3,9 +3,6 @@
 //! 拆分自原 stitch.rs（2026-08-04），机械迁移无行为变更。
 //! 纯 free function，无 &self 依赖——主匹配/邻帧参考/finalize 都通过这一层。
 
-#[allow(unused_imports)]
-use super::*;
-
 // ===== NCC 匹配引擎 =====
 
 use imageproc::definitions::Image;

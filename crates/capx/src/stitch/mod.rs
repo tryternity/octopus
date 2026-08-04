@@ -6,9 +6,8 @@ mod graybuf;
 pub(crate) use graybuf::{GrayBuf, to_feature_map, row_projection_means};
 
 mod ncc_match;
-#[allow(unused_imports)]
 pub(crate) use ncc_match::{
-    NccResult, PrimaryOutcome,
+    PrimaryOutcome,
     ncc_match, ncc_match_range, validate_ncc_match,
     parabolic_refine_from_response, downsample_grayimage,
 };
