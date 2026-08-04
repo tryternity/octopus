@@ -195,7 +195,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     // 全图后到 → 无缝替换
     fullPromise.then((buf) => {
       if (cancelled) return;
-      const blob = new Blob([buf], { type: "image/webp" });
+      const blob = new Blob([buf], { type: "image/jpeg" });
       const url = URL.createObjectURL(blob);
       const fullImg = new Image();
       fullImg.crossOrigin = "anonymous";

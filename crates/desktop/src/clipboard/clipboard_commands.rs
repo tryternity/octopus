@@ -115,7 +115,8 @@ fn write_item_to_clipboard(handle: &ClipboardHandle, item: &ClipboardItem) -> Re
             })
             .map_err(e2s)?
             .ok_or("原图文件已丢失，无法复制")?;
-            // image_data 存 JPEG q85 BLOB（IMAGE_SAVE_QUALITY=jpeg:85）；write_image 契约是 PNG，转码一次
+            // image_data.blob 恒为 JPEG（IMAGE_SAVE_QUALITY=jpeg:85；2026-08-03 已摒弃 WebP 落库）；
+            // write_image 契约是 PNG，JPEG→PNG 转码一次。
             let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
                 .map_err(|e| e2s_ctx("解码 JPEG 失败: {}", e))?;
             let mut png = Vec::new();
@@ -274,40 +275,31 @@ pub async fn save_image_item(
     std::fs::create_dir_all(&downloads_dir).map_err(e2s)?;
 
     // 4. 确定扩展名 + 文件名（带去重）
+    // WebP 已摒弃（2026-08-03）：前端不再提供 webp 选项，后端仅支持 png/jpg。
+    // 落入 _ 的任何值（含旧前端误传的 webp）一律按 jpg 处理。
     let ext = match fmt.as_str() {
         "png" => "png",
-        "webp" => "webp",
         _ => "jpg",
     };
     let base_name = &blob_hash[..8.min(blob_hash.len())];
     let save_path = unique_path(&downloads_dir, base_name, ext);
 
-    // 5. 编码写入——CPU/IO 密集（解码 + PNG/JPEG/WebP 编码 + 文件写入）移入 spawn_blocking
+    // 5. 编码写入——CPU/IO 密集（解码 + PNG/JPEG 编码 + 文件写入）移入 spawn_blocking
     let save_path_clone = save_path.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
-        // magic byte 判断 blob 真实格式：DB 里 image_data 可能是 JPEG（默认 q85 入库）
-        // 或 WebP（兜底/老数据）。原代码硬编 Jpeg 解码，blob 是 WebP 时会解码失败。
-        let blob_fmt = if image_blob.starts_with(&[0xFF, 0xD8, 0xFF]) {
-            ::image::ImageFormat::Jpeg
-        } else {
-            ::image::ImageFormat::WebP
-        };
+        // image_data.blob 恒为 JPEG（IMAGE_SAVE_QUALITY=jpeg:85 入库；2026-08-03 已摒弃 WebP
+        // 落库，老 WebP 数据经迁移或不再产生）。第六轮 C1：移除 magic byte WebP 分支——
+        // image crate 未启用 webp feature，WebP 解码/编码运行时失败，且业务已摒弃。
         match ext {
             "png" => {
-                let img = ::image::load_from_memory_with_format(&image_blob, blob_fmt)
+                let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
                     .map_err(e2s)?;
                 img.save_with_format(&save_path_clone, ::image::ImageFormat::Png)
                     .map_err(e2s)?;
             }
-            "webp" => {
-                // 重编为 WebP（不直写 blob）：blob 可能是 JPEG，直写会让 .webp 文件实为 JPEG。
-                let img = ::image::load_from_memory_with_format(&image_blob, blob_fmt)
-                    .map_err(e2s)?;
-                img.save_with_format(&save_path_clone, ::image::ImageFormat::WebP)
-                    .map_err(e2s)?;
-            }
             _ => {
-                let img = ::image::load_from_memory_with_format(&image_blob, blob_fmt)
+                // jpg（含原 webp 扩展名回退到 JPEG 编码——webp 已摒弃，不支持另存 webp）
+                let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
                     .map_err(e2s)?;
                 let rgb = img.to_rgb8();
                 let mut buf = std::io::BufWriter::new(

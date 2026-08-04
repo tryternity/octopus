@@ -252,13 +252,19 @@ pub fn polish_regions(
 /// 仅去包裹标记的括号，不影响用户文本里的字面 `{`/`}`/`<`/`>`（代码/数学/HTML）——
 /// 那些场景下括号是无修饰的散字符，不构成 `{...}`/`<...>` 的配对标记。
 /// 正则要求内部无嵌套 `{}`/`<>`（标记格式契约），字面文本里的孤立括号不受影响。
+///
+/// 第六轮 L1-b：两个 regex 预编译为 static Lazy（原每次 polish_regions 调用都
+/// Regex::new×2，中间润色 mode=2 停顿驱动频繁触发，热路径不必要开销）。
+static RE_EDITED_MARKER: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"\{([^{}]*)\}").unwrap());
+static RE_HOTWORDS_MARKER: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"<[^<>]*>").unwrap());
+
 fn strip_edited_markers(text: &str) -> String {
     // {word} → word（edited 语境标记，内部不含嵌套 {}）
-    let edited_re = regex::Regex::new(r"\{([^{}]*)\}").unwrap();
-    let text = edited_re.replace_all(&text, "$1").to_string();
+    let text = RE_EDITED_MARKER.replace_all(text, "$1").to_string();
     // <cand1|cand2|cand3> → 移除（hotwords 候选标记，LLM 应已选定一个，残留才清理）
-    let hotwords_re = regex::Regex::new(r"<[^<>]*>").unwrap();
-    hotwords_re.replace_all(&text, "").to_string()
+    RE_HOTWORDS_MARKER.replace_all(&text, "").to_string()
 }
 
 /// 测试 LLM 连接是否可用（发一个 max_tokens=1 的极简请求）。
@@ -309,5 +315,17 @@ mod tests {
         assert_eq!(strip_edited_markers("{nginx}配置"), "nginx配置");
         assert_eq!(strip_edited_markers("no markers here"), "no markers here");
         assert_eq!(strip_edited_markers("{a}{b}"), "ab");
+    }
+
+    /// 第六轮 L1-a 残余风险文档化：字面花括号（代码/JSON 语法）与 edited 标记同形，
+    /// regex 无法区分。ASR 转写文本几乎不含代码语法，此为可接受的残余风险。
+    /// 嵌套 `{config={key:value}}`（prompt.rs:121 把 edited 文本包成 `{...}`）：
+    /// 内层先匹配 → `config=key:value`，外层不再重扫 → 外层括号泄漏（已知限制）。
+    #[test]
+    fn strip_edited_markers_literal_braces_residual_risk() {
+        // 平铺字面花括号（代码语法）会被误处理——残余风险
+        assert_eq!(strip_edited_markers("config={key:value}"), "config=key:value");
+        // 嵌套（edited 区含字面括号）——外层泄漏，已知限制
+        assert_eq!(strip_edited_markers("{config={key:value}}"), "{config=key:value}");
     }
 }
