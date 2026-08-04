@@ -18,7 +18,7 @@ export interface MetaInfo {
 }
 
 export interface ClipboardItem {
-  id: number;
+  id: string;
   itemType: ItemType;
   content: string;
   refData?: string;

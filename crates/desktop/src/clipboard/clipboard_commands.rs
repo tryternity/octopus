@@ -31,16 +31,22 @@ pub async fn query_clipboard_history(
 
 #[tauri::command]
 pub async fn toggle_clipboard_favorite(
-    id: String,
+    history_id: String,
     app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::toggle_favorite(conn, &id)
+) -> Result<bool, String> {
+    // 走业务层（非 store::toggle_favorite）：维护 clipboard_favorites 表三态
+    // （active/tombstone/restore），让收藏变更可被 sync 跨设备传播。
+    // with_db 持全局 ReentrantMutex，business 逻辑内串行调多次 DB（load →
+    // insert/soft_delete/restore → set_is_favorite），放 spawn_blocking 避免阻塞 Tokio worker。
+    let now_fav = tokio::task::spawn_blocking(move || {
+        octopus_clipboard::favorite::toggle_favorite(&history_id)
     })
+    .await
+    .map_err(|e| e2s_ctx("join error: {}", e))?
     .map_err(e2s)?;
     // 广播给浮窗 + 设置页同步刷新（否则两端列表状态不一致）
     let _ = app_handle.emit("clipboard://changed", ());
-    Ok(())
+    Ok(now_fav)
 }
 
 #[tauri::command]

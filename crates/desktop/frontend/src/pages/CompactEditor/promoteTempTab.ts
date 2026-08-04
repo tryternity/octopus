@@ -7,7 +7,7 @@ import type { Tab } from "./index";
 /// 升级为正式 clipboard tab：key/source/itemId/isTemp 同步，后续编辑走 update 路径。
 /// contrast temp 升级：text 已是译文（doSave 时设 tab.text = translatedText），
 /// 升级为 single clipboard 条目，丢弃原文。
-export function promoteTempTab(tabs: Tab[], idx: number, newId: number): Tab[] {
+export function promoteTempTab(tabs: Tab[], idx: number, newId: string): Tab[] {
   return tabs.map((t, i) => {
     if (i !== idx) return t;
     const isContrast = t.mode === 'contrast';

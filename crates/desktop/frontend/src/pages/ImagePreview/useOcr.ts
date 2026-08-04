@@ -16,7 +16,7 @@ export interface OcrBlock {
   score: number;
 }
 
-export function useOcr(imageId: number | null) {
+export function useOcr(imageId: string | null) {
   const [ocrBlocks, setOcrBlocks] = useState<OcrBlock[]>([]);
   const [ocrOverlay, setOcrOverlay] = useState<'off' | 'overlay' | 'mask'>('off');
   const [ocrCopied, setOcrCopied] = useState(false);
@@ -65,7 +65,7 @@ export function useOcr(imageId: number | null) {
         ocrDoneRef.current = true;
         setOcrBlocks(result.blocks);
         setOcrOverlay('overlay');
-        const ocrId = await invoke<number>("insert_ocr_clipboard_item", { text: result.text });
+        const ocrId = await invoke<string>("insert_ocr_clipboard_item", { text: result.text });
         await openCompactEditorTab(ocrId);
         setOcrCopied(true);
         setTimeout(() => setOcrCopied(false), 1500);

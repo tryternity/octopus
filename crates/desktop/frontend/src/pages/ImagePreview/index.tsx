@@ -24,7 +24,7 @@ import QrResultCard from "./QrResultCard";
  * ctx.scale(zoom)，鼠标 /zoom 反算；合成保存/复制在自然尺寸画布 1:1 重绘（与 zoom 无关）。
  */
 
-export default function ImagePreview({ imageId: propImageId, initialWidth, initialHeight }: { imageId: number; initialWidth?: number; initialHeight?: number }) {
+export default function ImagePreview({ imageId: propImageId, initialWidth, initialHeight }: { imageId: string | null; initialWidth?: number; initialHeight?: number }) {
   const t = useT();
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -33,7 +33,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   // 视口尺寸（ResizeObserver 跟踪，用于手算居中 + drawBg 裁剪）
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
 
-  const [imageId, setImageId] = useState<number | null>(propImageId);
+  const [imageId, setImageId] = useState<string | null>(propImageId);
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   // URL 注入的初始尺寸——图片 tab 打开时首帧即有正确宽高，消除布局突变。
   // 缩略图 onload 后会被真实值覆盖（但值相同，无视觉跳变）。

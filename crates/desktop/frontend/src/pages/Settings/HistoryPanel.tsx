@@ -5,7 +5,7 @@ import { Copy, Trash2, Search, Eye } from "lucide-react";
 import { useT } from "@/lib/i18n";
 
 interface HistoryRecord {
-  id: number;
+  id: string;
   createdAt: string;
   engine: string;
   text: string;
@@ -21,7 +21,7 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
   const [loading, setLoading] = useState(false);
   const [offset, setOffset] = useState(0);
   const [done, setDone] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 300);
