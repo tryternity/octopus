@@ -47,7 +47,7 @@
 - Produces: `StepOutcome` enum / `FallbackCtx` struct / `FallbackStep` trait（仅定义，尚无实现）
 - 调整：现有 `try_fallback` 方法暂时保留不动（下个 task 替换）
 
-- [ ] **Step 1: 在 fallback_chain.rs 顶部加 trait 骨架**
+- [x] **Step 1: 在 fallback_chain.rs 顶部加 trait 骨架**
 
 在 `use super::*;` 之后、`impl super::Stitcher {` 之前插入：
 
@@ -94,7 +94,7 @@ pub(crate) trait FallbackStep {
 }
 ```
 
-- [ ] **Step 2: cargo build 验证编译通过**
+- [x] **Step 2: cargo build 验证编译通过**
 
 ```bash
 cargo build -p octopus-capx 2>&1 | tail -5
@@ -102,7 +102,7 @@ cargo build -p octopus-capx 2>&1 | tail -5
 
 Expected: 0 error 0 warning（新类型未使用，但定义合法）。如出 "unused" warning 不用管——下个 task 会用。
 
-- [ ] **Step 3: cargo test 确认未破坏现有行为**
+- [x] **Step 3: cargo test 确认未破坏现有行为**
 
 ```bash
 cargo test -p octopus-capx 2>&1 | grep "test result" | head -2
@@ -110,7 +110,7 @@ cargo test -p octopus-capx 2>&1 | grep "test result" | head -2
 
 Expected: 49 passed。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/capx/src/stitch/fallback_chain.rs
@@ -146,7 +146,7 @@ if let Some(prev_gray) = &self.prev_gray {
 }
 ```
 
-- [ ] **Step 1: 写测试（RED）——PrevFrameStep 成功场景**
+- [x] **Step 1: 写测试（RED）——PrevFrameStep 成功场景**
 
 在 fallback_chain.rs 的 `mod tests` 内加：
 
@@ -181,7 +181,7 @@ fn prev_frame_step_applied_on_match() {
 
 **实际策略调整**：由于精确单测 setup 复杂，且现有 fallback 端到端测试（`test_fallback_expanded_search_range` 等）已覆盖行为，本 task 先**实现 step + 用端到端测试验证**，下个 task 视需要补单测。
 
-- [ ] **Step 2: 实现 PrevFrameStep（GREEN）**
+- [x] **Step 2: 实现 PrevFrameStep（GREEN）**
 
 在 trait 定义之后加：
 
@@ -218,7 +218,7 @@ impl FallbackStep for PrevFrameStep {
 }
 ```
 
-- [ ] **Step 3: cargo build**
+- [x] **Step 3: cargo build**
 
 ```bash
 cargo build -p octopus-capx 2>&1 | tail -10
@@ -228,7 +228,7 @@ Expected: 0 error。注意借用：`prev_gray_ref` 借了 `ctx.stitcher`，调 `
 
 如有借用错误，调整：把 prev_gray 判断和后续 mut 操作分两步，确保不可变借用先释放。
 
-- [ ] **Step 4: cargo test**
+- [x] **Step 4: cargo test**
 
 ```bash
 cargo test -p octopus-capx 2>&1 | grep "test result" | head -2
@@ -236,7 +236,7 @@ cargo test -p octopus-capx 2>&1 | grep "test result" | head -2
 
 Expected: 49 passed（step 还未接入 dispatcher，行为未变）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/capx/src/stitch/fallback_chain.rs
@@ -259,7 +259,7 @@ git commit -m "refactor(capx): PrevFrameStep——相邻帧参考 NCC（阶段 3
 
 封装 dispatcher 余下 4 个分支。按 spec §2.3 表的副作用映射。
 
-- [ ] **Step 1: 实现 Projection1DStep**
+- [x] **Step 1: 实现 Projection1DStep**
 
 ```rust
 /// 步骤 2：1D 行投影 SAD 匹配（低纹理场景）。
@@ -291,7 +291,7 @@ impl FallbackStep for Projection1DStep {
 }
 ```
 
-- [ ] **Step 2: 实现 StationaryStep**
+- [x] **Step 2: 实现 StationaryStep**
 
 ```rust
 /// 步骤 3：静止检测。画面没动时短路，不进 best_guess。
@@ -317,7 +317,7 @@ impl FallbackStep for StationaryStep {
 }
 ```
 
-- [ ] **Step 3: 实现 BestGuessStep**
+- [x] **Step 3: 实现 BestGuessStep**
 
 ```rust
 /// 步骤 4：历史 dy 中位数估算（best_guess）。streak < 3 才用。
@@ -347,7 +347,7 @@ impl FallbackStep for BestGuessStep {
 }
 ```
 
-- [ ] **Step 4: 实现 SkipStep（终步）**
+- [x] **Step 4: 实现 SkipStep（终步）**
 
 ```rust
 /// 步骤 5（终步）：所有降级失败，skip 该帧。
@@ -364,7 +364,7 @@ impl FallbackStep for SkipStep {
 }
 ```
 
-- [ ] **Step 5: cargo build + test**
+- [x] **Step 5: cargo build + test**
 
 ```bash
 cargo build -p octopus-capx 2>&1 | tail -10
@@ -373,7 +373,7 @@ cargo test -p octopus-capx 2>&1 | grep "test result" | head -2
 
 Expected: 0 error / 49 passed（仍未接入 dispatcher）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/capx/src/stitch/fallback_chain.rs
@@ -396,7 +396,7 @@ git commit -m "refactor(capx): 4 个 FallbackStep 实现（阶段 3 task 3）
 
 **关键风险点**：这是真正改变行为的 task（虽然目标零变更）。dispatcher 从 60 行 if 链换为迭代数组。
 
-- [ ] **Step 1: 重写 try_fallback（替换整个方法体）**
+- [x] **Step 1: 重写 try_fallback（替换整个方法体）**
 
 把现有 `try_fallback`（55-114 行）整个方法体替换为：
 
@@ -455,7 +455,7 @@ pub(crate) fn try_fallback(
 
 如借用报错，可能需要把 ctx 构造挪进 for 循环体（已经是了），或把 sample_cols 提前算（已经是了）。
 
-- [ ] **Step 2: cargo build**
+- [x] **Step 2: cargo build**
 
 ```bash
 cargo build -p octopus-capx 2>&1 | tail -20
@@ -465,7 +465,7 @@ Expected: 0 error。典型错误：
 - `cannot borrow self as mut more than once` → 调整 ctx 生命周期
 - `mismatched types` → StepOutcome 变体名拼错
 
-- [ ] **Step 3: cargo test（关键——行为等价判据）**
+- [x] **Step 3: cargo test（关键——行为等价判据）**
 
 ```bash
 cargo test -p octopus-capx 2>&1 | tail -10
@@ -476,7 +476,7 @@ Expected: **49 passed**。如有 fail：
 - 对照 spec §3 不变量逐项核对（步骤顺序 / 判定逻辑 / 副作用 / verify 参数）
 - 修对应 step 的实现
 
-- [ ] **Step 4: clippy**
+- [x] **Step 4: clippy**
 
 ```bash
 cargo clippy -p octopus-capx --all-targets 2>&1 | grep -c "^warning:"
@@ -484,7 +484,7 @@ cargo clippy -p octopus-capx --all-targets 2>&1 | grep -c "^warning:"
 
 Expected: ≤ 9 baseline（无新增）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/capx/src/stitch/fallback_chain.rs
@@ -505,7 +505,7 @@ git commit -m "refactor(capx): try_fallback dispatcher 接入 FallbackStep 数�
 - Modify: `docs/architecture.md`（更新 stitch 描述）
 - Modify: `docs/superpowers/specs/2026-08-04-stitch-fallback-trait-design.md`（实施记录）
 
-- [ ] **Step 1: 补 PrevFrameStep 单测（Skip 场景）**
+- [x] **Step 1: 补 PrevFrameStep 单测（Skip 场景）**
 
 测试 prev_gray=None 时返回 Skip：
 
@@ -541,7 +541,7 @@ fn prev_frame_step_skip_when_no_prev_gray() {
 }
 ```
 
-- [ ] **Step 2: 补 BestGuessStep 边界单测（streak 门控）**
+- [x] **Step 2: 补 BestGuessStep 边界单测（streak 门控）**
 
 ```rust
 #[test]
@@ -577,7 +577,7 @@ fn best_guess_step_skip_when_streak_exhausted() {
 }
 ```
 
-- [ ] **Step 3: 补 SkipStep 单测**
+- [x] **Step 3: 补 SkipStep 单测**
 
 ```rust
 #[test]
@@ -613,7 +613,7 @@ fn skip_step_returns_applied_ok_false() {
 
 注意：`StepOutcome` 需 `derive(Debug)` 让 panic 信息可用。在 enum 定义加 `#[derive(Debug)]`。
 
-- [ ] **Step 4: cargo test（应 49 + 3 = 52）**
+- [x] **Step 4: cargo test（应 49 + 3 = 52）**
 
 ```bash
 cargo test -p octopus-capx 2>&1 | grep "test result" | head -2
@@ -621,11 +621,11 @@ cargo test -p octopus-capx 2>&1 | grep "test result" | head -2
 
 Expected: **52 passed**。
 
-- [ ] **Step 5: 更新 architecture.md**
+- [x] **Step 5: 更新 architecture.md**
 
 找到 capx 章节的 stitch 描述（搜 "降级链" 或 "fallback"），把"过程式 5 步 if 链"改为"5 个 FallbackStep trait 实现的迭代 dispatcher"。
 
-- [ ] **Step 6: 更新 spec 加实施记录**
+- [x] **Step 6: 更新 spec 加实施记录**
 
 在 `docs/superpowers/specs/2026-08-04-stitch-fallback-trait-design.md` 末尾加 "## 9. 实施记录"，标注：
 - 5 个 step 实现完成
@@ -633,7 +633,7 @@ Expected: **52 passed**。
 - +3 单测
 - 任何与 spec 偏差（如借用调整）
 
-- [ ] **Step 7: clippy + 下游 + Commit**
+- [x] **Step 7: clippy + 下游 + Commit**
 
 ```bash
 cargo clippy -p octopus-capx --all-targets 2>&1 | grep -c "^warning:"
@@ -659,7 +659,7 @@ cargo test -p octopus-capx → 52 passed"
 
 ## Task 6: 最终验证 + review
 
-- [ ] **Step 1: 全量验证**
+- [x] **Step 1: 全量验证**
 
 ```bash
 cargo test -p octopus-capx 2>&1 | grep "test result"
@@ -669,14 +669,14 @@ wc -l crates/capx/src/stitch/fallback_chain.rs
 
 Expected: 52 passed / ≤ 9 warning / fallback_chain.rs ~700 行。
 
-- [ ] **Step 2: commit 历史 + diff stat**
+- [x] **Step 2: commit 历史 + diff stat**
 
 ```bash
 git log --oneline main..HEAD
 git diff main..HEAD --stat
 ```
 
-- [ ] **Step 3: 报告用户 + 等 e2e 验证**
+- [x] **Step 3: 报告用户 + 等 e2e 验证**
 
 向用户报告：
 - 5 个 FallbackStep 实现完成

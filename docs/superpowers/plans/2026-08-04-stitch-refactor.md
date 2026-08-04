@@ -45,7 +45,7 @@
 
 **Interfaces:** N/A（本任务只是确认安全网）
 
-- [ ] **Step 1: 确认 worktree 状态**
+- [x] **Step 1: 确认 worktree 状态**
 
 Run:
 ```bash
@@ -56,7 +56,7 @@ git log --oneline -3
 
 Expected: `On branch refactor/stitch-split` + 顶部 commit 是 spec commit（4206d409 或后续），工作区干净。
 
-- [ ] **Step 2: 确认 baseline 测试**
+- [x] **Step 2: 确认 baseline 测试**
 
 Run:
 ```bash
@@ -71,7 +71,7 @@ test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 
 **记录这个数字 49——后续每个 Task 末尾都必须看到同样的数字。** 如果不是 49，停下，main 已经改了，先 rebase/同步再开工。
 
-- [ ] **Step 3: 确认 baseline clippy**
+- [x] **Step 3: 确认 baseline clippy**
 
 Run:
 ```bash
@@ -81,7 +81,7 @@ cargo clippy -p octopus-capx --all-targets 2>&1 | tail -5
 
 Expected: 0 warning。如果有 warning，停下——baseline 不干净，先处理。
 
-- [ ] **Step 4: 不 commit**（本任务只是验证，无文件改动）
+- [x] **Step 4: 不 commit**（本任务只是验证，无文件改动）
 
 ---
 
@@ -98,7 +98,7 @@ Expected: 0 warning。如果有 warning，停下——baseline 不干净，先�
 
 **关键不变量：** 拆完后 mod.rs 的 `use` 语句 + 顶部 `mod graybuf;` 必须让 mod.rs 内剩余代码编译通过、所有调用 `GrayBuf::from_rgba_roi` / `to_feature_map` / `row_projection_means` 的地方符号照常解析。
 
-- [ ] **Step 1: 创建子目录并 git mv**
+- [x] **Step 1: 创建子目录并 git mv**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/refactor-stitch-split
@@ -108,7 +108,7 @@ git mv crates/capx/src/stitch.rs crates/capx/src/stitch/mod.rs
 
 这把 `stitch.rs` 重命名为 `stitch/mod.rs`，git 会跟踪为 rename，blame 历史保留。此时 `crates/capx/src/stitch/` 是新目录、`mod.rs` 是原文件内容。
 
-- [ ] **Step 2: 新建 graybuf.rs 文件骨架**
+- [x] **Step 2: 新建 graybuf.rs 文件骨架**
 
 在 `crates/capx/src/stitch/graybuf.rs` 写入：
 
@@ -123,7 +123,7 @@ use super::*;
 
 文件先空骨架，下一步剪贴内容。
 
-- [ ] **Step 3: 从 mod.rs 剪贴 graybuf 内容到 graybuf.rs**
+- [x] **Step 3: 从 mod.rs 剪贴 graybuf 内容到 graybuf.rs**
 
 **从 `stitch/mod.rs` 删除以下区段**（用 Edit 一段段做，每段确认 old_string 唯一）：
 
@@ -143,7 +143,7 @@ use super::*;
 
 **注意**：保留 `#[derive(Clone)]` 在 `GrayBuf` 上方。
 
-- [ ] **Step 4: 在 mod.rs 顶部加 mod 声明 + use**
+- [x] **Step 4: 在 mod.rs 顶部加 mod 声明 + use**
 
 打开 `stitch/mod.rs`，在 `use anyhow::Result;` 等 use 语句之后、第一个常量 `STATIONARY_SAD` 之前，插入：
 
@@ -167,7 +167,7 @@ pub(crate) use graybuf::{GrayBuf, to_feature_map, row_projection_means};
 
 这一行即可：声明 mod + 把 3 个名字引入 mod.rs 作用域（兄弟模块通过 `use super::*` 拿到）。
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run:
 ```bash
@@ -184,7 +184,7 @@ Expected: `Finished` / 0 error 0 warning。
 
 修完再 build，直到 0 error 0 warning。
 
-- [ ] **Step 6: 测试验证（关键——行为等价判据）**
+- [x] **Step 6: 测试验证（关键——行为等价判据）**
 
 Run:
 ```bash
@@ -196,11 +196,11 @@ Expected: `test result: ok. 49 passed; 0 failed; 0 ignored`。
 
 **如果数字不是 49 = 行为变了 = 拆错了**。停下，回看哪段搬错或漏搬。
 
-- [ ] **Step 7: 留测试原地（本 Task 不搬测试，下个 Task 再处理）**
+- [x] **Step 7: 留测试原地（本 Task 不搬测试，下个 Task 再处理）**
 
 测试仍在 `mod.rs` 的 `mod tests` 里，能跑就行。**搬测试独立做**——避免和"搬生产代码"混在一个 commit，git diff 更清晰。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/refactor-stitch-split
@@ -216,7 +216,7 @@ git commit -m "refactor(capx): 拆 graybuf.rs——GrayBuf + to_feature_map + ro
 零行为变更：cargo test -p octopus-capx → 49 passed"
 ```
 
-- [ ] **Step 9: 验证 commit 干净**
+- [x] **Step 9: 验证 commit 干净**
 
 Run:
 ```bash
@@ -241,7 +241,7 @@ Expected: 工作区干净；commit 显示 `stitch.rs` rename 为 `stitch/mod.rs`
 
 **关键不变量：** 拆完后 mod.rs 内的 `primary_ncc` / `best_ncc_match` / `finalize` / `try_match_prev_frame`（在 fallback_chain，但本 Task 时仍在 mod.rs）调用 NCC 函数的地方照常解析。
 
-- [ ] **Step 1: 新建 ncc_match.rs 骨架**
+- [x] **Step 1: 新建 ncc_match.rs 骨架**
 
 在 `crates/capx/src/stitch/ncc_match.rs` 写入：
 
@@ -254,7 +254,7 @@ Expected: 工作区干净；commit 显示 `stitch.rs` rename 为 `stitch/mod.rs`
 use super::*;
 ```
 
-- [ ] **Step 2: 从 mod.rs 剪贴 NCC 内容到 ncc_match.rs**
+- [x] **Step 2: 从 mod.rs 剪贴 NCC 内容到 ncc_match.rs**
 
 **从 `stitch/mod.rs` 删除**：
 
@@ -274,7 +274,7 @@ use super::*;
 - `enum PrimaryOutcome` → `pub(crate) enum PrimaryOutcome`，变体 `Match` / `Mismatch` / `SizeError` 自动 pub(crate)（跟随 enum）
 - 所有 `fn` 全部加 `pub(crate)`
 
-- [ ] **Step 3: 在 mod.rs 顶部加 mod 声明 + use**
+- [x] **Step 3: 在 mod.rs 顶部加 mod 声明 + use**
 
 在 mod.rs 已有的 `mod graybuf;` 下方加：
 
@@ -289,7 +289,7 @@ pub(crate) use ncc_match::{
 
 注意 `pub(crate) use` 同时完成两个作用：(1) 把名字引入 mod.rs 作用域供 mod.rs 内代码用；(2) 让兄弟模块通过 `use super::*` 拿到。
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run:
 ```bash
@@ -299,7 +299,7 @@ cargo build -p octopus-capx 2>&1 | tail -20
 
 Expected: 0 error 0 warning。典型 error：NCC 函数可见性漏加 → 编译器逐个指出。
 
-- [ ] **Step 5: 测试验证**
+- [x] **Step 5: 测试验证**
 
 Run:
 ```bash
@@ -308,7 +308,7 @@ cargo test -p octopus-capx 2>&1 | tail -5
 
 Expected: `test result: ok. 49 passed; 0 failed; 0 ignored`。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -339,7 +339,7 @@ git commit -m "refactor(capx): 拆 ncc_match.rs——NCC 引擎原语
 
 **风险点：** split-impl 首次引入，最容易出错的 Task。一定要 `cargo build` 反复迭代到 0 error。
 
-- [ ] **Step 1: 升 Stitcher 字段为 pub(crate)**
+- [x] **Step 1: 升 Stitcher 字段为 pub(crate)**
 
 打开 `stitch/mod.rs`，找到 `pub struct Stitcher { ... }`（约 344–377），把所有字段前缀改为 `pub(crate)`：
 
@@ -369,7 +369,7 @@ pub struct Stitcher {
 
 `StitchConfig` 字段原本就 `pub`（外部可设），保持不动。
 
-- [ ] **Step 2: 新建 canvas_heal.rs 骨架**
+- [x] **Step 2: 新建 canvas_heal.rs 骨架**
 
 在 `crates/capx/src/stitch/canvas_heal.rs` 写入：
 
@@ -384,7 +384,7 @@ pub struct Stitcher {
 use super::*;
 ```
 
-- [ ] **Step 3: 从 mod.rs 剪贴 canvas heal 方法到 canvas_heal.rs**
+- [x] **Step 3: 从 mod.rs 剪贴 canvas heal 方法到 canvas_heal.rs**
 
 **从 `stitch/mod.rs` 的 `impl Stitcher { ... }` 块中删除以下方法**（每个方法连同上方文档注释一起）：
 
@@ -412,7 +412,7 @@ impl super::Stitcher {
 
 **不改任何方法签名**——保持 `fn invalidate_cache(&mut self)` / `fn extract_canvas_bottom_gray(&self, strip_h: u32) -> GrayBuf` 等原样。
 
-- [ ] **Step 4: 在 mod.rs 顶部加 mod 声明**
+- [x] **Step 4: 在 mod.rs 顶部加 mod 声明**
 
 在已有 `mod ncc_match;` 下方加：
 
@@ -422,7 +422,7 @@ mod canvas_heal;
 
 无需 `use`——canvas_heal 是 `impl Stitcher` 方法，调用方（mod.rs 内的 `process_frame` 等）仍按 `self.detect_sticky(...)` / `self.extract_canvas_bottom_gray(...)` 调用，Rust 会自动找到 split-impl 块。
 
-- [ ] **Step 5: 编译验证（关键——split-impl 首次）**
+- [x] **Step 5: 编译验证（关键——split-impl 首次）**
 
 Run:
 ```bash
@@ -438,7 +438,7 @@ Expected: 0 error 0 warning。
 
 修完再 build，直到 0 error 0 warning。
 
-- [ ] **Step 6: 测试验证**
+- [x] **Step 6: 测试验证**
 
 Run:
 ```bash
@@ -447,7 +447,7 @@ cargo test -p octopus-capx 2>&1 | tail -5
 
 Expected: `test result: ok. 49 passed; 0 failed; 0 ignored`。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A
@@ -475,7 +475,7 @@ git commit -m "refactor(capx): 拆 canvas_heal.rs——6 自愈机制 split-impl
 
 **关键不变量：** fallback 方法间互相调用（如 `try_fallback` 调 `try_match_prev_frame` / `try_match_1d_projection` / `quick_stationary_check` / `estimate_dy_hint` / `apply_fallback_match`）必须在同一 impl 块内仍工作——split-impl 自然满足。
 
-- [ ] **Step 1: 新建 fallback_chain.rs 骨架**
+- [x] **Step 1: 新建 fallback_chain.rs 骨架**
 
 在 `crates/capx/src/stitch/fallback_chain.rs` 写入：
 
@@ -489,7 +489,7 @@ git commit -m "refactor(capx): 拆 canvas_heal.rs——6 自愈机制 split-impl
 use super::*;
 ```
 
-- [ ] **Step 2: 从 mod.rs 剪贴 fallback 方法到 fallback_chain.rs**
+- [x] **Step 2: 从 mod.rs 剪贴 fallback 方法到 fallback_chain.rs**
 
 **从 `stitch/mod.rs` 的 `impl Stitcher { ... }` 块中删除以下方法**（每个含上方文档注释）：
 
@@ -511,7 +511,7 @@ impl super::Stitcher {
 }
 ```
 
-- [ ] **Step 3: 在 mod.rs 顶部加 mod 声明**
+- [x] **Step 3: 在 mod.rs 顶部加 mod 声明**
 
 在已有 `mod canvas_heal;` 下方加：
 
@@ -519,7 +519,7 @@ impl super::Stitcher {
 mod fallback_chain;
 ```
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run:
 ```bash
@@ -528,7 +528,7 @@ cargo build -p octopus-capx 2>&1 | tail -30
 
 Expected: 0 error 0 warning。
 
-- [ ] **Step 5: 测试验证**
+- [x] **Step 5: 测试验证**
 
 Run:
 ```bash
@@ -537,7 +537,7 @@ cargo test -p octopus-capx 2>&1 | tail -5
 
 Expected: `test result: ok. 49 passed; 0 failed; 0 ignored`。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -621,7 +621,7 @@ git commit -m "refactor(capx): 拆 fallback_chain.rs——五层降级链 split-
 | `test_best_ncc_match_solid_frame_no_panic` | 1990–2006 | mod.rs |
 | `test_best_ncc_match_constant_canvas_strip_no_false_match` | 2007–2028 | mod.rs |
 
-- [ ] **Step 1: 在 mod.rs 测试 mod 内把 helper 升 pub(super)**
+- [x] **Step 1: 在 mod.rs 测试 mod 内把 helper 升 pub(super)**
 
 打开 `stitch/mod.rs`，在 `#[cfg(test)] mod tests { ... }` 内，把跨模块 helper 前加 `pub(super)`：
 
@@ -636,7 +636,7 @@ pub(super) fn verify_sample_cols(...) -> Vec<usize> { ... }
 
 `cfg(test)` 下 `pub(super)` 只在测试编译期可见、外部不可见。
 
-- [ ] **Step 2: 搬 graybuf.rs 测试**
+- [x] **Step 2: 搬 graybuf.rs 测试**
 
 在 graybuf.rs 末尾加：
 
@@ -653,11 +653,11 @@ mod tests {
 
 实际验证：Read graybuf.rs 的测试用到了哪些 helper，按需 import。
 
-- [ ] **Step 3: 搬 ncc_match.rs 测试**
+- [x] **Step 3: 搬 ncc_match.rs 测试**
 
 在 ncc_match.rs 末尾加 `#[cfg(test)] mod tests { use super::*; ... }`，从 mod.rs 剪切 4 个 NCC 测试（`test_ncc_matches_known_offset` 等）粘进去。
 
-- [ ] **Step 4: 搬 canvas_heal.rs 测试**
+- [x] **Step 4: 搬 canvas_heal.rs 测试**
 
 在 canvas_heal.rs 末尾加 `#[cfg(test)] mod tests { use super::*; ... }`。从 mod.rs 剪切所有 canvas_heal 相关测试 + `make_frame_dark_editor` helper + `inject_constant_canvas_tail` test-only impl。
 
@@ -672,11 +672,11 @@ impl super::super::Stitcher {
 
 注意它必须留在 cfg(test) 下（不能进生产）。
 
-- [ ] **Step 5: 搬 fallback_chain.rs 测试**
+- [x] **Step 5: 搬 fallback_chain.rs 测试**
 
 在 fallback_chain.rs 末尾加 `#[cfg(test)] mod tests { use super::*; ... }`。从 mod.rs 剪切所有 fallback 相关测试（按 5A 表）。
 
-- [ ] **Step 6: 编译验证**
+- [x] **Step 6: 编译验证**
 
 Run:
 ```bash
@@ -689,7 +689,7 @@ Expected: 0 error 0 warning。
 - `make_frame not found` → helper 没 pub(super) / use 没引对
 - `inject_constant_canvas_tail not found` → test-only impl 没正确放 cfg(test) 下
 
-- [ ] **Step 7: 测试验证（关键）**
+- [x] **Step 7: 测试验证（关键）**
 
 Run:
 ```bash
@@ -702,7 +702,7 @@ Expected: `test result: ok. 49 passed; 0 failed; 0 ignored`。
 **如果数字 > 49**：重复粘贴了。回看哪个测试在两个文件都有。
 **如果有 fail**：测试搬错了模块（如 NCC 测试搬到 canvas_heal 但没引 ncc_match use）。
 
-- [ ] **Step 8: 更新 docs/architecture.md**
+- [x] **Step 8: 更新 docs/architecture.md**
 
 打开 `docs/architecture.md`，找到 capx 章节（约 215 行附近）。把 stitch 表项的描述更新——从"单文件"改为"`stitch/` 目录 5 文件"，补一句话各述：
 
@@ -718,7 +718,7 @@ Expected: `test result: ok. 49 passed; 0 failed; 0 ignored`。
 
 保留原描述里的算法细节（Canvas-Anchored、Sobel 自写、两阶段 refine、六轮迭代等），仅更新文件结构部分。
 
-- [ ] **Step 9: 查 docs/features/screenshot.md**
+- [x] **Step 9: 查 docs/features/screenshot.md**
 
 Run:
 ```bash
@@ -727,7 +727,7 @@ rg "stitch\.rs" docs/features/screenshot.md docs/ 2>&1
 
 如有 `stitch.rs:line` 引用，更新为 `stitch/<file>.rs:line`。如无，跳过。
 
-- [ ] **Step 10: Commit 测试搬运**
+- [x] **Step 10: Commit 测试搬运**
 
 ```bash
 git add -A
@@ -742,7 +742,7 @@ git commit -m "refactor(capx): 测试跟随各自模块搬出
 零行为变更：cargo test -p octopus-capx → 49 passed"
 ```
 
-- [ ] **Step 11: 下游编译验证**
+- [x] **Step 11: 下游编译验证**
 
 Run:
 ```bash
@@ -751,7 +751,7 @@ cargo build -p octopus-desktop 2>&1 | tail -10
 
 Expected: 0 error 0 warning（确认公开 API 没破坏下游）。如有 error，公开 API 改动了——但本 plan 全程零公开 API 改动，不应该出现。如真有，是 dev feature 路径问题，单独看。
 
-- [ ] **Step 12: clippy 全量验证**
+- [x] **Step 12: clippy 全量验证**
 
 Run:
 ```bash
@@ -760,7 +760,7 @@ cargo clippy -p octopus-capx --all-targets 2>&1 | tail -10
 
 Expected: 0 warning。仓库有 `clippy::all` gate，任何 warning 都要处理。
 
-- [ ] **Step 13: 最终 commit（文档同步）**
+- [x] **Step 13: 最终 commit（文档同步）**
 
 ```bash
 git add docs/architecture.md docs/features/screenshot.md
@@ -770,7 +770,7 @@ git commit -m "docs(capx): 同步 stitch 拆分后的模块结构
 - screenshot.md：如有 stitch.rs: 引用则更新路径（如无则不动）"
 ```
 
-- [ ] **Step 14: 拆分最终验证（成功标准全部勾掉）**
+- [x] **Step 14: 拆分最终验证（成功标准全部勾掉）**
 
 按 spec §8 成功标准全跑一遍：
 
