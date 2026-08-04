@@ -396,36 +396,69 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
     // 每个 favorite 写文件 + 进 outline
     let mut entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
     for fav in &favs {
-        // JOIN clipboard_history——拉不到行也写文件（payload 含 history_row 快照占位）
-        let history_row = build_history_row(&fav.history_id, &fav.updated_at)?;
+        if fav.is_deleted > 0 {
+            // tombstone——不需要 payload（内容已无意义，pull 方只看 is_deleted）。
+            // encrypted_payload 留空，md5 用空内容固定值。
+            let file = ClipboardFavoriteFile {
+                version: 1,
+                id: fav.history_id.clone(),
+                is_deleted: fav.is_deleted,
+                encrypted_payload: String::new(),
+                updated_at: fav.updated_at.clone(),
+            };
+            write_favorite_file(&file)?;
 
-        let payload = FavoritePayload { history_row };
-        let payload_json =
-            serde_json::to_string(&payload).context("序列化 FavoritePayload 失败")?;
-        let encrypted = key
-            .encrypt(payload_json.as_bytes())
-            .context("加密 FavoritePayload 失败")?;
+            // tombstone 的 md5 是空内容固定值——不参与内容 diff，仅占位
+            let md5 = history_row_md5(&HistoryRowJson {
+                id: fav.history_id.clone(),
+                item_type: String::new(),
+                content: String::new(),
+                ref_data: None,
+                meta_info: None,
+                is_rich: false,
+                created_at: String::new(),
+                segments: None,
+            });
+            let _ = octopus_infra::db::set_sync_md5(&fav.history_id, &md5);
+            entries.insert(
+                fav.history_id.clone(),
+                OutlineEntry {
+                    md5,
+                    updated_ms: iso_to_unix_ms(&fav.updated_at),
+                },
+            );
+        } else {
+            // active——JOIN clipboard_history，加密完整内容
+            let history_row = build_history_row(&fav.history_id, &fav.updated_at)?;
 
-        let file = ClipboardFavoriteFile {
-            version: 1,
-            id: fav.history_id.clone(),
-            is_deleted: fav.is_deleted,
-            encrypted_payload: encrypted,
-            updated_at: fav.updated_at.clone(),
-        };
-        write_favorite_file(&file)?;
+            let payload = FavoritePayload { history_row };
+            let payload_json =
+                serde_json::to_string(&payload).context("序列化 FavoritePayload 失败")?;
+            let encrypted = key
+                .encrypt(payload_json.as_bytes())
+                .context("加密 FavoritePayload 失败")?;
 
-        let md5 = history_row_md5(&payload.history_row);
-        // export 后把磁盘指纹写回 DB——下次 merge 据此比对冲突（DB md5 vs outline md5）。
-        let _ = octopus_infra::db::set_sync_md5(&fav.history_id, &md5);
+            let file = ClipboardFavoriteFile {
+                version: 1,
+                id: fav.history_id.clone(),
+                is_deleted: fav.is_deleted,
+                encrypted_payload: encrypted,
+                updated_at: fav.updated_at.clone(),
+            };
+            write_favorite_file(&file)?;
 
-        entries.insert(
-            fav.history_id.clone(),
-            OutlineEntry {
-                md5,
-                updated_ms: iso_to_unix_ms(&fav.updated_at),
-            },
-        );
+            let md5 = history_row_md5(&payload.history_row);
+            // export 后把磁盘指纹写回 DB——下次 merge 据此比对冲突（DB md5 vs outline md5）。
+            let _ = octopus_infra::db::set_sync_md5(&fav.history_id, &md5);
+
+            entries.insert(
+                fav.history_id.clone(),
+                OutlineEntry {
+                    md5,
+                    updated_ms: iso_to_unix_ms(&fav.updated_at),
+                },
+            );
+        }
     }
 
     let outline = ClipboardOutline {
@@ -576,7 +609,9 @@ pub fn merge_clipboard_favorites() -> Result<ClipboardMergeReport> {
 ///
 /// tombstone（is_deleted>0）：
 /// - DB 有且 active → soft_delete_favorite + history.is_favorite=0
-/// - DB 无 → 解密 payload，UPSERT history 行 + UPSERT favorite（is_deleted>0） + history.is_favorite=0
+/// - DB 无 → 直接 INSERT tombstone favorite（不需要还原 history 内容——
+///   tombstone 的唯一目的是传播「此 history_id 已删除」，内容已无意义）
+/// - DB 已是 tombstone → skip
 ///
 /// active（is_deleted==0）：
 /// - 解密 payload 取 HistoryRowJson
@@ -598,18 +633,17 @@ fn pull_favorite(history_id: &str, key: &ClipboardKey) -> Result<bool> {
                 Ok(true)
             }
             None => {
-                // DB 无 → 解密 payload 还原行 + tombstone favorite
-                let payload = decrypt_payload(key, &file.encrypted_payload, history_id)?;
-                upsert_history_from_payload(&payload)?;
+                // DB 无 → 直接 INSERT tombstone favorite（不解密 payload、不还原 history 行）。
+                // tombstone 的唯一目的是传播「此 history_id 已删除」，内容已无意义。
+                // 对应 export 时 build_history_row 返回的空内容占位——pull 方不需要它。
                 let fav = octopus_infra::db::ClipboardFavorite {
-                    history_id: payload.history_row.id.clone(),
+                    history_id: history_id.to_string(),
                     is_deleted: file.is_deleted,
                     updated_at: file.updated_at.clone(),
-                    sync_md5: Some(history_row_md5(&payload.history_row)),
+                    sync_md5: None, // tombstone 不参与内容 diff
                 };
                 octopus_infra::db::upsert_favorite_sync(&fav)?;
-                octopus_infra::db::set_clipboard_is_favorite(&payload.history_row.id, false)?;
-                log::debug!("[sync] 收藏 pull: {} DB 无 → 还原 tombstone", history_id);
+                log::debug!("[sync] 收藏 pull: {} DB 无 → INSERT tombstone（不还原 history）", history_id);
                 Ok(true)
             }
             Some(_) => {
