@@ -397,8 +397,9 @@
 | 6+7 | `71740669`（rAF 单独）+ `09dec35a`（其余） | L1-b regex 预编译 + C1 webp 摒弃 + N1 webp 前端清理 + P2-a dest fsync + P2-b search spawn_blocking + N2 rAF 背压 |
 | 8+9 | `63dfba46` | P0 folder 软删同步 + N2 背压 O(N²) + P1 SyncPanel confirm + P2-a alert + P2-b toast |
 | 10 | `1c6145e4` | P1-1 hotword spawn_blocking + P1-2 VaultPanel 监听器泄漏 + P2-3 Enter 守卫 + P2-4 翻译回滚 |
-| 11 | （本轮，待 commit） | P1 vault cipher+folder ping-pong 收敛（sync-only upsert 保留远程时间戳）+ P2 v57→v58 迁移事务 |
-| 12 | （本轮，待 commit） | P1-1 dock FLOAT_DEPTH 泄漏 + P1-2 MarkdownPreview 链接拦截 + P2-1 record stop 卡 Stopping + P2-2 OCR 编号不重置 + P2-3/4 坐标混算 + P3-1/2/3/4 + doc |
+| 11 | `f22eac7f` | P1 vault cipher+folder ping-pong 收敛（sync-only upsert 保留远程时间戳）+ P2 v57→v58 迁移事务 |
+| 12 | `67ce6dc4` | P1-1 dock FLOAT_DEPTH 泄漏 + P1-2 MarkdownPreview 链接拦截 + P2-1 record stop 卡 Stopping + P2-2 OCR 编号不重置 + P2-3/4 坐标混算 + P3-1/2/3/4 + doc |
+| 13 | `f9a25a20` | P2-1 open_settings 不 show + P3-1 SyncPanel resolve syncing 回滚 + P3-3 record serde 序列化失败 reset_to_idle + P3-2 文档化 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -550,3 +551,44 @@ tx.commit()?;
 - `cargo build` infra/record/ocr/vault/sync/desktop(cloud,vault) —— 0 error 0 warning。
 - `cargo test`：infra 183 / record 50 / ocr 35（+1 P2-2）/ vault 262 / sync 126 / desktop 520 全过。
 - tsc exit 0 + vite build 成功。
+
+## 16. 第十三轮审查修复（2026-08-04，1 P2 + 3 P3）
+
+第十三轮覆盖度受限（审查代理 429 限额，改为亲自逐模块 Read）。聚焦 desktop 核心（clipboard/activation/record/session/settings/compact_editor/dock）+ 前端 SyncPanel。报告 4 个问题全部 CONFIRMED。
+
+### P2-1. open_settings 已存在分支不 show → 浮窗期间托盘打开设置无效 🟠
+
+**根因**：`settings_window.rs:23-47` 的「窗口已存在」分支 macOS 下只 `set_activation_policy(Regular)` + `activate_self` + `set_focus`（:30-35），**无 `window.show()`**。触发链：`WINDOWS_TO_HIDE_ON_FLOAT`（activation.rs:130）含 `settings_window` → 浮窗显示时 `before_floating_window_show` 临时隐藏 settings（depth=1）→ 用户点托盘「打开设置」→ `:23` 分支 `set_focus` 对 hidden 窗口无效 → settings 不显示；`restore_hidden_windows_only`（:319）因 depth>0 不恢复 → 直到 ESC 关浮窗（depth=0）settings 才出现。对比 `open_compact_editor_tabs`（compact_editor_commands.rs:243）窗口已存在分支正确调 `window.show()`——settings 是唯一遗漏。
+
+**与第十二轮 P1-1 的区别**：P1-1 修了 dock FLOAT_DEPTH 泄漏致 restore 失败（depth 永久 >0），但**没修「浮窗存活期间 open_settings 无法显示已 hidden 窗口」**——即使 depth 不泄漏，浮窗存活期间（depth=1）点 open_settings 仍无效。
+
+**修复**：`:23` 分支两个 cfg 都加 `if !w.is_visible().unwrap_or(false) { let _ = w.show(); }` 在 `set_focus` 前，对齐 compact_editor :243 范式。
+
+### P3-1. SyncPanel handleResolve catch 不回滚 syncing
+
+**根因**：`SyncPanel.tsx:175-195` `handleResolve` 的 `:189` 设 `syncing=true` + `:190` `invoke("vault_sync_now")`，`:191` catch 只 `showToast` 不回滚 `syncing`。对比 `handleSyncNow:169` catch 有 `setStatus(...syncing: false)`。invoke 失败（spawn_blocking 错等）时不会收到 `vault-sync-done` 事件 → 若不回滚 syncing 进度条永久卡住。
+
+**修复**：catch 补 `setStatus((prev) => (prev ? { ...prev, syncing: false } : prev))`（对齐 handleSyncNow :169）。
+
+### P3-3. record session serde_json 序列化失败卡 Starting
+
+**根因**：`session.rs:159` `serde_json::to_string(&request)?` 失败时 `?` 早返回，state 已切 Starting（:153）无 reset_to_idle。对比 spawn 失败路径（:170-176）有 reset_to_idle。触发概率极低（request 是已知可序列化 struct），但与第十二轮 P2-1（stop() 卡 Stopping）同构。
+
+**修复**：`?` 改 match，失败分支调 `self.reset_to_idle().await` + `Err(RecordError::Json(e))`，对齐 spawn 失败路径。
+
+### P3-2. reader task EOF 静默退出（文档化，不修）
+
+**现状**：`session.rs:197` `while let Ok(Some(line)) = reader.next_line().await` EOF（helper 崩溃/退出）时 `Ok(None)` 静默退出循环，spawn task 结束，不更新 state（仍 Recording）。helper 崩溃 → state 卡 Recording → 用户须 ESC 触发 `stop()`（`child.wait()` 对已死 child 立即返回，清理有效）。
+
+**为何不修**：① ESC 可可靠恢复（stop 路径对已死 child 正常工作）；② 加主动崩溃通知需设计新 state（Crashed?）/ 事件 emit，是行为变更非纯 bugfix，且第12轮 P2-1 已修 stop() 下游清理；③ 本轮 conf 58 低优先级。留作已知限制。
+
+### 观察项（conf 40，未达上报阈值，不修）
+
+- `clipboard_dock.rs:23-25` `POLL_ACTIVE` 防重复 + dock 切换边（left↔right）时若旧 poll 线程未及时 `stop_edge_poll`，新 `start` 直接 return 用旧 edge 参数。正常流程 stop 清除不触发。
+- `SyncPanel.tsx:454/480` `syncError.includes("主密码")` / `includes("空库恢复")` 中文硬匹配后端错误消息，后端改文案即失效（脆弱契约）。当前工作，留待后端错误码化时一并处理。
+
+### 验证
+
+- `cargo build` record/desktop(cloud,vault) —— 0 error 0 warning。
+- `cargo test`：record 50 / desktop 520 全过。
+- tsc exit 0。
