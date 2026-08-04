@@ -504,6 +504,42 @@ pub fn update_vault_folder_fields(
     })
 }
 
+/// Upsert folder 含 is_deleted（sync pull 用——传播跨设备软删状态）。
+///
+/// 与 `update_vault_folder_fields` 的区别：同时设置 `is_deleted`——
+/// 远程 tombstone folder pull 到本地时，必须把 `is_deleted` 也写进 DB，
+/// 否则删除状态不会传播（2026-08-05 folder tombstone 传播 bug 修复）。
+pub fn upsert_vault_folder_sync(
+    id: &str,
+    encrypted_name: &str,
+    sort_order: i64,
+    sync_md5: &str,
+    is_deleted: bool,
+) -> Result<()> {
+    ensure_db()?;
+    with_db(|conn| {
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM vault_folders WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .ok();
+        if existing.is_some() {
+            conn.execute(
+                "UPDATE vault_folders SET name = ?1, sort_order = ?2, sync_md5 = ?3, is_deleted = ?4, updated_at = datetime('now') WHERE id = ?5",
+                params![encrypted_name, sort_order, sync_md5, is_deleted as i32, id],
+            )?;
+        } else {
+            conn.execute(
+                "INSERT INTO vault_folders (id, name, sort_order, sync_md5, is_deleted) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, encrypted_name, sort_order, sync_md5, is_deleted as i32],
+            )?;
+        }
+        Ok(())
+    })
+}
+
 /// 软删除 folder（统一 cipher+folder 语义，2026-07-27 v53）。
 ///
 /// 仅打 `is_deleted=1` 标记——行仍在表里，sync 走标准 merge 路径传播删除状态。

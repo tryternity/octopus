@@ -1109,7 +1109,7 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
         let remote_updated = entry.updated_ms;
         match db_folder_by_id.get(uuid.as_str()) {
             None => {
-                // DB 无 → pull
+                // DB 无 → pull（用 upsert_vault_folder_sync 传 is_deleted——tombstone 也要传播）
                 match store::read_folder_file(uuid) {
                     Ok(folder_file) => {
                         let md5 = crate::sync::fingerprint::folder_md5_from_fields(
@@ -1117,12 +1117,14 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
                             &folder_file.encrypted_name,
                             folder_file.sort_order,
                         );
-                        upsert_folder_with_sort(
+                        db::upsert_vault_folder_sync(
                             &folder_file.id,
                             &folder_file.encrypted_name,
                             folder_file.sort_order,
                             &md5,
-                        )?;
+                            folder_file.is_deleted,
+                        )
+                        .map_err(SyncError::Other)?;
                         report.pulled += 1;
                     }
                     Err(e) => {
@@ -1133,7 +1135,37 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
             }
             Some(db_f) => {
                 let local_updated = octopus_sync::store::iso_to_unix_ms(&db_f.updated_at);
-                if remote_updated > local_updated {
+                // 🔴 复活 bug 修复（2026-08-05，对称热词 fix 052c67cc）：删除是单向终态——
+                // 远程 folder 已 tombstone（is_deleted=true）时，无论本地时间戳多新都应
+                // pull tombstone 到 DB（含 is_deleted 传播），不把本地 active 写回文件。
+                let remote_folder_is_tombstone = store::read_folder_file(uuid)
+                    .map(|f| f.is_deleted)
+                    .unwrap_or(false);
+                if remote_folder_is_tombstone {
+                    match store::read_folder_file(uuid) {
+                        Ok(folder_file) => {
+                            let md5 = crate::sync::fingerprint::folder_md5_from_fields(
+                                &folder_file.id,
+                                &folder_file.encrypted_name,
+                                folder_file.sort_order,
+                            );
+                            // 用 upsert_vault_folder_sync 传 is_deleted（修复 folder tombstone 不传播）
+                            db::upsert_vault_folder_sync(
+                                &folder_file.id,
+                                &folder_file.encrypted_name,
+                                folder_file.sort_order,
+                                &md5,
+                                folder_file.is_deleted,
+                            )
+                            .map_err(SyncError::Other)?;
+                            report.pulled += 1;
+                        }
+                        Err(e) => {
+                            log::warn!("[sync] merge: folder {} tombstone pull 跳过：{}", uuid, e);
+                            report.skipped += 1;
+                        }
+                    }
+                } else if remote_updated > local_updated {
                     // .sync 更新 → pull 覆盖 DB
                     match store::read_folder_file(uuid) {
                         Ok(folder_file) => {
@@ -1142,12 +1174,15 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
                                 &folder_file.encrypted_name,
                                 folder_file.sort_order,
                             );
-                            upsert_folder_with_sort(
+                            // pull 也用 upsert_vault_folder_sync 传 is_deleted（active 文件 is_deleted=false）
+                            db::upsert_vault_folder_sync(
                                 &folder_file.id,
                                 &folder_file.encrypted_name,
                                 folder_file.sort_order,
                                 &md5,
-                            )?;
+                                folder_file.is_deleted,
+                            )
+                            .map_err(SyncError::Other)?;
                             report.pulled += 1;
                         }
                         Err(e) => {
@@ -1209,7 +1244,26 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
             }
             Some(db_c) => {
                 let local_updated = octopus_sync::store::iso_to_unix_ms(&db_c.updated_at);
-                if remote_updated > local_updated {
+                // 🔴 复活 bug 修复（2026-08-05，对称热词 fix 052c67cc）：删除是单向终态——
+                // 远程 cipher 已 tombstone（is_deleted=true）时，无论本地时间戳多新都应
+                // pull tombstone 到 DB，而不是把本地 active 写回文件覆盖远程 tombstone。
+                let remote_cipher_is_tombstone = store::read_cipher_file(uuid)
+                    .map(|f| f.to_vault_cipher().is_deleted)
+                    .unwrap_or(false);
+                if remote_cipher_is_tombstone {
+                    match store::read_cipher_file(uuid) {
+                        Ok(cipher_file) => {
+                            let row = cipher_file.to_vault_cipher();
+                            let input = build_cipher_input_from_file(&row);
+                            upsert_cipher(&input)?;
+                            report.pulled += 1;
+                        }
+                        Err(e) => {
+                            log::warn!("[sync] merge: cipher {} tombstone pull 跳过：{}", uuid, e);
+                            report.skipped += 1;
+                        }
+                    }
+                } else if remote_updated > local_updated {
                     // .sync 更新 → pull 覆盖 DB
                     match store::read_cipher_file(uuid) {
                         Ok(cipher_file) => {
@@ -2722,6 +2776,154 @@ mod tests {
         assert_eq!(
             remote_meta.security_stamp, local_meta.security_stamp,
             "远程 meta stamp 应与本地一致（本地 push 上去的）"
+        );
+        let _ = g;
+    }
+
+    /// 🔴 复活 bug 复现（对称热词 fix 052c67cc）：远程 cipher 已 tombstone，
+    /// 本地 DB 仍 active 且 updated_at 更新 → merge 的 `local_updated > remote_updated`
+    /// 分支把 DB active 写回文件，覆盖远程 tombstone。第三台机器把它当新密码拉进来。
+    #[test]
+    fn merge_remote_cipher_tombstone_not_overwritten_by_local_active_newer() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        use octopus_infra::db::VaultCipher;
+        use octopus_sync::outline::{Outline, OutlineEntry};
+        use std::collections::BTreeMap;
+
+        let cipher_id = "revive-cipher-0001";
+
+        // 1. 本地 DB 有 active cipher
+        let active = VaultCipher {
+            id: cipher_id.to_string(),
+            folder_id: None,
+            favorite: false,
+            atype: 1,
+            name: "v1:active-name".into(),
+            notes: None,
+            data: "v1:active-data".into(),
+            fields: None,
+            password_history: None,
+            reprompt: 0,
+            is_deleted: false,
+            sync_md5: None,
+            created_at: "2026-07-24T00:00:00".into(),
+            updated_at: "2026-08-05T00:00:00".into(), // 很新
+        };
+        let input = build_cipher_input_from_file(&active);
+        upsert_cipher(&input).expect("insert active cipher to DB");
+
+        // 2. 远程（git ff 拉来的）是 tombstone + updated_ms 更早
+        let tombstone = VaultCipher {
+            id: cipher_id.to_string(),
+            folder_id: None,
+            favorite: false,
+            atype: 1,
+            name: "v1:active-name".into(),
+            notes: None,
+            data: "v1:active-data".into(),
+            fields: None,
+            password_history: None,
+            reprompt: 0,
+            is_deleted: true, // 🔴 远程已删除
+            sync_md5: None,
+            created_at: "2026-07-24T00:00:00".into(),
+            updated_at: "2026-07-24T10:00:00".into(), // 比本地旧
+        };
+        store::write_cipher_file(&tombstone).unwrap();
+        let md5 = crate::sync::fingerprint::cipher_md5(&tombstone);
+        let outline = Outline {
+            version: 1,
+            vault_version: 1,
+            ciphers: BTreeMap::from([(
+                cipher_id.to_string(),
+                OutlineEntry {
+                    md5,
+                    updated_ms: 1000, // 比本地 DB 早 → 触发 local_updated > remote_updated
+                },
+            )]),
+            folders: BTreeMap::new(),
+        };
+        store::write_outline_file(&outline).unwrap();
+        write_stamp_matching_meta();
+
+        // 3. merge——旧逻辑：local_updated > remote_updated → push active 覆盖 tombstone
+        let _r = merge_vault().expect("merge");
+
+        // 4. 🔴 断言：文件应保持 tombstone（不被本地 active 覆盖）
+        let file = store::read_cipher_file(cipher_id).expect("cipher 文件应存在");
+        assert!(
+            file.to_vault_cipher().is_deleted,
+            "🔴 复活 bug：远程 cipher tombstone 被本地 active 覆盖了！\n\
+             根因：merge_vault 阶段 C `local_updated > remote_updated` 分支不考虑远程 tombstone，\n\
+             把 active 写回文件覆盖了删除意图。"
+        );
+        let _ = g;
+    }
+
+    /// 🔴 folder 复活 bug 复现（对称 cipher 测试）。folder 还有一个更深的 bug：
+    /// pull 路径 `upsert_folder_with_sort` 不传 is_deleted，即使远程 tombstone
+    /// pull 到 DB 也不会变软删。本测试同时验证两个 bug。
+    #[test]
+    fn merge_remote_folder_tombstone_not_overwritten_by_local_active_newer() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        use octopus_infra::db::VaultFolder;
+        use octopus_sync::outline::{Outline, OutlineEntry};
+        use std::collections::BTreeMap;
+
+        let folder_id = "revive-folder-0001";
+
+        // 1. 本地 DB 有 active folder
+        db::insert_vault_folder_with_sort(folder_id, "v1:active-folder", 0, "md5-active")
+            .expect("insert active folder");
+
+        // 2. 远程（git ff 拉来的）是 tombstone + updated_ms 更早
+        let tombstone_folder = VaultFolder {
+            id: folder_id.to_string(),
+            name: "v1:active-folder".into(),
+            sort_order: 0,
+            is_deleted: true, // 🔴 远程已删除
+            sync_md5: None,
+            created_at: "2026-07-24T00:00:00".into(),
+            updated_at: "2026-07-24T10:00:00".into(),
+        };
+        store::write_folder_file(&tombstone_folder).unwrap();
+        let md5 = crate::sync::fingerprint::folder_md5(&tombstone_folder);
+        let outline = Outline {
+            version: 1,
+            vault_version: 1,
+            ciphers: BTreeMap::new(),
+            folders: BTreeMap::from([(
+                folder_id.to_string(),
+                OutlineEntry {
+                    md5,
+                    updated_ms: 1000, // 比本地 DB 早
+                },
+            )]),
+        };
+        store::write_outline_file(&outline).unwrap();
+        write_stamp_matching_meta();
+
+        // 3. merge
+        let _r = merge_vault().expect("merge");
+
+        // 4. 🔴 断言 1：文件应保持 tombstone
+        let file = store::read_folder_file(folder_id).expect("folder 文件应存在");
+        assert!(
+            file.is_deleted,
+            "🔴 folder 复活 bug：远程 tombstone 被本地 active 覆盖了！file.is_deleted 应为 true"
+        );
+
+        // 5. 🔴 断言 2：DB 也应被传播为 tombstone（pull 路径 upsert_folder_with_sort 传 is_deleted）
+        let db_folder = db::load_vault_folder(folder_id)
+            .unwrap()
+            .expect("folder 应在 DB");
+        assert!(
+            db_folder.is_deleted,
+            "🔴 folder pull 不传 is_deleted bug：远程 tombstone pull 到 DB 后 is_deleted 仍为 false"
         );
         let _ = g;
     }
