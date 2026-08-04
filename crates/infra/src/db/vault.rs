@@ -452,17 +452,19 @@ pub(crate) fn insert_vault_folder_at(conn: &Connection, id: &str, name: &str, sy
 }
 
 /// E5 修复（2026-07-24）：insert folder 含 sort_order（一次写，不再 insert+update 两次）。
+/// 第八轮 P0：加 is_deleted 参数——pull 路径需写入文件中的真实软删状态，对齐 cipher。
 pub fn insert_vault_folder_with_sort(
     id: &str,
     name: &str,
     sort_order: i64,
     sync_md5: &str,
+    is_deleted: bool,
 ) -> Result<()> {
     ensure_db()?;
     with_db(|conn| {
         conn.execute(
-            "INSERT INTO vault_folders (id, name, sort_order, sync_md5) VALUES (?1, ?2, ?3, ?4)",
-            params![id, name, sort_order, sync_md5],
+            "INSERT INTO vault_folders (id, name, sort_order, sync_md5, is_deleted) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, name, sort_order, sync_md5, is_deleted],
         )?;
         Ok(())
     })
@@ -483,22 +485,24 @@ pub fn update_vault_folder_name(id: &str, new_name_encrypted: &str, sync_md5: &s
     })
 }
 
-/// 更新 folder 的 name + sort_order + sync_md5（sync pull 用，#6 修复）。
+/// 更新 folder 的 name + sort_order + sync_md5 + is_deleted（sync pull 用，#6 修复 + P0）。
 ///
-/// 与 `update_vault_folder_name` 的区别：同时更新 sort_order，让远程 folder 的
-/// 排序变化能同步到本地（之前 pull 硬编码 sort_order=0，导致排序永不同步）。
+/// 与 `update_vault_folder_name` 的区别：同时更新 sort_order + is_deleted，让远程 folder 的
+/// 排序变化 + 软删状态能同步到本地（之前 pull 硬编码 sort_order=0 + 丢 is_deleted，导致
+/// 排序永不同步 + 软删 folder 复活）。
 /// 返回受影响行数（0 表示 id 不存在——调用方可据此判断）。
 pub fn update_vault_folder_fields(
     id: &str,
     new_name_encrypted: &str,
     sort_order: i64,
     sync_md5: &str,
+    is_deleted: bool,
 ) -> Result<usize> {
     ensure_db()?;
     with_db(|conn| {
         let affected = conn.execute(
-            "UPDATE vault_folders SET name = ?1, sort_order = ?2, sync_md5 = ?3, updated_at = datetime('now') WHERE id = ?4",
-            params![new_name_encrypted, sort_order, sync_md5, id],
+            "UPDATE vault_folders SET name = ?1, sort_order = ?2, sync_md5 = ?3, is_deleted = ?5, updated_at = datetime('now') WHERE id = ?4",
+            params![new_name_encrypted, sort_order, sync_md5, id, is_deleted],
         )?;
         Ok(affected)
     })

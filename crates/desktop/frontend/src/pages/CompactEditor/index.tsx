@@ -500,9 +500,9 @@ function CompactEditor() {
         registerTranslateSession(sessionId, tab.key);
       }
     }).catch((e) => {
-      console.error("翻译启动失败:", e);
+      // 第九轮 P2-a：WKWebView 不显示 window.alert → 改 console.error（已有）+ 去掉无效 alert
+      console.error(ti18n("editor.translateFail") + ":", e);
       setTranslating(false);
-      alert(ti18n("editor.translateFail") + ": " + String(e));
     });
   }, []);
 

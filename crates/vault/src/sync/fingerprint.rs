@@ -95,8 +95,11 @@ pub fn folder_md5(f: &VaultFolder) -> String {
 /// 从 folder 基本字段算 md5（用于 insert/rename 时填 sync_md5）。
 ///
 /// folder 新建时 sort_order=0（默认）、is_deleted=false，与 row 读出一致。
-pub fn folder_md5_from_fields(id: &str, name: &str, sort_order: i64) -> String {
-    let s = format!("{}|{}|{}|{}", id, name, sort_order, 0u8);
+/// 第八轮 P0：新增 is_deleted 参数——pull 路径需用文件中的真实 is_deleted 值算 md5，
+/// 不能硬编码 0（否则软删 folder pull 后 md5 不匹配 → sync 持续噪声 + is_deleted 丢失）。
+/// 对称 cipher_md5_from_input 的 is_deleted as u8。
+pub fn folder_md5_from_fields(id: &str, name: &str, sort_order: i64, is_deleted: bool) -> String {
+    let s = format!("{}|{}|{}|{}", id, name, sort_order, is_deleted as u8);
     md5_hex(s.as_bytes())
 }
 

@@ -531,9 +531,9 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
         upsert_cipher(&input)?;
     }
     for f in &folders {
-        // upsert folder 带 sort_order（#6 修复——不再硬编码 0）
-        let md5 = crate::sync::fingerprint::folder_md5_from_fields(&f.id, &f.name, f.sort_order);
-        upsert_folder_with_sort(&f.id, &f.name, f.sort_order, &md5)?;
+        // upsert folder 带 sort_order（#6 修复——不再硬编码 0）+ is_deleted（P0 修复——传播软删状态）
+        let md5 = crate::sync::fingerprint::folder_md5_from_fields(&f.id, &f.name, f.sort_order, f.is_deleted);
+        upsert_folder_with_sort(&f.id, &f.name, f.sort_order, &md5, f.is_deleted)?;
     }
 
     // 4. 读所有热词版本文件 → upsert SQLite（v46：clone 同时导入 vault + hotword）
@@ -624,18 +624,21 @@ fn upsert_folder_with_sort(
     encrypted_name: &str,
     sort_order: i64,
     sync_md5: &str,
+    is_deleted: bool,
 ) -> Result<(), SyncError> {
     // P-FOLDER-SCAN 修复（2026-07-25）：用 load_vault_folder 单条查询（O(1)）替代
     // list_vault_folders().iter().any() 全表扫（O(N)）。与 upsert_cipher（load_vault_cipher）对称。
+    // 第八轮 P0：加 is_deleted 参数——对称 cipher 的 build_cipher_input_from_file，
+    // pull 路径需写入文件中的真实软删状态，否则 folder 软删跨设备复活。
     let exists = db::load_vault_folder(id)
         .map_err(SyncError::Other)?
         .is_some();
     if exists {
-        db::update_vault_folder_fields(id, encrypted_name, sort_order, sync_md5)
+        db::update_vault_folder_fields(id, encrypted_name, sort_order, sync_md5, is_deleted)
             .map_err(SyncError::Other)?;
     } else {
         // E5 修复：一次写（不再 insert+update 两次）
-        db::insert_vault_folder_with_sort(id, encrypted_name, sort_order, sync_md5)
+        db::insert_vault_folder_with_sort(id, encrypted_name, sort_order, sync_md5, is_deleted)
             .map_err(SyncError::Other)?;
     }
     Ok(())
@@ -1112,16 +1115,19 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
                 // DB 无 → pull
                 match store::read_folder_file(uuid) {
                     Ok(folder_file) => {
+                        // P0 修复：md5 + upsert 都传 folder_file.is_deleted（之前丢弃→软删 folder pull 复活）
                         let md5 = crate::sync::fingerprint::folder_md5_from_fields(
                             &folder_file.id,
                             &folder_file.encrypted_name,
                             folder_file.sort_order,
+                            folder_file.is_deleted,
                         );
                         upsert_folder_with_sort(
                             &folder_file.id,
                             &folder_file.encrypted_name,
                             folder_file.sort_order,
                             &md5,
+                            folder_file.is_deleted,
                         )?;
                         report.pulled += 1;
                     }
@@ -1137,16 +1143,19 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
                     // .sync 更新 → pull 覆盖 DB
                     match store::read_folder_file(uuid) {
                         Ok(folder_file) => {
+                            // P0 修复：同上，传 folder_file.is_deleted
                             let md5 = crate::sync::fingerprint::folder_md5_from_fields(
                                 &folder_file.id,
                                 &folder_file.encrypted_name,
                                 folder_file.sort_order,
+                                folder_file.is_deleted,
                             );
                             upsert_folder_with_sort(
                                 &folder_file.id,
                                 &folder_file.encrypted_name,
                                 folder_file.sort_order,
                                 &md5,
+                                folder_file.is_deleted,
                             )?;
                             report.pulled += 1;
                         }
@@ -2088,8 +2097,8 @@ mod tests {
     /// 改 sort_order 应改变 md5（否则 sort_order 永不同步）。
     #[test]
     fn folder_md5_includes_sort_order() {
-        let m1 = crate::sync::fingerprint::folder_md5_from_fields("id-1", "name", 0);
-        let m2 = crate::sync::fingerprint::folder_md5_from_fields("id-1", "name", 1);
+        let m1 = crate::sync::fingerprint::folder_md5_from_fields("id-1", "name", 0, false);
+        let m2 = crate::sync::fingerprint::folder_md5_from_fields("id-1", "name", 1, false);
         assert_ne!(
             m1, m2,
             "sort_order 变化应改变 folder md5（否则排序永不同步）"
@@ -2182,6 +2191,60 @@ mod tests {
         assert!(
             db_cipher.is_deleted,
             "H2: 软删密码 pull 后 is_deleted 必须存活（不能复活成 live）"
+        );
+        let _ = g;
+    }
+
+    /// 第八轮 P0：folder 软删跨设备同步回归测试（对齐 cipher H2 的 pull_preserves_soft_deleted_at）。
+    /// A 软删 folder → write_folder_file(is_deleted=true) → B pull → DB 应保留 is_deleted=true。
+    /// 修复前：upsert_folder_with_sort SQL 不含 is_deleted → INSERT DEFAULT 0 / UPDATE 不碰 → 复活。
+    #[test]
+    fn pull_preserves_soft_deleted_folder() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        use octopus_infra::db::VaultFolder;
+        // 文件系统写一个软删 folder（is_deleted = true）
+        let soft_deleted_folder = VaultFolder {
+            id: "folder-soft-delete-test".to_string(),
+            name: "v1:deleted-folder".into(),
+            sort_order: 0,
+            is_deleted: true,
+            sync_md5: None,
+            created_at: "2026-08-03T00:00:00".into(),
+            updated_at: "2026-08-03T12:00:00".into(),
+        };
+        store::write_folder_file(&soft_deleted_folder).unwrap();
+
+        // outline：含这个软删 folder 的 md5（用 folder_md5 含 is_deleted=true）
+        use octopus_sync::outline::{Outline, OutlineEntry};
+        use std::collections::BTreeMap;
+        let md5 = crate::sync::fingerprint::folder_md5(&soft_deleted_folder);
+        let outline = Outline {
+            version: 1,
+            vault_version: 1,
+            ciphers: BTreeMap::new(),
+            folders: BTreeMap::from([(
+                "folder-soft-delete-test".to_string(),
+                OutlineEntry {
+                    md5,
+                    updated_ms: 0,
+                },
+            )]),
+        };
+        store::write_outline_file(&outline).unwrap();
+
+        // pull 应把软删 folder 导入 DB（含 is_deleted=true）
+        write_stamp_matching_meta();
+        let _r = merge_vault().expect("pull should succeed");
+
+        // P0 核心断言：DB 中 is_deleted 必须保留（不能复活成 false）
+        let db_folder = octopus_infra::db::load_vault_folder("folder-soft-delete-test")
+            .unwrap()
+            .expect("folder should exist in DB");
+        assert!(
+            db_folder.is_deleted,
+            "P0: 软删 folder pull 后 is_deleted 必须存活（不能复活成 live）"
         );
         let _ = g;
     }

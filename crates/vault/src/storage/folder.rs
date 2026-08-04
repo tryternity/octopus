@@ -72,7 +72,7 @@ pub fn list_folders(key: &DerivedKey) -> Result<(Vec<FolderDto>, Vec<String>)> {
 pub fn create_folder(id: &str, name: &str, key: &DerivedKey) -> Result<()> {
     let encrypted = key.encrypt(name.as_bytes())?;
     // 新建 folder sort_order=0（db.sql DEFAULT）——md5 用 0 算
-    let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, 0);
+    let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, 0, false);
     Ok(db::insert_vault_folder(id, &encrypted, &md5)?)
 }
 
@@ -86,7 +86,7 @@ pub fn rename_folder(id: &str, new_name: &str, key: &DerivedKey) -> Result<()> {
         .find(|f| f.id == id)
         .map(|f| f.sort_order)
         .unwrap_or(0);
-    let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, sort_order);
+    let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, sort_order, false);
     Ok(db::update_vault_folder_name(id, &encrypted, &md5)?)
 }
 
