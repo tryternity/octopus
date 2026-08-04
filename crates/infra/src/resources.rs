@@ -6,3 +6,10 @@
 //!
 //! crate 专有资源（desktop icon/i18n/tauri.conf、pty shell 脚本）保留原位，
 //! 调用方用 `env!("CARGO_MANIFEST_DIR")` 消除 `../../`——本模块不为其提供 API。
+
+// ── SQL ──────────────────────────────────────────────────────────
+
+/// SQLite schema（含表结构 + 短种子；长 seed 走 seeds.rs 运行时加载）。
+pub const fn db_schema_sql() -> &'static str {
+    include_str!("../resources/sql/schema.sql")
+}
