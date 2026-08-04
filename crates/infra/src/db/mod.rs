@@ -97,8 +97,8 @@ pub fn clear_test_db() {
     });
 }
 
-/// 编译期嵌入的建表 + seed SQL（来自 crates/infra/src/db.sql）
-const INIT_SQL: &str = include_str!("../db.sql");
+/// 编译期嵌入的建表 + seed SQL（来自 crates/infra/resources/sql/schema.sql）
+static INIT_SQL: &str = crate::resources::db_schema_sql();
 
 /// DB 文件路径：~/.octopus/octopus.db
 ///

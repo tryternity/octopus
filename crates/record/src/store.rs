@@ -224,7 +224,7 @@ mod tests {
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         // 执行 db.sql 全文建表（spec §5）
-        let sql = include_str!("../../infra/src/db.sql");
+        let sql = octopus_infra::resources::db_schema_sql();
         conn.execute_batch(sql).unwrap();
         conn
     }

@@ -8,7 +8,7 @@ use pinyin::ToPinyin;
 
 use crate::hotword::{normalize_fuzzy_pinyin, HotwordIndex};
 
-const UNIGRAM_GZ: &[u8] = include_bytes!("corrector_data/unigram.txt.gz");
+const UNIGRAM_GZ: &[u8] = octopus_infra::resources::corrector_unigram_gz();
 
 pub struct LightCorrector {
     jieba: Jieba,

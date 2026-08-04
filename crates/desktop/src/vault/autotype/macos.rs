@@ -290,7 +290,7 @@ mod tests {
     /// 比 generate_context!().config().identifier 简单（不依赖 Tauri runtime 类型）。
     #[test]
     fn test_octopus_bundle_id_matches_tauri_config() {
-        let conf = include_str!("../../../tauri.conf.json");
+        let conf = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json"));
         // 简单子串匹配——identifier 字段在 conf 里唯一
         let needle = "\"identifier\": \"com.octopus.desktop\"";
         assert!(
