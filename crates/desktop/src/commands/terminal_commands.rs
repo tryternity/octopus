@@ -402,6 +402,7 @@ mod tests {
     /// 在带 .git + .gitignore 的临时 repo 内验证 gitignore 过滤语义：
     /// - target/、node_modules/、*.log 被隐藏
     /// - src/、Cargo.toml、keep.log（!keep.log 白名单）可见
+    ///
     /// 回归 #1（旧实现 WalkBuilder 语义反向，把非 ignored 项当「要隐藏的集合」）。
     #[test]
     fn list_dir_filters_gitignore_in_repo() {

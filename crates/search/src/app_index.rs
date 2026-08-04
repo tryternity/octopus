@@ -335,6 +335,7 @@ impl AppIndex {
                 best.map(|s| (s, app))
             })
             .collect();
+        #[allow(clippy::unnecessary_sort_by)] // f64 非 Ord，sort_by_key 不适用
         scored.sort_by(|a, b| b.0.cmp(&a.0));
         scored
             .into_iter()

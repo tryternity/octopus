@@ -9,6 +9,7 @@
 //! 2. T2 read → 也拿 S1
 //! 3. T1 save → 写新密文
 //! 4. T2 save → 用 S1 + T2 自己改的字段整行覆盖（T1 改的字段丢失）
+//!
 //! → 永久数据损坏（如新主密码失效但 app_key_local_enc 用旧主密码派生的 K_machine 解）
 //!
 //! **复审 #2 修复**（2026-07-19）：锁下沉到 `save_vault_meta` / `update_security_stamp`

@@ -853,6 +853,7 @@ fn count_apps_in_dir(dir: &std::path::Path, depth: u32) -> usize {
 /// 两步策略：
 /// 1. 尝试 `zsh -l -c 'echo $PATH'` 拿 login shell 完整 PATH（含所有用户自定义路径）
 /// 2. 兜底：直接追加常见路径（homebrew / .local/bin / cargo / fnm / nvm）
+///
 /// 仅 macOS 需要（Linux GUI app 通常通过 /etc/profile 或 desktop session 继承 PATH）。
 #[cfg(target_os = "macos")]
 fn fix_path_for_gui_app() {

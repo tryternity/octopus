@@ -124,6 +124,7 @@ fn is_regular_window(label: &str) -> bool {
 /// 如果列入，其他浮窗（action_bar/compact_editor）的 show→hide 周期会
 /// 把 dock 态剪贴板拖进 hide→裸 show 循环，导致 DOCK_EXPANDED 状态不一致
 /// + setIgnoresMouseEvents 残留（窗口看得见但点不动/拖不动）。
+///
 /// 2026-07-24 修复。
 const WINDOWS_TO_HIDE_ON_FLOAT: &[&str] = &[
     "settings_window",

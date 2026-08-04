@@ -84,7 +84,7 @@ pub fn filter_hotwords_fuzzy(query: String, words: Vec<String>) -> Result<Vec<St
         })
         .collect();
     // score 降序（高分 = 更匹配 = 排前）
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|x| std::cmp::Reverse(x.1));
     Ok(scored.into_iter().map(|(w, _)| w).collect())
 }
 

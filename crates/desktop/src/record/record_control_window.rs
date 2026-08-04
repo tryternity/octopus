@@ -3,6 +3,7 @@
 //! 与 `record_annotation_window` 的关系：
 //! - **Area 录制** → 创建 RecordAnnotation（带 9 种标注画布 + 工具栏）
 //! - **Display/Window 录制** → 创建本模块的控制浮窗（仅 pill：红点 + 时长 + 暂停/停止）
+//!
 //! 两者互斥，不会同时出现。
 //!
 //! 设计：
