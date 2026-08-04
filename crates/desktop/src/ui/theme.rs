@@ -253,10 +253,7 @@ pub fn get_theme_id() -> Result<String, String> {
 pub fn window_bg_hex(window_label: &str) -> Option<String> {
     // 白名单：只有常规非透明窗口需要背景色。透明窗口（result/clipboard/screenshot）
     // 不注入——它们靠 transparent:true + body transparent 实现穿透/遮罩。
-    let is_opaque = match window_label {
-        "settings_window" | "compact_editor_window" => true,
-        _ => false,
-    };
+    let is_opaque = matches!(window_label, "settings_window" | "compact_editor_window");
     if !is_opaque {
         return None;
     }

@@ -344,7 +344,7 @@ fn parse_srt_time(s: &str) -> Option<u64> {
     let m: u64 = hms_parts[1].parse().ok()?;
     let s: u64 = hms_parts[2].parse().ok()?;
     let ms: u64 = ms_str.parse().ok()?;
-    Some(h * 3600_000 + m * 60_000 + s * 1000 + ms)
+    Some(h * 3_600_000 + m * 60_000 + s * 1_000 + ms)
 }
 
 #[cfg(test)]
