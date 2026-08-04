@@ -4,11 +4,10 @@ import { invoke } from "@/lib/tauri";
 import { Loader2, Check } from "lucide-react";
 import { useT } from "@/lib/i18n";
 
-type ImageFormat = "jpeg" | "webp" | "png";
+type ImageFormat = "jpeg" | "png";
 
 const FORMATS: { value: ImageFormat; label: string }[] = [
   { value: "jpeg", label: "JPEG" },
-  { value: "webp", label: "WebP" },
   { value: "png", label: "PNG" },
 ];
 

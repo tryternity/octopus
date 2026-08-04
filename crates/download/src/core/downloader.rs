@@ -467,8 +467,19 @@ impl Downloader {
             }
         }
 
-        // 原子转正
+        // 原子转正（第七轮 P2-a：rename 前 fsync part 数据，对齐 sidecar #11 + keychain #11——
+        // POSIX rename 只原子切目录项，内容持久化需 fsync，否则断电后 dest 存在但内容空/半，
+        // 而 sidecar 已 remove → 无法识别为未完成自动重下）。
+        if let Ok(f) = std::fs::File::open(&part) {
+            let _ = f.sync_all(); // best-effort，失败 log warn 不阻断（数据最终也会被 OS 刷盘）
+        }
         std::fs::rename(&part, &task.dest)?;
+        // rename 后 fsync 父目录（目录项更新需 fsync 才扛断电）
+        if let Some(parent) = task.dest.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
         crate::core::resume::remove(&task.dest);
         let _ = progress
             .send(Progress {

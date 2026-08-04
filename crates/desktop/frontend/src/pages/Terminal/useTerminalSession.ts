@@ -303,6 +303,14 @@ export function useTerminalSession(opts: {
     openPty(cols, rows, {
       onData: (bytes) => {
         pendingChunks.push(bytes);
+        // 第七轮 N2：窗口隐藏时 WKWebView requestAnimationFrame 暂停 → pendingChunks 无界累积。
+        // 背压：累积超 2MB 时同步 flush（丢 rAF 节流，防恢复时一次 write 巨 buffer 卡顿）。
+        const PENDING_FLUSH_THRESHOLD = 2 * 1024 * 1024;
+        const pendingBytes = pendingChunks.reduce((s, c) => s + c.length, 0);
+        if (pendingBytes >= PENDING_FLUSH_THRESHOLD) {
+          flushOutput();
+          return;
+        }
         if (!rafScheduled) {
           rafScheduled = true;
           requestAnimationFrame(flushOutput);

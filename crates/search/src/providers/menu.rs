@@ -19,9 +19,11 @@ impl SearchProvider for MenuProvider {
     }
 
     async fn search(&self, query: &str, _ctx: &SearchContext<'_>) -> Vec<SearchResult> {
-        let rows = match octopus_infra::db::list_action_bar_items() {
-            Ok(r) => r,
-            Err(_) => return vec![],
+        // 第七轮 P2-b：DB 调用包 spawn_blocking，避免 with_db 全局 ReentrantMutex 阻塞 tokio
+        // worker（转录持久化/热词写/配置 save 持锁时搜索卡顿）。
+        let rows = match tokio::task::spawn_blocking(octopus_infra::db::list_action_bar_items).await {
+            Ok(Ok(r)) => r,
+            _ => return vec![],
         };
         let mut results = search_menus(query, &rows);
         results.extend(search_slash_commands(query, &rows));
