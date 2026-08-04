@@ -15,7 +15,11 @@ pub(crate) use ncc_match::{
 mod canvas_heal;
 mod fallback_chain;
 
-// ===== 拼接算法常量（原散落在 find_overlap_spatial_ext 与 process_frame 中的魔法数字）=====
+// ===== 拼接算法调参常量 =====
+// 按功能分组（2026-08-04 整理）：匹配阈值 / 采样几何 / 画布自愈 / 时序平滑。
+// 改值前先读各 const 上方 doc 与对应实现（注释里有踩坑案例与历史决策）。
+
+// --- 匹配阈值（fallback_chain 用）---
 
 /// 静止判定阈值。dy=0 处的平均像素差值小于此值视为内容未滚动。
 const STATIONARY_SAD: f64 = 2.0;
@@ -23,12 +27,18 @@ const STATIONARY_SAD: f64 = 2.0;
 /// 高于 STATIONARY_SAD 以吸收亚像素 .round() 误差 / 压缩噪声 / 渲染反锯齿差异。起步 15.0，
 /// reject 日志（apply_fallback_match 内）便于线上标定后再收。详见 verify_alignment_2d。
 const FALLBACK_VERIFY_SAD: f64 = 15.0;
+
+// --- 采样几何（fallback_chain 2D 验证 / 静止检测共用）---
+
 /// 排除最左侧的比例（通常有图标/树状图）。
 const X_START_RATIO: f64 = 0.10;
 /// 排除最右侧的比例截止点（通常有滚动条/时间戳），即保留 10%~80% 横向区间。
 const X_END_RATIO: f64 = 0.80;
 /// 列抽样步长（像素）。每隔此值采样一列，提供双倍空间特征解析度。
 const SAMPLE_STEP_X: usize = 2;
+
+// --- 画布锚点自愈（canvas_heal 用）---
+
 /// sticky 区域检测的最大高度（像素），顶部/底部各扫此高度。
 const STICKY_DETECT_MAX: u32 = 80;
 /// 首帧底部"无内容常数尾"检测：单行灰度（R 通道近似）max-min 上限。低于此值视为无内容
@@ -43,10 +53,9 @@ const CONTENT_TAIL_MAX_LUMA: u8 = 40;
 /// 自适应 strip 高度下限（像素）。内容极矮时也至少留此行数作 NCC 模板，防退化为单行匹配。
 const MIN_STRIP: u32 = 8;
 
-// ===== 健壮性优化常量 =====
+// --- 时序平滑（dy_history 用）---
 
-/// 时序平滑：静止判断的 dy 均值阈值（近 N 帧 |dy| 均值 < 此值 → 静止）
-/// dy 历史长度
+/// dy 历史长度（最近 N 帧位移，用于 best-guess 中位数估算与静止判断）。
 const DY_HISTORY_LEN: usize = 8;
 
 pub struct StitchConfig {
