@@ -27,3 +27,26 @@ pub const fn public_suffix_list() -> &'static [u8] {
 pub const fn ocr_words_common() -> &'static str {
     include_str!("../resources/dicts/words_common.txt")
 }
+
+/// 简繁转换：简体→繁体映射表。
+pub const fn hans_t2s() -> &'static str {
+    include_str!("../resources/dicts/t2s.txt")
+}
+
+/// 简繁转换：繁体→简体映射表。
+pub const fn hans_s2t() -> &'static str {
+    include_str!("../resources/dicts/s2t.txt")
+}
+
+/// ASR 文本纠错 unigram（gzip 压缩，运行时解压）。
+pub const fn corrector_unigram_gz() -> &'static [u8] {
+    include_bytes!("../resources/dicts/unigram.txt.gz")
+}
+
+// ── 模型 ─────────────────────────────────────────────────────────
+
+/// Silero VAD v6 ONNX 模型（语音端点检测）。
+/// 用户可在 ~/.octopus/models/vad.onnx 放自定义版本覆盖（见 asr vad.rs）。
+pub const fn silero_vad_v6_onnx() -> &'static [u8] {
+    include_bytes!("../resources/models/vad/silero_vad_v6.onnx")
+}
