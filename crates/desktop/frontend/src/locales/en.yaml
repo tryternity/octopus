@@ -985,6 +985,7 @@ result:
   polishing: Polishing…
   polishFailed: "Polish failed:"
   switchFailed: "Switch failed:"
+  axPermissionRequired: "⚠️ Accessibility permission not granted — cannot show recognition window. Go to System Settings → Privacy & Security → Accessibility, authorize octopus, then restart the app."
   polish:
     off: Off
     finalOnly: Final Only

@@ -994,6 +994,7 @@ result:
   polishing: 润色中…
   polishFailed: "润色失败："
   switchFailed: "切换失败："
+  axPermissionRequired: ⚠️ 辅助功能权限未授权，无法显示识别窗口。请到「系统设置 → 隐私与安全 → 辅助功能」授权 octopus，然后重启应用。
   polish:
     off: 关闭
     finalOnly: 仅最终润色
