@@ -14,27 +14,43 @@ const _: fn() = || {
 };
 
 /// 按 model 路径缓存已加载的 ONNX Session。
-/// SileroVad 实例各自 owned h/c/sr，但共享底层 Session（Session::run 是 &mut self，
-/// 所以用 Arc<Mutex<Session>> 提供内部可变性 + 共享所有权）。
+/// SileroVad 实例各自 owned state + context，但共享底层 Session
+/// （Session::run 是 &mut self，用 Arc<Mutex<Session>> 提供内部可变性 + 共享所有权）。
 static VAD_SESSIONS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>>> = OnceLock::new();
 
 fn vad_sessions() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>> {
     VAD_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Silero VAD v4 via ort (ONNX Runtime)
-/// Stateful model with LSTM hidden/cell states
+/// silero_vad_16k_op15.onnx——官方 16kHz 专用精简版（1.2MB，opset 15）。
+/// 去掉 8kHz 分支（If 节点），比完整版 silero_vad.onnx（2.3MB）小 46%。
+const VAD_BYTES: &[u8] = include_bytes!("../../models/silero_vad_v6.onnx");
+const VAD_CACHE_KEY: &str = "builtin://silero_vad_v6";
+
+/// v6 LSTM 状态维度（config.json state_dim=128）。
+const STATE_DIM: usize = 128;
+/// v6 输入需拼 context（上一帧末尾样本）——16kHz = 64 样本。
+/// 实际输入 shape = [1, samples + CONTEXT_SIZE]。漏拼 context 导致 prob 恒近零。
+/// 参考官方 silero-vad/examples/rust-example/src/silero.rs。
+const CONTEXT_SIZE: usize = 64;
+
+/// Silero VAD v6 via ort (ONNX Runtime)
+///
+/// 参考官方 Rust 实现 silero-vad/examples/rust-example/src/silero.rs。
+///
+/// v6 关键差异（vs v4）：
+/// - state 单 tensor `[2,1,128]`（v4 是 h/c 双 `[2,1,64]`）
+/// - 输入拼 context（上一帧末尾 64 样本）→ `[1, 576]` = context(64) + samples(512)
+/// - 窗口固定 512（16kHz）；漏拼 context 导致 prob 恒近零
 pub struct SileroVad {
-    session: Arc<Mutex<Session>>,   // 共享缓存：相同 path 复用同一 Session（run 需 &mut self，故 Mutex）
-    h: Array3<f32>,                 // [2, 1, 64]
-    c: Array3<f32>,                 // [2, 1, 64]
-    sr: Array1<i64>,                // scalar: 16000
+    session: Arc<Mutex<Session>>,
+    state: Array3<f32>,     // [2, 1, 128]
+    context: Array1<f32>,   // [CONTEXT_SIZE]——上一帧末尾样本，拼到当前帧前面
+    sr: Array1<i64>,        // scalar: 16000
 }
 
 impl SileroVad {
     pub fn new(model_path: &Path) -> Result<Self> {
-        // 持 cache lock 期间完成 get-or-insert：消除 TOCTOU（并发 miss 时只有一个线程加载，
-        // 其余等锁后命中同一 Arc）。commit_from_file 慢但仅在冷启动一次性发生，串行化可接受。
         let session = {
             let mut cache = vad_sessions().lock();
             if let Some(s) = cache.get(model_path) {
@@ -58,21 +74,12 @@ impl SileroVad {
                 s
             }
         };
-        Ok(Self {
-            session,
-            h: Array3::zeros((2, 1, 64)),
-            c: Array3::zeros((2, 1, 64)),
-            sr: Array1::from_vec(vec![16000i64]),
-        })
+        Ok(Self::with_session(session))
     }
 
     /// 从编译期内嵌字节加载 VAD（`include_bytes!`），不落盘、不读磁盘文件。
-    ///
-    /// 内嵌模型 1.7MB，ort `commit_from_memory` 直接从 `&[u8]` 构造 Session。
-    /// 缓存 key 用 `builtin://silero_vad_v4` 与磁盘路径缓存隔离。
     pub fn new_builtin() -> Result<Self> {
-        const VAD_BYTES: &[u8] = include_bytes!("../../models/silero_vad_v4.onnx");
-        let cache_key = PathBuf::from("builtin://silero_vad_v4");
+        let cache_key = PathBuf::from(VAD_CACHE_KEY);
         let session = {
             let mut cache = vad_sessions().lock();
             if let Some(s) = cache.get(&cache_key) {
@@ -96,19 +103,30 @@ impl SileroVad {
                 s
             }
         };
-        Ok(Self {
-            session,
-            h: Array3::zeros((2, 1, 64)),
-            c: Array3::zeros((2, 1, 64)),
-            sr: Array1::from_vec(vec![16000i64]),
-        })
+        Ok(Self::with_session(session))
     }
 
-    /// Input: 480 samples (30ms @ 16kHz). Output: speech probability [0.0, 1.0]
+    fn with_session(session: Arc<Mutex<Session>>) -> Self {
+        Self {
+            session,
+            state: Array3::zeros((2, 1, STATE_DIM)),
+            context: Array1::zeros(CONTEXT_SIZE),
+            sr: Array1::from_vec(vec![16000i64]),
+        }
+    }
+
+    /// Input: PCM samples (512 @ 16kHz). Output: speech probability [0.0, 1.0]
+    ///
+    /// 参考官方 silero-vad/examples/rust-example/src/silero.rs::calc_level——
+    /// 输入拼 context（上一帧末尾 CONTEXT_SIZE 样本）→ [1, 576]，推理后更新 state + context。
     pub fn compute(&mut self, samples: &[f32]) -> Result<f32> {
-        let input = ArrayView2::from_shape((1, samples.len()), samples)?;
-        let h_tensor = ort::value::TensorRef::from_array_view(self.h.view())?;
-        let c_tensor = ort::value::TensorRef::from_array_view(self.c.view())?;
+        // 拼接 context + samples → [1, CONTEXT_SIZE + samples.len()]
+        let mut buf = Vec::with_capacity(CONTEXT_SIZE + samples.len());
+        buf.extend_from_slice(self.context.as_slice().unwrap_or(&[]));
+        buf.extend_from_slice(samples);
+        let input = ArrayView2::from_shape((1, buf.len()), &buf)?;
+
+        let state_tensor = ort::value::TensorRef::from_array_view(self.state.view())?;
         let sr_tensor = ort::value::TensorRef::from_array_view(self.sr.view())?;
         let input_tensor = ort::value::TensorRef::from_array_view(input)?;
 
@@ -116,36 +134,33 @@ impl SileroVad {
         let outputs = session.run(ort::inputs! {
             "input" => input_tensor,
             "sr" => sr_tensor,
-            "h" => h_tensor,
-            "c" => c_tensor
+            "state" => state_tensor
         })?;
 
         // Extract probability
         let (_shape, data) = outputs["output"].try_extract_tensor::<f32>()?;
         let prob = data[0];
 
-        // Update hidden/cell states for next call
-        let (_h_shape, h_data) = outputs["hn"].try_extract_tensor::<f32>()?;
-        if let Some(h_slice) = self.h.as_slice_mut() {
-            h_slice.copy_from_slice(h_data);
+        // Update state for next call
+        let (_s_shape, s_data) = outputs["stateN"].try_extract_tensor::<f32>()?;
+        if let Some(s_slice) = self.state.as_slice_mut() {
+            s_slice.copy_from_slice(s_data);
         } else {
-            self.h = Array3::from_shape_vec((2, 1, 64), h_data.to_vec())?;
+            self.state = Array3::from_shape_vec((2, 1, STATE_DIM), s_data.to_vec())?;
         }
 
-        let (_c_shape, c_data) = outputs["cn"].try_extract_tensor::<f32>()?;
-        if let Some(c_slice) = self.c.as_slice_mut() {
-            c_slice.copy_from_slice(c_data);
-        } else {
-            self.c = Array3::from_shape_vec((2, 1, 64), c_data.to_vec())?;
+        // Update context：取本帧输入末尾 CONTEXT_SIZE 样本（官方对齐）
+        if samples.len() >= CONTEXT_SIZE {
+            self.context = Array1::from_vec(samples[samples.len() - CONTEXT_SIZE..].to_vec());
         }
 
         Ok(prob)
     }
 
-    /// Reset LSTM states (call between different audio segments)
+    /// Reset LSTM state + context (call between different audio segments)
     pub fn reset(&mut self) {
-        self.h = Array3::zeros((2, 1, 64));
-        self.c = Array3::zeros((2, 1, 64));
+        self.state = Array3::zeros((2, 1, STATE_DIM));
+        self.context = Array1::zeros(CONTEXT_SIZE);
     }
 }
 
@@ -153,7 +168,6 @@ impl SileroVad {
 mod tests {
     use super::*;
 
-    // 内嵌 VAD 字节始终可用（include_bytes!），但 ort session 构造在测试环境可能失败。
     fn try_new() -> Option<SileroVad> {
         crate::config::create_silero_vad().ok()
     }
@@ -183,28 +197,25 @@ mod tests {
             }
         };
         v.reset();
-        let samples = vec![0.0f32; 480];
+        let samples = vec![0.0f32; 512];
         let prob = v.compute(&samples).expect("compute should succeed");
         assert!((0.0..=1.0).contains(&prob), "概率应在 [0,1]，实际 {}", prob);
     }
 
     // ── 内嵌 VAD 测试（include_bytes! + commit_from_memory）──
 
-    /// 内嵌字节能成功构造 SileroVad（验证 include_bytes! 的模型文件有效 + ort commit_from_memory 正常）。
     #[test]
     fn new_builtin_loads_embedded_model() {
         let mut v = match SileroVad::new_builtin() {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("[SKIP] ort commit_from_memory 失败（测试环境 ONNX Runtime 问题）: {}", e);
+                eprintln!("[SKIP] ort commit_from_memory 失败: {}", e);
                 return;
             }
         };
-        // 能 reset 不 panic 即证明 Session 已加载
         v.reset();
     }
 
-    /// new_builtin() 两次构造共享同一 Session（builtin:// 缓存生效）。
     #[test]
     fn new_builtin_shares_session() {
         let a = match SileroVad::new_builtin() {
@@ -223,11 +234,10 @@ mod tests {
         };
         assert!(
             Arc::ptr_eq(&a.session, &b.session),
-            "new_builtin() 两次应共享同一 Session Arc（builtin:// 缓存未生效？）"
+            "new_builtin() 两次应共享同一 Session Arc"
         );
     }
 
-    /// 内嵌 VAD + compute 能正常推理（静音输入返回低概率）。
     #[test]
     fn new_builtin_compute_silence() {
         let mut v = match SileroVad::new_builtin() {
@@ -238,7 +248,7 @@ mod tests {
             }
         };
         v.reset();
-        let samples = vec![0.0f32; 480];
+        let samples = vec![0.0f32; 512];
         let prob = v.compute(&samples).expect("compute should succeed");
         assert!(
             (0.0..=1.0).contains(&prob),
@@ -247,7 +257,6 @@ mod tests {
         );
     }
 
-    /// builtin 缓存与磁盘路径缓存隔离（builtin:// key 存在于缓存中）。
     #[test]
     fn builtin_cache_key_exists() {
         let _ = match SileroVad::new_builtin() {
@@ -257,11 +266,55 @@ mod tests {
                 return;
             }
         };
-        // 确认 builtin:// cache key 存在（全局缓存可能在测试间累积，不验证唯一性）
         let cache = vad_sessions().lock();
         assert!(
-            cache.contains_key(&PathBuf::from("builtin://silero_vad_v4")),
-            "builtin:// cache key 应存在"
+            cache.contains_key(&PathBuf::from(VAD_CACHE_KEY)),
+            "builtin:// cache key 应存在：{}",
+            VAD_CACHE_KEY
+        );
+    }
+
+    /// v6 context 拼接核心回归：模拟语音 prob 应显著高于静音。
+    /// 防止 context 拼接缺失导致 prob 恒近零。
+    #[test]
+    fn v6_speech_prob_higher_than_silence() {
+        let mut v = match SileroVad::new_builtin() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[SKIP] ort commit_from_memory 失败: {}", e);
+                return;
+            }
+        };
+
+        let voice: Vec<f32> = (0..512)
+            .map(|i| {
+                let t = i as f32 / 16000.0;
+                let fundamental = (std::f32::consts::TAU * 120.0 * t).sin() * 0.5;
+                let harmonic2 = (std::f32::consts::TAU * 240.0 * t).sin() * 0.25;
+                let harmonic4 = (std::f32::consts::TAU * 480.0 * t).sin() * 0.1;
+                fundamental + harmonic2 + harmonic4
+            })
+            .collect();
+
+        v.reset();
+        let mut voice_prob = 0.0;
+        for _ in 0..3 {
+            voice_prob = v.compute(&voice).expect("compute");
+        }
+
+        v.reset();
+        let silence = vec![0.0f32; 512];
+        let silence_prob = v.compute(&silence).expect("compute");
+
+        println!(
+            "[v6] voice_prob={:.4} silence_prob={:.4}",
+            voice_prob, silence_prob
+        );
+        assert!(
+            voice_prob > silence_prob * 3.0,
+            "v6 语音 prob ({:.4}) 应显著高于静音 ({:.4}) 的 3 倍",
+            voice_prob,
+            silence_prob
         );
     }
 }

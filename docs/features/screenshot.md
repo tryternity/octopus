@@ -61,7 +61,7 @@ start_screenshot
 
 ## 4. 拼接引擎（Canvas-Anchored NCC + Sobel）
 
-`crates/capx/src/stitch.rs`——**Canvas-Anchored** 消除累积漂移：每帧从画布底部提取 strip → 匹配当前帧 → 追加到画布。
+`crates/capx/src/stitch/`（2026-08-04 拆分为 5 文件：`mod.rs` 编排 / `graybuf.rs` 灰度+Sobel / `ncc_match.rs` NCC 引擎 / `canvas_heal.rs` 自愈 / `fallback_chain.rs` 降级链）——**Canvas-Anchored** 消除累积漂移：每帧从画布底部提取 strip → 匹配当前帧 → 追加到画布。
 
 **底部暗常数尾裁剪（`content_tail`，每帧动态）**：每帧检测当前帧底部"无内容暗常数尾"——逐行判 max-min ≤ `CONTENT_ROW_MAXMIN`(30) **且** 最亮像素 luma < `CONTENT_TAIL_MAX_LUMA`(40)（双条件：暗 + 常数）。覆盖选区下半截恒定纯黑、滚动后期内容上移后选区底部露出的暗背景。`sticky_bottom` 仅首帧一次且依赖逐像素相等，无法应对动态暗尾；`content_tail` **每帧基于当前帧**检测（非首帧缓存），eff_bottom 每帧止于真实内容底 → append 永不带入暗尾 → 画布底部 strip 始终有特征，避免 canvas-anchored 锚点动态退化（常数模板假匹配 score≈1.0 或失配 stuck 死锁——release 实测「拼接一部分后停止」：前期内容填满无暗尾、后期暗尾动态出现时首帧 content_tail 已失效）。双判定的亮度条件防误判：高 luma 低对比渐变行（每行常数但亮）不会被当成暗尾。finalize 按 `sticky_bottom + content_tail`（最后一帧值）补回尾部。
 
