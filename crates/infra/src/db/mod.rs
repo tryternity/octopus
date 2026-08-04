@@ -5,6 +5,7 @@
 // 按表域拆为子模块（每个子文件一组表的 CRUD + 对应测试）：
 mod action_bar;
 mod agent;
+mod clipboard_favorite;
 mod config;
 mod hotword;
 mod models;
@@ -14,6 +15,7 @@ mod vault;
 
 pub use action_bar::*;
 pub use agent::*;
+pub use clipboard_favorite::*;
 pub use config::*;
 pub use hotword::*;
 pub use models::*;
@@ -446,7 +448,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
 /// v56（2026-08-01）：方言规则 DB 化——fuzzy_dialect_rules 表 + 旧 fuzzy_dialect 开关迁移。
 /// v55（2026-08-01）：数据迁移——asr_correct 强制翻 true（让存量用户热词生效，无表结构变更）。
 /// v54（2026-07-30）：image_data 表移除 blob + image_type 列（原图改文件系统存储）。
-pub const CURRENT_SCHEMA_VERSION: u32 = 58;
+pub const CURRENT_SCHEMA_VERSION: u32 = 59;
 
 /// v28 迁移：为所有 source_type IN (0,1)（builtin+local）且 secret_key 为空的模型填充 manifest JSON。
 /// 按 domain 分发到 model_manifests 常量。
