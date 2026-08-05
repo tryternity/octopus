@@ -547,12 +547,14 @@ impl StreamingZipformerTransducer {
             .unwrap_or(false);
         drop(metadata);
 
+        // 第十七轮 P3-2：.max(1) 防 metadata=0（对齐离线 zipformer :820）。
         let context_size = decoder_session
             .metadata()
             .ok()
             .and_then(|m| m.custom("context_size"))
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(2);
+            .unwrap_or(2)
+            .max(1);
 
         let states = crate::zipformer::initial_encoder_states(&encoder_session);
         let vocab = crate::zipformer::load_vocab(&hf_path)?;

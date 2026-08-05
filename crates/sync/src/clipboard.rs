@@ -626,8 +626,17 @@ fn pull_favorite(history_id: &str, key: &ClipboardKey) -> Result<bool> {
         let existing = octopus_infra::db::load_favorite(history_id)?;
         match existing {
             Some(fav) if fav.is_deleted == 0 => {
-                // DB active → 软删
-                octopus_infra::db::soft_delete_favorite(history_id, file.is_deleted)?;
+                // DB active → 软删。第十七轮 P1-2：改用 upsert_favorite_sync 传远程
+                // updated_at（原 soft_delete_favorite 硬编 datetime('now') 丢远程时间戳 →
+                // 多设备交替 sync ping-pong，vault 第十一轮 P1 同型重现）。与 None/active
+                // 两分支对称（都传 file.updated_at.clone()）。
+                let tombstone_fav = octopus_infra::db::ClipboardFavorite {
+                    history_id: history_id.to_string(),
+                    is_deleted: file.is_deleted,
+                    updated_at: file.updated_at.clone(),
+                    sync_md5: None,
+                };
+                octopus_infra::db::upsert_favorite_sync(&tombstone_fav)?;
                 octopus_infra::db::set_clipboard_is_favorite(&fav.history_id, false)?;
                 log::debug!("[sync] 收藏 pull: {} DB active → 软删", history_id);
                 Ok(true)

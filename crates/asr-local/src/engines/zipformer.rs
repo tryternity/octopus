@@ -811,13 +811,14 @@ impl ZipformerTransducerEngine {
             log::warn!("无法从模型 shape 读出 encoder_dim，使用默认值 512");
         }
 
-        // context_size: 从 decoder metadata 读（默认 2）
+        // context_size: 从 decoder metadata 读（默认 2）。第十七轮 P3-1：.max(1) 防 metadata=0。
         let context_size = decoder_session
             .metadata()
             .ok()
             .and_then(|m| m.custom("context_size"))
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(2);
+            .unwrap_or(2)
+            .max(1);
 
         log::info!(
             "ZipformerTransducer: encoder_dim={}, context_size={}, chunk_len={}, chunk_shift={}, is_whisper={}",
