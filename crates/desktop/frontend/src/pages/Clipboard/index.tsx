@@ -101,7 +101,8 @@ export default function Clipboard() {
         setStackPreview(s.nextPreview);
       })
       .catch(() => {});
-    const unlisten = listen<number>("paste-stack://updated", (remaining) => {
+    const unlisten = listen("paste-stack://updated", (event) => {
+      const remaining = event.payload;
       // 后端 emit 的是裸 remaining 数字（event payload）。
       const n = typeof remaining === "number" ? remaining : 0;
       setStackRemaining(n);
