@@ -4,7 +4,7 @@ import { invoke } from "@/lib/tauri";
 import { invoke as rawInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { type Annotation, drawAnnotation, drawAnnotationScaled, drawBlur, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
+import { type Annotation, drawAnnotation, drawAnnotationScaled, drawBlur, annBounds, hitTestAnnotationPrecise, drawWatermark, type WatermarkOpts } from "@/lib/annotation";
 import { ToolButton } from "./ToolButton";
 import { ScrollPreview } from "./ScrollPreview";
 import { useAnnotationState, AnnotationToolbar, computeToolbarPosition, computeToolbarCenterX, TOOLBAR_H } from "@/components/Annotation";
@@ -632,6 +632,9 @@ export default function Screenshot() {
     invoke("stop_scroll_recording").catch(() => {});
   }
 
+  // watermarkOpts 由父组件从 config 读取传入（Task 8）。Phase 2 Step 2 前先从 localStorage 读测试。
+  const watermarkOpts: WatermarkOpts | null = null; // TODO Task 8 替换为真实 config 读取
+
   async function composeAndCropBytes(): Promise<ArrayBuffer | null> {
     // 2026-07-20 perf：bg 现在是 ImageBitmap（直接 RGBA），优先用它；
     // bgImgRef 仅 legacy 兜底（理论上不再被设置）。
@@ -660,6 +663,11 @@ export default function Screenshot() {
     for (const ann of allAnns) {
       if (ann.type === "blur") continue; // blur 已由 drawBlur 处理，跳过避免色块叠加两次
       drawAnnotationScaled(tmpCtx, ann, scale);
+    }
+
+    // 水印（全局叠加层，在所有标注之后）——从 config 读，水印不进 annotations 数组
+    if (watermarkOpts?.text) {
+      drawWatermark(tmpCtx, bgW, bgH, watermarkOpts);
     }
 
     const px = Math.round(sel.x * scale);

@@ -400,6 +400,39 @@ export function drawBlur(ctx: CanvasRenderingContext2D, ann: Annotation, scale: 
   }
 }
 
+export interface WatermarkOpts {
+  text: string;
+  position: string;      // 9 格 key
+  opacity: number;       // 0-1
+  fontSize: number;
+  color?: string;        // 默认 "#ffffff"
+}
+
+/**
+ * 截图水印——导出时叠加到 canvas。position 为 9 格定位。
+ * 不进 annotations 数组（全局叠加层，config 驱动）。
+ */
+export function drawWatermark(ctx: CanvasRenderingContext2D, canvasW: number, canvasH: number, opts: WatermarkOpts) {
+  if (!opts.text) return;
+  const margin = 16;
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, opts.opacity));
+  ctx.fillStyle = opts.color ?? "#ffffff";
+  ctx.font = `${opts.fontSize}px -apple-system, system-ui, sans-serif`;
+  const metrics = ctx.measureText(opts.text);
+  const tw = metrics.width;
+  const th = opts.fontSize;
+  const pos = opts.position;
+  let x = margin;
+  let y = margin;
+  if (pos.includes("right")) x = canvasW - tw - margin;
+  if (pos.includes("center") && !pos.startsWith("top") && !pos.startsWith("bottom")) x = (canvasW - tw) / 2;
+  if (pos.includes("bottom")) y = canvasH - th - margin;
+  if (pos.includes("middle") && !pos.endsWith("left") && !pos.endsWith("right")) y = (canvasH - th) / 2;
+  ctx.fillText(opts.text, x, y + th);
+  ctx.restore();
+}
+
 export function annBounds(ann: Annotation): { x: number; y: number; w: number; h: number } {
   if (ann.type === "text") {
     return { x: ann.x1 - 2, y: ann.y1 - 2, w: 200, h: (ann.fontSize || 16) + 6 };
