@@ -72,6 +72,30 @@ pub struct VaultMetaInput {
     pub protected_private_key: Option<String>,
 }
 
+/// 从 VaultMeta（DB 行）构造 VaultMetaInput（DB 写入），丢弃 id/created_at/updated_at。
+///
+/// 2026-08-05 抽取（vault 审查问题 2）：消除 vault crate 6+ 处逐字构造重复。
+/// 调用方可用 struct update syntax 覆盖个别字段（如 `VaultMetaInput::from(&meta) {
+/// protected_user_vault_key: new_key, .. }`）。
+impl From<&VaultMeta> for VaultMetaInput {
+    fn from(m: &VaultMeta) -> Self {
+        Self {
+            kdf_type: m.kdf_type,
+            kdf_salt: m.kdf_salt.clone(),
+            kdf_iterations: m.kdf_iterations,
+            kdf_memory_kib: m.kdf_memory_kib,
+            kdf_parallelism: m.kdf_parallelism,
+            protected_user_vault_key: m.protected_user_vault_key.clone(),
+            app_key_local_enc: m.app_key_local_enc.clone(),
+            app_key_sync_enc: m.app_key_sync_enc.clone(),
+            security_stamp: m.security_stamp.clone(),
+            equivalent_domains: m.equivalent_domains.clone(),
+            public_key: m.public_key.clone(),
+            protected_private_key: m.protected_private_key.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct VaultCipherInput {
     pub id: String, // UUID v4 字符串——调用方生成（不再 AUTOINCREMENT）

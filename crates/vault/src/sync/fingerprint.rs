@@ -66,22 +66,28 @@ pub fn cipher_md5(c: &VaultCipher) -> String {
 /// 之前有 id: &str 参数（注释说 input 不含 id），但 v39 UUID 改动后 VaultCipherInput
 /// 已有 id 字段（db.rs:3584）。两个调用点传的 id 始终 = input.id，参数冗余。
 /// 现直接用 input.id，消除「调用方传 ≠ input.id」的 API 误用面。
+///
+/// 2026-08-05 合并：原重复了 cipher_md5 的 11 字段 format! 拼接逻辑，现直接构造
+/// 临时 VaultCipher 调 cipher_md5（created_at/updated_at/sync_md5 不影响 md5，填默认）。
 pub fn cipher_md5_from_input(input: &VaultCipherInput) -> String {
-    let s = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        input.id,
-        input.folder_id.as_deref().unwrap_or(""),
-        input.favorite,
-        input.atype,
-        input.name,
-        input.notes.as_deref().unwrap_or(""),
-        input.data,
-        input.fields.as_deref().unwrap_or(""),
-        input.password_history.as_deref().unwrap_or(""),
-        input.reprompt,
-        input.is_deleted as u8,
-    );
-    md5_hex(s.as_bytes())
+    let row = VaultCipher {
+        id: input.id.clone(),
+        folder_id: input.folder_id.clone(),
+        favorite: input.favorite,
+        atype: input.atype,
+        name: input.name.clone(),
+        notes: input.notes.clone(),
+        data: input.data.clone(),
+        fields: input.fields.clone(),
+        password_history: input.password_history.clone(),
+        reprompt: input.reprompt,
+        is_deleted: input.is_deleted,
+        // 以下字段不影响 md5（cipher_md5 不读它们），填默认值
+        created_at: String::new(),
+        updated_at: String::new(),
+        sync_md5: None,
+    };
+    cipher_md5(&row)
 }
 
 /// folder 的逻辑内容 md5——不含 created_at/updated_at。

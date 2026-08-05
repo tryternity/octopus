@@ -178,9 +178,56 @@ pub fn samples_to_pcm_s16le(samples: &[f32]) -> Vec<u8> {
     out
 }
 
+/// 拼接稳态句（已 join 为单个 String）+ 当前 partial 为显示文本。
+///
+/// 4 个 provider（baidu/tencent/aliyun-FunASR/aliyun-Qwen）的 partial 显示逻辑同构：
+/// - 两者都空 → 空串
+/// - 仅 stable 空 → 直接 partial（首句，不加前导 sep）
+/// - 仅 partial 空 → 直接 stable
+/// - 两者都非空 → stable + sep + partial（句间分隔，防粘连）
+///
+/// 2026-08-05 抽取（问题 2）：消除各 handler 内联的 if/else 拼接判定。各 provider 的
+/// "稳态句收集"结构不同（Vec/BTreeMap/String），但最终都 join 成 `stable: String` 后
+/// 调本函数。
+pub(crate) fn combine_stable_partial(stable: &str, partial: &str, sep: &str) -> String {
+    if partial.is_empty() {
+        stable.to_string()
+    } else if stable.is_empty() {
+        // 首句 partial（无稳态句）——直接 partial，不加前导 sep
+        partial.to_string()
+    } else {
+        // 有稳态句 + partial ——stable 与 partial 间插 sep（句间分隔）
+        format!("{}{}{}", stable, sep, partial)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combine_stable_partial_both_empty() {
+        assert_eq!(combine_stable_partial("", "", "，"), "");
+    }
+
+    #[test]
+    fn combine_stable_partial_stable_only() {
+        assert_eq!(combine_stable_partial("你好，世界", "", "，"), "你好，世界");
+    }
+
+    #[test]
+    fn combine_stable_partial_first_partial_no_leading_sep() {
+        // 首句 partial（stable 空）——不加前导 sep
+        assert_eq!(combine_stable_partial("", "你好", "，"), "你好");
+        assert_eq!(combine_stable_partial("", "hello", " "), "hello");
+    }
+
+    #[test]
+    fn combine_stable_partial_stable_plus_partial_inserts_sep() {
+        // 有稳态句 + partial ——中间插 sep（防粘连）
+        assert_eq!(combine_stable_partial("你好", "世界", "，"), "你好，世界");
+        assert_eq!(combine_stable_partial("hello world", "today", " "), "hello world today");
+    }
 
     #[test]
     fn test_samples_to_pcm_s16le_empty() {

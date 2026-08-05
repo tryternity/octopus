@@ -694,7 +694,10 @@ pub fn import_hotwords_from_files() -> Result<Vec<HotwordSetMeta>> {
         }
         let content = std::fs::read_to_string(&meta_path)
             .with_context(|| format!("读词典元数据失败：{}", meta_path.display()))?;
-        let meta: HotwordSetMeta = serde_json::from_str(&content)
+        // 第十八轮 P2：strip UTF-8 BOM（\u{FEFF}）——外部编辑器（Windows Notepad）
+        // 可能给文件加 BOM，serde_json::from_str 不容忍 BOM 前缀 → 解析失败。
+        let content = content.trim_start_matches('\u{FEFF}');
+        let meta: HotwordSetMeta = serde_json::from_str(content)
             .with_context(|| format!("解析词典元数据失败：{}", meta_path.display()))?;
         // clone_initial 守卫：超期 set tombstone 跳过（防 GC 后跨设备复活，
         // 对齐 pull_set:927）。常规 merge 路径已有守卫，此处补 clone_initial。
