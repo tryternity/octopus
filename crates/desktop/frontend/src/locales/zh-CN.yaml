@@ -440,6 +440,14 @@ settings:
     recordShortcut: 录屏
     recordShortcutHint: 弹出配置浮窗选源后开始；录制中按此键暂停/恢复；停止按 ESC
     screenshotShortcutHint: 截取屏幕区域并识别文字
+    # 截图水印卡片（Task 9）：文字 / 9 格位置 / 透明度 / 字号
+    watermark: 截图水印
+    watermarkHint: 留空关闭；截图保存时绘制
+    watermarkText: 文字
+    watermarkTextPlaceholder: 输入水印（留空关闭）
+    watermarkPosition: 位置
+    watermarkOpacity: 透明度
+    watermarkFontSize: 字号
     recording: 语音识别
     recogLang: 识别语言
     recogAuto: 自动

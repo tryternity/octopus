@@ -432,6 +432,14 @@ settings:
     vaultAutotypeShortcutHint: Press this key on a browser login page to auto-fill passwords
     screenshotShortcut: Screenshot
     screenshotShortcutHint: Capture screen region and recognize text
+    # Screenshot watermark card (Task 9): text / 9-grid position / opacity / font size
+    watermark: Screenshot Watermark
+    watermarkHint: Empty to disable; drawn when screenshot is saved
+    watermarkText: Text
+    watermarkTextPlaceholder: Enter watermark (empty to disable)
+    watermarkPosition: Position
+    watermarkOpacity: Opacity
+    watermarkFontSize: Font Size
     recordShortcut: Recording
     recordShortcutHint: Show config float; pause/resume while recording; press ESC to stop
     recording: Voice Recognition

@@ -12,7 +12,7 @@ import ShortcutButton from "@/components/ShortcutButton";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Row } from "@/components/ui/row";
 import { Toggle } from "@/components/ui/toggle";
-import { Select } from "@/components/ui/input";
+import { Input, Select } from "@/components/ui/input";
 import { UnderlineTabs } from "@/components/ui/tabs";
 import { PermissionCard, PERMISSIONS } from "@/components/PermissionCard";
 import SyncPanel from "./Vault/SyncPanel";
@@ -240,6 +240,62 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             </Row>
             <Row label={t("settings.general.screenshotShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.screenshotShortcutHint")}>
               <ShortcutButton shortcut={cfg.screenshot_shortcut as string} capturing={capturingKey === "screenshot_shortcut"} onClick={() => startShortcutCapture("screenshot_shortcut")} />
+            </Row>
+            {/* 截图水印卡片（Task 9）：文字 / 9 格位置 / 透明度 slider / 字号 number。
+                4 控件各自 onChange → set_config 热重载，截图画布读 get_config 重画。
+                文字留空 = 关闭水印（与 Screenshot/index.tsx watermarkOpts.text 真值判断对齐）。 */}
+            <Row label={t("settings.general.watermarkText")} effect={t("settings.effect.now")} hint={t("settings.general.watermarkHint")}>
+              <Input
+                value={(cfg.screenshot_watermark_text as string) || ""}
+                placeholder={t("settings.general.watermarkTextPlaceholder")}
+                onChange={(e) => setVal("screenshot_watermark_text", e.target.value)}
+                size="sm"
+              />
+            </Row>
+            <Row label={t("settings.general.watermarkPosition")} effect={t("settings.effect.now")}>
+              <Select
+                value={(cfg.screenshot_watermark_position as string) || "bottom-right"}
+                onChange={(e) => setVal("screenshot_watermark_position", e.target.value)}
+              >
+                {([
+                  "top-left", "top-center", "top-right",
+                  "middle-left", "middle-center", "middle-right",
+                  "bottom-left", "bottom-center", "bottom-right",
+                ] as const).map((p) => <option key={p} value={p}>{p}</option>)}
+              </Select>
+            </Row>
+            <Row label={t("settings.general.watermarkOpacity")} effect={t("settings.effect.now")}>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.1}
+                  value={typeof cfg.screenshot_watermark_opacity === "number"
+                    ? cfg.screenshot_watermark_opacity
+                    : 0.3}
+                  onChange={(e) => setVal("screenshot_watermark_opacity", Number(e.target.value))}
+                  className="w-40 accent-voice"
+                />
+                <span className="w-10 text-right text-sm tabular-nums">
+                  {typeof cfg.screenshot_watermark_opacity === "number"
+                    ? cfg.screenshot_watermark_opacity.toFixed(1)
+                    : "0.3"}
+                </span>
+              </div>
+            </Row>
+            <Row label={t("settings.general.watermarkFontSize")} effect={t("settings.effect.now")}>
+              <Input
+                type="number"
+                min={8}
+                max={96}
+                step={1}
+                value={typeof cfg.screenshot_watermark_font_size === "number"
+                  ? cfg.screenshot_watermark_font_size
+                  : 24}
+                onChange={(e) => setVal("screenshot_watermark_font_size", parseInt(e.target.value, 10))}
+                size="sm"
+              />
             </Row>
             {/* 录屏快捷键（config-driven，与 screenshot 同模式，支持热重载）。
                 停止录屏固定 ESC 不暴露（octopus 全局通用停止键）。 */}
