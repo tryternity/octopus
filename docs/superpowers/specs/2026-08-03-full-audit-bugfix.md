@@ -406,6 +406,7 @@
 | 17 | `e83928d4` | P1-1 FTS5 JOIN c.rowid + P1-2 tombstone pull 远程时间戳 + P2-2 paraformer enc_feat + P3-1/2 context_size + P3-9 注释 |
 | 18 | `8ef36db0` | P1 vault_sync_clone/resolve spawn_blocking + P2 import_hotwords BOM + P2 reindex_apps spawn_blocking |
 | 19 | `d0378d46` | P2-1 itemId 崩溃 + P2-2 MarkdownPreview listener + BOM 错位补修 + config fail-soft |
+| 20 | `e12364d2` | P2-4 opus_mt 超长单句硬切 + P2-5 翻译引擎未知名显式报错 + P2-6 驳回 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -913,3 +914,35 @@ React 18+ 不再警告 setState-on-unmount，但不符合项目既有范式（Re
 - `cargo build` desktop(cloud,vault)/infra —— 0 error 0 warning。
 - `cargo test`：infra / desktop 520 全过。
 - tsc exit 0。
+
+## 23. 第二十轮审查修复（2026-08-05，2 P2 修 + 1 驳回 + 4 P2 留后续）
+
+第二十轮全新核查（15 模块）。报告 7 P2 + ~12 P3。本轮修 2 P2（翻译引擎），驳回 1（pty mutex 已修），4 P2（download ×2 + scheduler + pty spawn）留后续需更多设计。
+
+### P2-4. opus-mt 长无标点单句静默截断 🟠
+
+**根因**：`opus_mt.rs:97-99` translate_chunk 对超 500 tokens 的输入 `truncate(Right)` 静默丢后半段。split_and_translate 按标点分段后逐句调 translate_chunk——但无标点单句（1000+ 汉字）仍超限被截断。对比 m2m100 有 200 字符/chunk + is_boundary 硬切（:158-172），opus_mt 无。
+
+**修复**：split_and_translate 循环里检查每句 token 数，超限时字符级硬切（200 字符/chunk，尽量在 is_sentence_end 或空格处切），对齐 m2m100 策略。
+
+### P2-5. 翻译引擎选择静默回退 m2m100 🟠
+
+**根因**：`engine.rs:38-40` 非 opus-mt 前缀一律加载 m2m100——用户配错引擎名（typo）静默回退，以为用 A 实际跑 B。
+
+**修复**：显式判 m2m100 前缀，其他 bail! 报错（支持：opus-mt-* / m2m100*）。
+
+### 驳回 P2-6（pty waiter mutex unwrap）
+
+报告称 `session.rs:333 lock.lock().unwrap()` 中毒 panic。核实：所有 `lock.lock()` 已是 `unwrap_or_else(|e| e.into_inner())`（8 处），中毒锁安全提取。**报告基于旧代码，当前代码已修**。
+
+### 留后续（需更多设计）
+
+- **P2-1** download If-Range 未发 + etag 不校验 → 新旧内容混合
+- **P2-2** sidecar 恢复 + 200 返回 counter 虚高 >100%
+- **P2-3** scheduler 单任务 hang 阻塞全部（需架构改动）
+- **P2-7** pty waiter spawn 失败留僵尸 child（罕见触发）
+
+### 验证
+
+- `cargo build` translation —— 0 error 0 warning。
+- `cargo test`：translation 20 全过。
