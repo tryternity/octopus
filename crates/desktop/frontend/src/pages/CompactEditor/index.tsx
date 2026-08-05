@@ -127,7 +127,11 @@ function CompactEditor() {
   const [hoveredTabRect, setHoveredTabRect] = useState<DOMRect | null>(null);
   const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current); }, []);
+  // 第十四轮 P3-6：unmount cleanup 清两个 timer（原只清 savedFlashTimer，hoverTimer 漏清→泄漏）
+  useEffect(() => () => {
+    if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current);
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+  }, []);
 
   const tabsRef = useRef<Tab[]>([]);
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);

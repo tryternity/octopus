@@ -229,92 +229,104 @@ pub fn hard_delete_hotword_set(id: &str) -> Result<()> {
 /// tombstone → 对端 pull 时即使旧 outline 有也 skip → 收敛。详见 tombstone-gc spec §3。
 pub fn purge_expired_hotword_tombstones(now_secs: i64) -> Result<usize> {
     ensure_db()?;
+    with_db(|conn| purge_expired_hotword_tombstones_at(conn, now_secs))
+}
+
+/// GC 超期 set tombstone + word tombstone + hotword_hits 孤儿（裸连接版，供测试直接调）。
+pub(crate) fn purge_expired_hotword_tombstones_at(
+    conn: &Connection,
+    now_secs: i64,
+) -> Result<usize> {
     let cutoff = now_secs - HOTWORD_TOMBSTONE_RETENTION_SECS;
-    with_db(|conn| {
-        let mut purged_sets = 0usize;
-        // 1. 超期 set tombstone：先收集 id（连带删词 + hits），再硬删
-        let expired_set_ids: Vec<String> = {
-            let mut stmt = conn.prepare(
-                "SELECT id FROM hotword_sets WHERE is_deleted > 0 AND is_deleted < ?1",
-            )?;
-            let rows = stmt.query_map(params![cutoff], |r| r.get::<_, String>(0))?;
-            rows.filter_map(|r| r.ok()).collect()
-        };
-        for id in &expired_set_ids {
-            conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
-            conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
-            purged_sets += 1;
-        }
-        // 2. 超期 word tombstone（活跃词典里的软删词）——is_deleted>0 且超期
-        let word_cutoff = cutoff; // 同阈值
-        let n = conn.execute(
-            "DELETE FROM hotword_words WHERE is_deleted > 0 AND is_deleted < ?1",
-            params![word_cutoff],
+    let mut purged_sets = 0usize;
+    // 1. 超期 set tombstone：先收集 id（连带删词 + hits），再硬删
+    let expired_set_ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM hotword_sets WHERE is_deleted > 0 AND is_deleted < ?1",
         )?;
-        // 3. hotword_hits 孤儿清理：词在所有活跃词典（is_deleted=0 的 hotword_words）消失 → 命中清零。
-        //    放在删 word tombstone 之后——保证超期硬删的词的 hits 也被清。hits 不参与 sync，
-        //    各机独立按本地活跃词集合判定孤儿，无跨设备复活问题。详见 tombstone-gc spec §5。
-        let orphan_hits = conn.execute(
-            "DELETE FROM hotword_hits WHERE word NOT IN \
-             (SELECT word FROM hotword_words WHERE is_deleted = 0)",
-            [],
-        )?;
-        if purged_sets > 0 || n > 0 || orphan_hits > 0 {
-            log::info!(
-                "[hotword-gc] purged {} set tombstones + {} word tombstones + {} orphan hits (cutoff={})",
-                purged_sets,
-                n,
-                orphan_hits,
-                cutoff
-            );
-        }
-        Ok(purged_sets)
-    })
+        let rows = stmt.query_map(params![cutoff], |r| r.get::<_, String>(0))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    for id in &expired_set_ids {
+        conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
+        conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+        purged_sets += 1;
+    }
+    // 2. 超期 word tombstone（活跃词典里的软删词）——is_deleted>0 且超期
+    let word_cutoff = cutoff; // 同阈值
+    let n = conn.execute(
+        "DELETE FROM hotword_words WHERE is_deleted > 0 AND is_deleted < ?1",
+        params![word_cutoff],
+    )?;
+    // 3. hotword_hits 孤儿清理：词在所有活跃词典（is_deleted=0 的 hotword_words）消失 → 命中清零。
+    //    放在删 word tombstone 之后——保证超期硬删的词的 hits 也被清。hits 不参与 sync，
+    //    各机独立按本地活跃词集合判定孤儿，无跨设备复活问题。详见 tombstone-gc spec §5。
+    let orphan_hits = conn.execute(
+        "DELETE FROM hotword_hits WHERE word NOT IN \
+         (SELECT word FROM hotword_words WHERE is_deleted = 0)",
+        [],
+    )?;
+    if purged_sets > 0 || n > 0 || orphan_hits > 0 {
+        log::info!(
+            "[hotword-gc] purged {} set tombstones + {} word tombstones + {} orphan hits (cutoff={})",
+            purged_sets,
+            n,
+            orphan_hits,
+            cutoff
+        );
+    }
+    Ok(purged_sets)
 }
 
 /// 统计 set tombstone 数（前端「回收站 (N)」按钮用）。
 pub fn count_hotword_tombstones() -> Result<i64> {
     ensure_db()?;
-    with_db(|conn| {
-        let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM hotword_sets WHERE is_deleted > 0",
-            [],
-            |r| r.get(0),
-        )?;
-        Ok(n)
-    })
+    with_db(count_hotword_tombstones_at)
+}
+
+/// 裸连接版（供测试直接调）。
+pub(crate) fn count_hotword_tombstones_at(conn: &Connection) -> Result<i64> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM hotword_sets WHERE is_deleted > 0",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(n)
 }
 
 /// 手动清空回收站——硬删所有 set tombstone（不限年龄）+ 其词 + 所有 word tombstone。
 /// 前端「清空回收站」按钮调（用户确认后）。
 pub fn purge_all_hotword_tombstones() -> Result<usize> {
     ensure_db()?;
-    with_db(|conn| {
-        let tombstone_set_ids: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT id FROM hotword_sets WHERE is_deleted > 0")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-            rows.filter_map(|r| r.ok()).collect()
-        };
-        let mut purged = 0usize;
-        for id in &tombstone_set_ids {
-            conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
-            conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
-            purged += 1;
-        }
-        // 所有 word tombstone（不限年龄）
-        let n = conn.execute("DELETE FROM hotword_words WHERE is_deleted > 0", [])?;
-        // hotword_hits 孤儿清理（同 purge_expired 逻辑，详见 tombstone-gc spec §5）
-        let orphan_hits = conn.execute(
-            "DELETE FROM hotword_hits WHERE word NOT IN \
-             (SELECT word FROM hotword_words WHERE is_deleted = 0)",
-            [],
-        )?;
-        log::info!(
-            "[hotword-gc] manual purge: {} sets + {} words + {} orphan hits",
-            purged, n, orphan_hits
-        );
-        Ok(purged)
-    })
+    with_db(purge_all_hotword_tombstones_at)
+}
+
+/// 裸连接版（供测试直接调）。
+pub(crate) fn purge_all_hotword_tombstones_at(conn: &Connection) -> Result<usize> {
+    let tombstone_set_ids: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT id FROM hotword_sets WHERE is_deleted > 0")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let mut purged = 0usize;
+    for id in &tombstone_set_ids {
+        conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
+        conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+        purged += 1;
+    }
+    // 所有 word tombstone（不限年龄）
+    let n = conn.execute("DELETE FROM hotword_words WHERE is_deleted > 0", [])?;
+    // hotword_hits 孤儿清理（同 purge_expired 逻辑，详见 tombstone-gc spec §5）
+    let orphan_hits = conn.execute(
+        "DELETE FROM hotword_hits WHERE word NOT IN \
+         (SELECT word FROM hotword_words WHERE is_deleted = 0)",
+        [],
+    )?;
+    log::info!(
+        "[hotword-gc] manual purge: {} sets + {} words + {} orphan hits",
+        purged, n, orphan_hits
+    );
+    Ok(purged)
 }
 
 /// upsert 热词版本元数据——sync pull 从文件读回写 SQLite 用（v46 新增，v57 去 words_text，v58 加 is_deleted）。
@@ -678,22 +690,32 @@ pub fn list_all_hotword_words() -> Result<Vec<HotwordWord>> {
 /// 热词挖掘继续工作。只有永久删除（`DELETE FROM`）才会让行真正消失、挖不到。
 /// `ORDER BY id DESC LIMIT N` 降序取最新 N 条，软删内容 id 不变（软删只改 is_deleted），
 /// 活跃和软删混在同一条时间线，不会互相挤占名额。
+/// 内部：取最近 limit 条 clipboard_history 的 content（按 item_type 过滤）。
+/// `item_type_filter` — WHERE 子句的 item_type 条件（如 `"IN ('voice','text','ocr')"` 或 `"= 'voice'"`）。
+/// **故意不过滤 is_deleted**（INV-C1：软删内容仍是热词来源）。
+fn list_recent_content_at(
+    conn: &Connection,
+    item_type_filter: &str,
+    limit: i64,
+) -> Result<Vec<String>> {
+    let sql = format!(
+        "SELECT content FROM clipboard_history
+         WHERE item_type {filter} AND content IS NOT NULL AND content != ''
+         ORDER BY id DESC LIMIT ?1",
+        filter = item_type_filter
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![limit], |r| r.get::<_, String>(0))?;
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
 pub fn list_recent_text(limit: i64) -> Result<Vec<String>> {
     ensure_db()?;
-    with_db(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT content FROM clipboard_history
-             WHERE item_type IN ('voice','text','ocr') AND content IS NOT NULL AND content != ''
-             -- 故意不过滤 is_deleted（INV-C1：软删内容仍是热词来源）
-             ORDER BY id DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit], |r| r.get::<_, String>(0))?;
-        let mut list = Vec::new();
-        for r in rows {
-            list.push(r?);
-        }
-        Ok(list)
-    })
+    with_db(|conn| list_recent_content_at(conn, "IN ('voice','text','ocr')", limit))
 }
 
 /// 取最近 limit 条记录的 segments JSON 里 kind="edited" 的段文本。
@@ -732,19 +754,7 @@ pub fn list_recent_edited_segments(limit: i64) -> Result<Vec<String>> {
 /// voice 软删回收站上限 VOICE_TRASH_MAX=500（2026-08-02 从 100 提升，丰富 bigram 语料）。
 pub fn list_recent_voice_text(limit: i64) -> Result<Vec<String>> {
     ensure_db()?;
-    with_db(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT content FROM clipboard_history
-             WHERE item_type = 'voice' AND content IS NOT NULL AND content != ''
-             ORDER BY id DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit], |r| r.get::<_, String>(0))?;
-        let mut list = Vec::new();
-        for r in rows {
-            list.push(r?);
-        }
-        Ok(list)
-    })
+    with_db(|conn| list_recent_content_at(conn, "= 'voice'", limit))
 }
 
 /// 命中计数 +1（按词文本——corrector 命中时只有文本）。写全局 `hotword_hits`（upsert）。
@@ -1347,7 +1357,7 @@ mod tests {
         .unwrap();
 
         let now = future; // now = 当前
-        let purged = purge_expired_hotword_tombstones_pub(&conn, now).unwrap();
+        let purged = purge_expired_hotword_tombstones_at(&conn, now).unwrap();
         assert_eq!(purged, 1, "应硬删 1 个超期 set tombstone（旧删）");
 
         // 活跃词典还在
@@ -1376,11 +1386,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(count_hotword_tombstones_pub(&conn).unwrap(), 2);
+        assert_eq!(count_hotword_tombstones_at(&conn).unwrap(), 2);
 
-        let purged = purge_all_hotword_tombstones_pub(&conn).unwrap();
+        let purged = purge_all_hotword_tombstones_at(&conn).unwrap();
         assert_eq!(purged, 2, "应清空 2 个 tombstone");
-        assert_eq!(count_hotword_tombstones_pub(&conn).unwrap(), 0);
+        assert_eq!(count_hotword_tombstones_at(&conn).unwrap(), 0);
     }
 
     /// GC 清 hotword_hits 孤儿：词在所有活跃词典消失 → 命中行清零。
@@ -1407,7 +1417,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let purged = purge_expired_hotword_tombstones_pub(&conn, now).unwrap();
+        let purged = purge_expired_hotword_tombstones_at(&conn, now).unwrap();
         assert_eq!(purged, 0, "无 tombstone，set 不删");
 
         // 橘子（孤儿）被清；苹果/香蕉（活跃词）保留
@@ -1447,68 +1457,11 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let purged = purge_expired_hotword_tombstones_pub(&conn, now).unwrap();
+        let purged = purge_expired_hotword_tombstones_at(&conn, now).unwrap();
         assert_eq!(purged, 1, "硬删 1 个超期 set tombstone");
 
         // 「苹果」在 set-B 仍活跃 → hits 保留，hit_count 不变
         let hits = list_hotword_hits_at(&conn).unwrap();
         assert_eq!(hits.get("苹果"), Some(&2i64), "跨 set 同词在任一活跃 set 存在 → 命中保留");
-    }
-
-    // 测试用 pub 包装（避免 ensure_db/with_db 在 in-memory 测里走全局 DB）
-    fn purge_expired_hotword_tombstones_pub(conn: &Connection, now_secs: i64) -> Result<usize> {
-        let cutoff = now_secs - HOTWORD_TOMBSTONE_RETENTION_SECS;
-        let mut purged_sets = 0usize;
-        let expired_set_ids: Vec<String> = {
-            let mut stmt = conn.prepare(
-                "SELECT id FROM hotword_sets WHERE is_deleted > 0 AND is_deleted < ?1",
-            )?;
-            let rows = stmt.query_map(params![cutoff], |r| r.get::<_, String>(0))?;
-            rows.filter_map(|r| r.ok()).collect()
-        };
-        for id in &expired_set_ids {
-            conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
-            conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
-            purged_sets += 1;
-        }
-        let _ = conn.execute(
-            "DELETE FROM hotword_words WHERE is_deleted > 0 AND is_deleted < ?1",
-            params![cutoff],
-        )?;
-        // hotword_hits 孤儿清理（与生产函数同步——详见 tombstone-gc spec §5）
-        let _ = conn.execute(
-            "DELETE FROM hotword_hits WHERE word NOT IN \
-             (SELECT word FROM hotword_words WHERE is_deleted = 0)",
-            [],
-        )?;
-        Ok(purged_sets)
-    }
-    fn count_hotword_tombstones_pub(conn: &Connection) -> Result<i64> {
-        Ok(conn.query_row(
-            "SELECT COUNT(*) FROM hotword_sets WHERE is_deleted > 0",
-            [],
-            |r| r.get(0),
-        )?)
-    }
-    fn purge_all_hotword_tombstones_pub(conn: &Connection) -> Result<usize> {
-        let ids: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT id FROM hotword_sets WHERE is_deleted > 0")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-            rows.filter_map(|r| r.ok()).collect()
-        };
-        let mut purged = 0usize;
-        for id in &ids {
-            conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
-            conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
-            purged += 1;
-        }
-        conn.execute("DELETE FROM hotword_words WHERE is_deleted > 0", [])?;
-        // hotword_hits 孤儿清理（与生产函数同步——详见 tombstone-gc spec §5）
-        conn.execute(
-            "DELETE FROM hotword_hits WHERE word NOT IN \
-             (SELECT word FROM hotword_words WHERE is_deleted = 0)",
-            [],
-        )?;
-        Ok(purged)
     }
 }

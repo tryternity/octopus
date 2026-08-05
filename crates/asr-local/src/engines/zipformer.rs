@@ -471,15 +471,20 @@ impl ZipformerCtcEngine {
         let session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&model_path)?;
 
         // Read chunk parameters from model metadata (T, decode_chunk_len)
+        // 第十六轮 P2-1：.max(1) 下界保护——异常模型（metadata="0"）parse 成功得 0，
+        // unwrap_or 不生效 → frame_idx += 0 死循环（CTC :635 while :555）。
+        // 对齐 streaming_zipformer.rs（第十五轮已修流式，离线漏修）。
         let metadata = session.metadata()?;
         let chunk_len: usize = metadata
             .custom("T")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(77);
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(77)
+            .max(1);
         let chunk_shift: usize = metadata
             .custom("decode_chunk_len")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(64);
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(64)
+            .max(1);
         let is_whisper = metadata
             .custom("feature")
             .map(|s| s == "whisper")
@@ -757,15 +762,18 @@ impl ZipformerTransducerEngine {
             crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&joiner_path)?;
 
         // encoder metadata: T, decode_chunk_len, feature
+        // 第十六轮 P2-1：同 CTC :475，.max(1) 防 metadata=0 死循环（Transducer :1009 外层 chunk while）。
         let metadata = encoder_session.metadata()?;
         let chunk_len: usize = metadata
             .custom("T")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(77);
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(77)
+            .max(1);
         let chunk_shift: usize = metadata
             .custom("decode_chunk_len")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(64);
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(64)
+            .max(1);
         let is_whisper = metadata
             .custom("feature")
             .map(|s| s == "whisper")
@@ -803,13 +811,14 @@ impl ZipformerTransducerEngine {
             log::warn!("无法从模型 shape 读出 encoder_dim，使用默认值 512");
         }
 
-        // context_size: 从 decoder metadata 读（默认 2）
+        // context_size: 从 decoder metadata 读（默认 2）。第十七轮 P3-1：.max(1) 防 metadata=0。
         let context_size = decoder_session
             .metadata()
             .ok()
             .and_then(|m| m.custom("context_size"))
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(2);
+            .unwrap_or(2)
+            .max(1);
 
         log::info!(
             "ZipformerTransducer: encoder_dim={}, context_size={}, chunk_len={}, chunk_shift={}, is_whisper={}",

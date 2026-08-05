@@ -187,6 +187,21 @@ pub fn list_transcriptions(limit: u32, offset: u32, search: Option<&str>) -> Res
 }
 
 /// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
+/// TranscriptionRecord 行映射共享闭包（list_transcriptions_search_at /
+/// list_transcriptions_at 共用，7 列顺序一致）。
+/// 2026-08-05 抽取（问题 4）：消除 2 处逐字重复。
+fn transcription_row_mapper(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptionRecord> {
+    Ok(TranscriptionRecord {
+        id: row.get(0)?,
+        created_at: row.get(1)?,
+        engine: row.get(2)?,
+        polish_status: row.get(3)?,
+        duration_ms: row.get(4)?,
+        segments: row.get(5)?,
+        text: row.get(6)?,
+    })
+}
+
 /// search = None / "" → 全列；>=3 字符走 FTS5 MATCH（倒排索引）；<3 字符回退 LIKE（trigram 无法生成 3-gram）。
 pub(crate) fn list_transcriptions_search_at(
     conn: &Connection,
@@ -195,13 +210,6 @@ pub(crate) fn list_transcriptions_search_at(
     search: Option<&str>,
 ) -> Result<Vec<TranscriptionRecord>> {
     if let Some(q) = search.filter(|s| !s.is_empty()) {
-        let row_mapper = |row: &rusqlite::Row| -> rusqlite::Result<TranscriptionRecord> {
-            Ok(TranscriptionRecord {
-                id: row.get(0)?, created_at: row.get(1)?, engine: row.get(2)?,
-                polish_status: row.get(3)?, duration_ms: row.get(4)?,
-                segments: row.get(5)?, text: row.get(6)?,
-            })
-        };
         let select_cols = "SELECT c.id, c.created_at,
                 COALESCE(json_extract(c.meta_info, '$.engine'), '') as engine,
                 CASE WHEN json_extract(c.meta_info, '$.polished') = 1 THEN 'done' ELSE 'off' END as polish_status,
@@ -220,7 +228,7 @@ pub(crate) fn list_transcriptions_search_at(
                               WHERE clipboard_history_fts MATCH ?1)
                  ORDER BY c.created_at DESC, c.id DESC LIMIT ?2 OFFSET ?3"
             ))?;
-            let rows = stmt.query_map(params![escaped, limit, offset], row_mapper)?;
+            let rows = stmt.query_map(params![escaped, limit, offset], transcription_row_mapper)?;
             return Ok(collect_rows(rows, "fts5 search"));
         }
         // <3 字符回退 LIKE：trigram 无法生成 3-gram，MATCH 会无结果
@@ -230,7 +238,7 @@ pub(crate) fn list_transcriptions_search_at(
              WHERE c.item_type = 'voice' AND c.content LIKE ?1
              ORDER BY c.created_at DESC, c.id DESC LIMIT ?2 OFFSET ?3"
         ))?;
-        let rows = stmt.query_map(params![pattern, limit, offset], row_mapper)?;
+        let rows = stmt.query_map(params![pattern, limit, offset], transcription_row_mapper)?;
         return Ok(collect_rows(rows, "like search"));
     }
     list_transcriptions_at(conn, limit, offset)
@@ -280,17 +288,7 @@ pub(crate) fn list_transcriptions_at(
          FROM clipboard_history WHERE item_type = 'voice'
          ORDER BY created_at DESC, id DESC LIMIT ?1 OFFSET ?2"
     )?;
-    let rows = stmt.query_map(params![limit, offset], |row| {
-        Ok(TranscriptionRecord {
-            id: row.get(0)?,
-            created_at: row.get(1)?,
-            engine: row.get(2)?,
-            polish_status: row.get(3)?,
-            duration_ms: row.get(4)?,
-            segments: row.get(5)?,
-            text: row.get(6)?,
-        })
-    })?;
+    let rows = stmt.query_map(params![limit, offset], transcription_row_mapper)?;
     let mut records = Vec::new();
     for row in rows {
         records.push(row?);
@@ -301,15 +299,7 @@ pub(crate) fn list_transcriptions_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::INIT_SQL;
-    use rusqlite::Connection;
-
-    /// 在内存 DB 上执行 INIT_SQL，返回初始化好的连接。
-    fn open_init() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        conn
-    }
+    use crate::db::test_support::open_init;
 
     #[test]
     fn update_and_finalize_round_trip() {

@@ -122,6 +122,17 @@ pub fn md5_hex(bytes: &[u8]) -> String {
 
 /// 把 SQLite `datetime('now')` 格式（`"2026-07-21 15:11:22"`）转为 Unix 毫秒。
 ///
+/// 当前 Unix 秒数（i64）。SystemTime 异常（早于 UNIX_EPOCH，理论不可能）时返 0。
+///
+/// 2026-08-05 抽取：消除 hotword.rs 中 8 处 `SystemTime::now().duration_since(UNIX_EPOCH)
+/// .map(|d| d.as_secs() as i64).unwrap_or(0)` 复制（问题 4）。
+pub fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// SQLite 的 UTC 时间，直接解析为毫秒——outline 用数值比较（旧版 ISO 字符串比较不可靠）。
 /// 解析失败返 0（让 merge_outlines 退化到「双方都 0 取本地」语义，安全）。
 ///

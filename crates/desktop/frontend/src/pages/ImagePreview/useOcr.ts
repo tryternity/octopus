@@ -23,6 +23,16 @@ export function useOcr(imageId: string | null) {
   const [ocrWarn, setOcrWarn] = useState(false);
   const [ocrCopiedText, setOcrCopiedText] = useState<string | null>(null);
   const ocrDoneRef = useRef(false);
+  // 第十五轮 P3-组4 #7：三处 setTimeout（ocrCopied / ocrWarn / ocrCopiedText）原裸调用无 ref，
+  // unmount 后仍 setState + 连续触发 timer stacking。各加独立 ref + 统一 unmount cleanup effect。
+  const ocrCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ocrWarnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ocrCopiedTextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (ocrCopiedTimerRef.current) clearTimeout(ocrCopiedTimerRef.current);
+    if (ocrWarnTimerRef.current) clearTimeout(ocrWarnTimerRef.current);
+    if (ocrCopiedTextTimerRef.current) clearTimeout(ocrCopiedTextTimerRef.current);
+  }, []);
 
   // 截图 OCR → 推送 OCR blocks。mount 时同时拉后端缓存。
   useEffect(() => {
@@ -68,13 +78,15 @@ export function useOcr(imageId: string | null) {
         const ocrId = await invoke<string>("insert_ocr_clipboard_item", { text: result.text });
         await openCompactEditorTab(ocrId);
         setOcrCopied(true);
-        setTimeout(() => setOcrCopied(false), 1500);
+        if (ocrCopiedTimerRef.current) clearTimeout(ocrCopiedTimerRef.current);
+        ocrCopiedTimerRef.current = setTimeout(() => setOcrCopied(false), 1500);
       }
     } catch (e) {
       const msg = String(e);
       if (msg.includes("还未完成")) {
         setOcrWarn(true);
-        setTimeout(() => setOcrWarn(false), 1800);
+        if (ocrWarnTimerRef.current) clearTimeout(ocrWarnTimerRef.current);
+        ocrWarnTimerRef.current = setTimeout(() => setOcrWarn(false), 1800);
       } else {
         console.error(e);
       }
@@ -84,7 +96,8 @@ export function useOcr(imageId: string | null) {
   const handleOcrBlockCopy = useCallback((text: string, label: string) => {
     navigator.clipboard?.writeText(text).then(() => {
       setOcrCopiedText(label);
-      setTimeout(() => setOcrCopiedText(null), 2000);
+      if (ocrCopiedTextTimerRef.current) clearTimeout(ocrCopiedTextTimerRef.current);
+      ocrCopiedTextTimerRef.current = setTimeout(() => setOcrCopiedText(null), 2000);
     }).catch(() => {});
   }, []);
 

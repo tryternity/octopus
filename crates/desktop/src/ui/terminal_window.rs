@@ -177,11 +177,7 @@ pub fn open_terminal_window(app_handle: &tauri::AppHandle, cwd: Option<&str>) ->
     // macOS：新建终端窗口 → Dock 显图标 + 激活到前台
     #[cfg(target_os = "macos")]
     {
-        let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-        let _ = app_handle.run_on_main_thread(|| {
-            crate::platform::activation::activate_self();
-            crate::ui::settings_window::set_dock_icon();
-        });
+        crate::platform::activation::activate_regular_for_new_window(app_handle);
     }
 
     let label = alloc_label();
@@ -237,19 +233,7 @@ pub fn open_terminal_with_command(
 ) -> Result<(), String> {
     // 单例：窗口已存在 → 聚焦 + 定向 emit 新 tab
     if let Some(win) = app_handle.get_webview_window(AGENT_WINDOW_LABEL) {
-        #[cfg(target_os = "macos")]
-        {
-            let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-            let ah = app_handle.clone();
-            let _ = app_handle.run_on_main_thread(move || {
-                crate::platform::activation::activate_self();
-                let _ = ah.get_webview_window(AGENT_WINDOW_LABEL).map(|w| w.set_focus());
-            });
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = win.set_focus();
-        }
+        crate::platform::activation::focus_regular_window(app_handle, AGENT_WINDOW_LABEL, false);
         let _ = win.show();
         // 定向 emit：只发给 agent 窗口，不广播到其他终端窗口
         let _ = app_handle.emit_to(
@@ -272,11 +256,7 @@ pub fn open_terminal_with_command(
     // 窗口不存在 → 建窗（单例 label）
     #[cfg(target_os = "macos")]
     {
-        let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-        let _ = app_handle.run_on_main_thread(|| {
-            crate::platform::activation::activate_self();
-            crate::ui::settings_window::set_dock_icon();
-        });
+        crate::platform::activation::activate_regular_for_new_window(app_handle);
     }
 
     let bg = crate::ui::theme::window_bg_hex(WINDOW_LABEL_PREFIX);

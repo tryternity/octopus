@@ -78,14 +78,19 @@ pub fn set_test_db(conn: Connection) {
     // 与 ensure_db → open_db_conn → init_schema 的初始化路径保持一致：
     // 1. 设置 PRAGMA（WAL/busy_timeout/foreign_keys）
     // 2. 跑 INIT_SQL 建表 + seed（IF NOT EXISTS 幂等）
-    // 3. 直接标 v40（跳过迁移分支）
+    // 3. 直接标 CURRENT_SCHEMA_VERSION（跳过迁移分支——test helper 不走迁移链）
     conn.execute_batch(
         "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
     )
     .expect("set_test_db: set PRAGMA");
     conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
-    conn.execute("PRAGMA user_version = 46", [])
-        .expect("set_test_db: set user_version");
+    // 第十五轮 P3-G：改用 CURRENT_SCHEMA_VERSION（原硬编 46 与实际 v58 不符，
+    // 裸 conn 调 init_schema 会从 v46 走迁移 → bail）。test helper 应反映当前 schema。
+    conn.execute(
+        &format!("PRAGMA user_version = {}", CURRENT_SCHEMA_VERSION),
+        [],
+    )
+    .expect("set_test_db: set user_version");
     TEST_DB_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
     });
@@ -248,10 +253,10 @@ where
 /// schema 变更直接改 db.sql + 升 `user_version`，旧库一律清库重建（`rm ~/.octopus/octopus.db*`）。
 ///
 /// 分支：
-/// - `v == 0`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → v55
-/// - `v == 55`：最新，no-op
-/// - `v == 54`：数据迁移——asr_correct 强制翻 true（热词纠错开关，2026-08-01）
-/// - `v != 0 && v < 54`：旧版本库——不支持自动迁移，bail 提示清库
+/// - `v == 0`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → CURRENT_SCHEMA_VERSION
+/// - `v == CURRENT_SCHEMA_VERSION`：最新，no-op
+/// - `54 <= v < CURRENT`：数据迁移链（while 循环逐版本升级）
+/// - `v < 54`：旧版本库——不支持自动迁移，bail 提示清库
 ///
 /// schema 变更流程：改 db.sql + 升 `user_version`（init_schema 末尾 + db.sql 注释）。
 fn init_schema(conn: &Connection) -> Result<()> {
@@ -625,12 +630,15 @@ fn is_leap(year: u64) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
+/// 测试辅助函数共享模块——各子模块的 `#[cfg(test)] mod tests` 经
+/// `use crate::db::test_support::*` 引入 `open_init` / `setup_test_db`，
+/// 消除原 7 处 `open_init` + 3 处 `setup_test_db` 逐字复制（2026-08-05 问题 5）。
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
+    use super::{Connection, INIT_SQL};
 
     /// 在内存 DB 上执行 INIT_SQL，返回初始化好的连接。
-    fn open_init() -> Connection {
+    pub fn open_init() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         conn
@@ -638,15 +646,21 @@ mod tests {
 
     /// 全局测试 DB 初始化（进程级 Once）。
     ///
-    /// 调用 [`init_test_db`] 切换到 in-memory 模式——所有经 [`with_db`] /
-    /// [`ensure_db`] 的测试不再打开 `~/.octopus/octopus.db`，彻底隔离开发库。
+    /// 调用 [`super::init_test_db`] 切换到 in-memory 模式——所有经 [`super::with_db`] /
+    /// [`super::ensure_db`] 的测试不再打开 `~/.octopus/octopus.db`，彻底隔离开发库。
     /// 详见架构文档「测试数据库隔离」。
     static TEST_DB_SETUP: std::sync::Once = std::sync::Once::new();
-    fn setup_test_db() {
+    pub fn setup_test_db() {
         TEST_DB_SETUP.call_once(|| {
-            init_test_db();
+            super::init_test_db();
         });
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_support::{open_init, setup_test_db};
 
     // ── action_bar shortcut 测试见 db/action_bar.rs ──
 

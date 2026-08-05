@@ -357,6 +357,10 @@ fn zipformer_flush<E: ZipformerStreamOps>(
 }
 
 /// Zipformer 流式引擎共用接口（CTC 和 Transducer 方法签名完全相同）。
+///
+/// `finish`/`reset` 标 `#[allow(dead_code)]`：它们在调用方经具体类型（inherent method）
+/// 调用，不经过本 trait 泛型调度，故 trait 级别显示未用，但保留在 trait 里是为了
+/// 统一 CTC/Transducer 的方法签名契约。
 trait ZipformerStreamOps {
     fn accept_samples(&mut self, samples: &[f32]) -> Result<Option<String>>;
     fn flush(&mut self) -> Result<Option<String>>;

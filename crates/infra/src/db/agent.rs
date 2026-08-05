@@ -39,29 +39,6 @@ pub fn list_agent_adapter_records() -> Result<Vec<AgentAdapterRecord>> {
     })
 }
 
-/// 按 key 查单条 adapter。
-pub fn load_agent_adapter_by_key(key: &str) -> Result<Option<AgentAdapterRecord>> {
-    ensure_db()?;
-    with_db(|conn| {
-        let mut stmt = conn.prepare(
-            &format!("SELECT {} FROM agent_adapters WHERE key=?1", AGENT_ADAPTER_SELECT_COLS)
-        )?;
-        let mut rows = stmt.query_map(params![key], |r| Ok(AgentAdapterRecord {
-            id: r.get(0)?,
-            key: r.get(1)?,
-            display_name: r.get(2)?,
-            detect_binary: r.get(3)?,
-            command_template: r.get(4)?,
-            is_system: r.get::<_, i32>(5)? != 0,
-            is_default: r.get::<_, i32>(6)? != 0,
-        }))?;
-        match rows.next() {
-            Some(r) => Ok(Some(r?)),
-            None => Ok(None),
-        }
-    })
-}
-
 pub fn insert_agent_adapter_record(
     key: &str, display_name: &str, detect_binary: &str, command_template: &str,
 ) -> Result<i64> {
@@ -229,15 +206,7 @@ pub fn delete_agent_task(id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::INIT_SQL;
-    use rusqlite::Connection;
-
-    /// 在内存 DB 上执行 INIT_SQL，返回初始化好的连接。
-    fn open_init() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        conn
-    }
+    use crate::db::test_support::open_init;
 
     #[test]
     fn agent_adapters_table_exists() {

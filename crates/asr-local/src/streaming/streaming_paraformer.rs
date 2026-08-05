@@ -6,8 +6,9 @@ use anyhow::{Context, Result};
 use ort::session::Session;
 
 use crate::config;
+use crate::fbank::apply_lfr;
 use crate::paraformer::{
-    apply_lfr, decode_tokens, extract_cmvn_from_metadata, FBANK_FFT, FBANK_FFT_SIZE,
+    decode_tokens, extract_cmvn_from_metadata, FBANK_FFT, FBANK_FFT_SIZE,
     FBANK_FRAME_LEN, FBANK_FRAME_SHIFT, FBANK_NUM_BINS, LFR_WINDOW_SHIFT, LFR_WINDOW_SIZE,
     MEL_FILTERBANK, MEL_FILTERBANK_RANGE, POVEY_WINDOW,
 };
@@ -73,8 +74,8 @@ impl StreamingParaformer {
 
         let prefer_int8 = true;
 
-        let encoder_path = discover_onnx(&hf_path, "encoder", prefer_int8)?;
-        let decoder_path = discover_onnx(&hf_path, "decoder", prefer_int8)?;
+        let encoder_path = crate::config::discover_onnx(&hf_path, "encoder", prefer_int8)?;
+        let decoder_path = crate::config::discover_onnx(&hf_path, "decoder", prefer_int8)?;
 
         let encoder_session = crate::config::apply_session_acceleration(Session::builder()?)?
             .commit_from_file(&encoder_path)?;
@@ -99,7 +100,9 @@ impl StreamingParaformer {
         drop(metadata);
 
         let decoder_num_blocks: usize = decoder_num_blocks_str.parse().unwrap_or(16);
-        let decoder_kernel_size: usize = decoder_kernel_size_str.parse().unwrap_or(11);
+        // 第十六轮 P2-2：.max(1) 防 usize 下溢——异常模型（decoder_kernel_size="0"）
+        // parse 成功得 0，unwrap_or(11) 不生效 → cache_time = 0 - 1 下溢 panic（new + reset 都炸）。
+        let decoder_kernel_size: usize = decoder_kernel_size_str.parse().unwrap_or(11).max(1);
 
         let cache_time = decoder_kernel_size - 1; // 10
         let feat_dim = FBANK_NUM_BINS * LFR_WINDOW_SIZE; // 560
@@ -261,7 +264,8 @@ impl StreamingParaformer {
         self.feat_cache.fill(0.0);
         self.encoder_out_cache.fill(0.0);
         self.alpha_cache = 0.0;
-        let cache_time = self.decoder_kernel_size - 1;
+        // 第十六轮 P2-2：saturating_sub 防御（构造端已 .max(1)，此处双保险）。
+        let cache_time = self.decoder_kernel_size.saturating_sub(1);
         // 形状一致时直接 fill(0.0) 复用内存（run_decoder 慢路径可能改维度，此处兜底重建）。
         let init_shape = (1, self.encoder_output_size, cache_time);
         for cache in &mut self.decoder_caches {
@@ -774,43 +778,7 @@ impl StreamingParaformer {
 
 // ── Helpers ──
 
-fn discover_onnx(
-    hf_path: &std::path::Path,
-    name: &str,
-    prefer_int8: bool,
-) -> Result<std::path::PathBuf> {
-    if prefer_int8 {
-        let int8 = hf_path.join(format!("{}.int8.onnx", name));
-        let fp32 = hf_path.join(format!("{}.onnx", name));
-        if int8.exists() {
-            Ok(int8)
-        } else if fp32.exists() {
-            Ok(fp32)
-        } else {
-            anyhow::bail!(
-                "{}.onnx / {}.int8.onnx not found at {}",
-                name,
-                name,
-                hf_path.display()
-            )
-        }
-    } else {
-        let fp32 = hf_path.join(format!("{}.onnx", name));
-        let int8 = hf_path.join(format!("{}.int8.onnx", name));
-        if fp32.exists() {
-            Ok(fp32)
-        } else if int8.exists() {
-            Ok(int8)
-        } else {
-            anyhow::bail!(
-                "{}.onnx / {}.int8.onnx not found at {}",
-                name,
-                name,
-                hf_path.display()
-            )
-        }
-    }
-}
+// discover_onnx 已抽取到 config.rs（pub(crate)），本文件调 crate::config::discover_onnx
 
 // ── CIF alpha overlap mask（去 chunk 间 overlap，防 CIF 重复 fire）──
 

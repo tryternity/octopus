@@ -20,18 +20,17 @@
 //! coordinator 通过同步 channel 非阻塞收 partial（`try_recv`），close 时阻塞等最终结果。
 
 use anyhow::{Context, Result};
-use futures_util::{SinkExt, StreamExt};
 use octopus_asr_local::sentence_separator;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{
-    connect_async,
     tungstenite::client::IntoClientRequest,
     tungstenite::http::header::AUTHORIZATION,
     tungstenite::Message,
 };
 
 use crate::cloud_types::{CloudStreamHandle, PcmFrame, StreamEvent};
+use crate::session_loop::{HandleOutcome, WsSessionHandler, run_ws_session_loop};
 
 /// 建连 + 初始化 + 推 pre-roll PCM + 启动后台 WS task。
 ///
@@ -77,7 +76,7 @@ pub fn open(
 
 /// 后台 WS 会话主逻辑：建连 → run-task → pre-roll → 双向循环 → finish-task → 收结果。
 async fn run_ws_session(
-    mut pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
+    pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
     result_tx: mpsc::UnboundedSender<StreamEvent>,
     endpoint: String,
     key: String,
@@ -85,210 +84,196 @@ async fn run_ws_session(
     language: String,
     pre_roll_samples: Vec<f32>,
 ) -> Result<()> {
-    // 1. 建连
-    let mut request = endpoint
-        .as_str()
-        .into_client_request()
-        .context("aliyun WS 请求构造失败")?;
-    request.headers_mut().insert(
-        AUTHORIZATION,
-        format!("Bearer {}", key)
-            .parse()
-            .context("aliyun Authorization header 构造失败")?,
-    );
-    let (mut ws, _resp) = tokio::time::timeout(
-        std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
-        connect_async(request),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("aliyun WS connect timeout"))?
-    .with_context(|| format!("aliyun WS 连接失败: {}", endpoint))?;
+    let handler = AliyunFunAsrHandler {
+        key,
+        task_id: uuid::Uuid::new_v4().to_string(),
+        model,
+        language,
+        committed: String::new(),
+        current_sentence: String::new(),
+        current_sentence_id: -1,
+    };
+    run_ws_session_loop(pcm_rx, result_tx, &endpoint, &pre_roll_samples, handler).await
+}
 
-    // 2. 发 run-task（含 max_sentence_silence=600，比客户端 700ms 短，让服务端先出完整句）
-    let task_id = uuid::Uuid::new_v4().to_string();
-    let run_task = build_run_task_streaming(&model, &language, &task_id);
-    ws.send(Message::Text(run_task.to_string()))
-        .await
-        .context("aliyun WS 发送 run-task 失败")?;
+/// aliyun Fun-ASR / Paraformer 协议 hook 实现（见 [`crate::session_loop::run_ws_session_loop`]）。
+///
+/// 持有 FunASR 特定状态：鉴权 key、task_id（finish-task 用）、model/language、
+/// 结果累积（committed 已完成句 + current_sentence 当前句 + current_sentence_id）。
+///
+/// FunASR 在一个 task 内可能发多句 result-generated。根据文档：
+/// - sentence_id 从 1 递增，标识当前句子
+/// - sentence_end=true 表示该句最终结果（之后 sentence_id 会递增）
+/// - heartbeat=true 时 sentence_id=0，应跳过
+/// - text 是该句的累积文本（中间结果可能被修订，最终结果在 sentence_end=true 时确定）
+struct AliyunFunAsrHandler {
+    key: String,
+    task_id: String,
+    model: String,
+    language: String,
+    committed: String,         // 已完成的句子
+    current_sentence: String,  // 当前句子的累积文本
+    current_sentence_id: i64,  // 当前句子 ID（-1 = 尚未收到）
+}
 
-    // 3. 推 pre-roll PCM
-    if !pre_roll_samples.is_empty() {
-        let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
-        ws.send(Message::binary(pcm))
-            .await
-            .context("aliyun WS 发送 pre-roll PCM 失败")?;
+impl WsSessionHandler for AliyunFunAsrHandler {
+    const LABEL: &'static str = "aliyun";
+
+    fn build_connect_request(
+        &self,
+        endpoint: &str,
+    ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+        let mut request = endpoint.into_client_request()?;
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            format!("Bearer {}", self.key)
+                .parse()
+                .context("aliyun Authorization header 构造失败")?,
+        );
+        Ok(request)
     }
 
-    // 4. 双向循环
-    // Fun-ASR 在一个 task 内可能发多句 result-generated。根据文档：
-    // - sentence_id 从 1 递增，标识当前句子
-    // - sentence_end=true 表示该句最终结果（之后 sentence_id 会递增）
-    // - heartbeat=true 时 sentence_id=0，应跳过
-    // - text 是该句的累积文本（中间结果可能被修订，最终结果在 sentence_end=true 时确定）
-    let sep = sentence_separator(&language); // 句间分隔符（英文空格 / 其他中文逗号）
-    let mut committed: String = String::new(); // 已完成的句子
-    let mut current_sentence: String = String::new(); // 当前句子的累积文本
-    let mut current_sentence_id: i64 = -1; // 当前句子 ID（-1 = 尚未收到）
-    loop {
-        tokio::select! {
-            // 收 PCM 指令
-            frame = pcm_rx.recv() => {
-                match frame {
-                    Some(PcmFrame::Samples(pcm)) => {
-                        ws.send(Message::binary(pcm))
-                            .await
-                            .context("aliyun WS 发送 PCM 帧失败")?;
-                    }
-                    Some(PcmFrame::Finish) => {
-                        let finish_task = json!({
-                            "header": {
-                                "action": "finish-task",
-                                "task_id": task_id,
-                                "streaming": "duplex",
-                            },
-                            "payload": { "input": {} }
-                        });
-                        ws.send(Message::Text(finish_task.to_string()))
-                            .await
-                            .context("aliyun WS 发送 finish-task 失败")?;
-                    }
-                    None => break, // coordinator drop → 关闭
-                }
-            }
-            // 收 WS 消息（加读取超时，防止静默断连永久卡死）
-            msg = tokio::time::timeout(
-                std::time::Duration::from_secs(octopus_infra::net::WS_READ_TIMEOUT_SECS),
-                ws.next(),
-            ) => {
-                let msg = match msg {
-                    Err(_) => {
-                        let _ = result_tx.send(StreamEvent::Failed("aliyun WS read timeout".into()));
-                        return Ok(());
-                    }
-                    Ok(None) => break,
-                    Ok(Some(Err(e))) => {
-                        let _ = result_tx.send(StreamEvent::Failed(format!("aliyun WS 错误: {}", e)));
-                        return Ok(());
-                    }
-                    Ok(Some(Ok(m))) => m,
+    fn build_init_message(&self) -> Result<Option<Message>> {
+        let run_task = build_run_task_streaming(&self.model, &self.language, &self.task_id);
+        Ok(Some(Message::Text(run_task.to_string())))
+    }
+
+    fn build_pcm_message(&self, pcm_s16le: &[u8]) -> Result<Message> {
+        Ok(Message::binary(pcm_s16le.to_vec()))
+    }
+
+    fn build_finish_message(&self) -> Result<Message> {
+        let finish_task = json!({
+            "header": {
+                "action": "finish-task",
+                "task_id": self.task_id,
+                "streaming": "duplex",
+            },
+            "payload": { "input": {} }
+        });
+        Ok(Message::Text(finish_task.to_string()))
+    }
+
+    fn handle_message(
+        &mut self,
+        msg: Message,
+        result_tx: &mpsc::UnboundedSender<StreamEvent>,
+    ) -> HandleOutcome {
+        let sep = sentence_separator(&self.language); // 句间分隔符（英文空格 / 其他中文逗号）
+        match msg {
+            Message::Text(t) => {
+                let v: Value = match serde_json::from_str(&t) {
+                    Ok(v) => v,
+                    Err(_) => return HandleOutcome::Continue,
                 };
-                match msg {
-                    Message::Text(t) => {
-                        let v: Value = match serde_json::from_str(&t) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
-                        match v["header"]["event"].as_str() {
-                            Some("result-generated") => {
-                                let sentence = &v["payload"]["output"]["sentence"];
-                                // 跳过心跳包（heartbeat=true, sentence_id=0）
-                                let heartbeat = sentence["heartbeat"].as_bool().unwrap_or(false);
-                                if heartbeat {
-                                    continue;
-                                }
-                                let text = sentence["text"].as_str().unwrap_or("");
-                                let sentence_id = sentence["sentence_id"].as_i64().unwrap_or(0);
-                                let sentence_end = sentence["sentence_end"].as_bool().unwrap_or(false);
-
-                                // sentence_id 变化 = 新句开始，提交前一句
-                                if sentence_id != current_sentence_id && current_sentence_id > 0
-                                    && !current_sentence.is_empty() {
-                                        if !committed.is_empty() && !committed.ends_with(sep) {
-                                            committed.push_str(sep);
-                                        }
-                                        committed.push_str(&current_sentence);
-                                        current_sentence.clear();
-                                    }
-                                current_sentence_id = sentence_id;
-                                current_sentence = text.to_string();
-
-                                // sentence_end=true = 该句最终结果，立即提交
-                                if sentence_end {
-                                    if !committed.is_empty() && !committed.ends_with(sep) {
-                                        committed.push_str(sep);
-                                    }
-                                    committed.push_str(&current_sentence);
-                                    current_sentence.clear();
-                                    current_sentence_id = -1; // 等下一个新句
-                                }
-
-                                // partial 拼接也需 sep 守卫（与 commit 分支一致）：
-                                // committed（已提交句）与 current_sentence（当前句 partial）
-                                // 之间若无分隔会实时显示粘连（commit 时自愈，但 partial 高频
-                                // 显示期间会闪现粘连）。仅当两者均非空且 committed 未以 sep 结尾
-                                // 时插入 sep。
-                                let combined = if !committed.is_empty()
-                                    && !current_sentence.is_empty()
-                                    && !committed.ends_with(sep)
-                                {
-                                    format!("{}{}{}", committed, sep, current_sentence)
-                                } else {
-                                    format!("{}{}", committed, current_sentence)
-                                };
-                                log::debug!(
-                                    "[FunASR-Stream] sid={} end={} text={:?} combined={:?}",
-                                    sentence_id, sentence_end, text, combined
-                                );
-                                // 仅非空 combined 发 Text（R1：与 H1 同源——空 Text 会经
-                                // close_async 的 text=t 覆盖之前累积的非空文本，导致有效
-                                // 结果丢失。combined 在 committed+current_sentence 同时为空时
-                                // 为空串：首帧/缓冲帧/VAD 静音过渡帧。对齐同文件 Qwen line 489
-                                // 的 if !combined.is_empty() + 其他 3 家 provider）。
-                                if !combined.is_empty() {
-                                    let _ = result_tx.send(StreamEvent::Text(combined));
-                                }
-                            }
-                            Some("task-finished") => {
-                                // 提交未提交的最后一句
-                                if !current_sentence.is_empty() {
-                                    if !committed.is_empty() && !committed.ends_with(sep) {
-                                        committed.push_str(sep);
-                                    }
-                                    committed.push_str(&current_sentence);
-                                    current_sentence.clear();
-                                }
-                                log::debug!("[FunASR-Stream] task-finished total={:?}", committed);
-                                if !committed.is_empty() {
-                                    let _ = result_tx.send(StreamEvent::Text(committed.clone()));
-                                }
-                                let _ = result_tx.send(StreamEvent::Finished);
-                                break;
-                            }
-                            Some("task-failed") => {
-                                let msg = v["header"]["error_message"]
-                                    .as_str()
-                                    .or_else(|| v["header"]["error_code"].as_str())
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_else(|| v["header"].to_string());
-                                let _ = result_tx.send(StreamEvent::Failed(msg));
-                                break;
-                            }
-                            _ => {} // task-started 等忽略
+                match v["header"]["event"].as_str() {
+                    Some("result-generated") => {
+                        let sentence = &v["payload"]["output"]["sentence"];
+                        // 跳过心跳包（heartbeat=true, sentence_id=0）
+                        let heartbeat = sentence["heartbeat"].as_bool().unwrap_or(false);
+                        if heartbeat {
+                            return HandleOutcome::Continue;
                         }
-                    }
-                    Message::Binary(_) => {} // binary 等忽略
-                    Message::Close(_) => {
-                        // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现落 _ => {} 忽略，
-                        // 随后 ws.next() 返 Ok(None) → break → return Ok(()) 无终态事件，
-                        // close_async 把 partial 当成功（#3）。现显式处理：有已提交稳态句
-                        // 发 Finished，否则 Failed 暴露异常（参照 baidu_stream.rs:214）。
-                        log::debug!("aliyun(FunASR): WS 连接关闭");
-                        if !committed.is_empty() {
-                            let _ = result_tx.send(StreamEvent::Text(committed.clone()));
-                            let _ = result_tx.send(StreamEvent::Finished);
+                        let text = sentence["text"].as_str().unwrap_or("");
+                        let sentence_id = sentence["sentence_id"].as_i64().unwrap_or(0);
+                        let sentence_end = sentence["sentence_end"].as_bool().unwrap_or(false);
+
+                        // sentence_id 变化 = 新句开始，提交前一句
+                        if sentence_id != self.current_sentence_id
+                            && self.current_sentence_id > 0
+                            && !self.current_sentence.is_empty()
+                        {
+                            if !self.committed.is_empty() && !self.committed.ends_with(sep) {
+                                self.committed.push_str(sep);
+                            }
+                            self.committed.push_str(&self.current_sentence);
+                            self.current_sentence.clear();
+                        }
+                        self.current_sentence_id = sentence_id;
+                        self.current_sentence = text.to_string();
+
+                        // sentence_end=true = 该句最终结果，立即提交
+                        if sentence_end {
+                            if !self.committed.is_empty() && !self.committed.ends_with(sep) {
+                                self.committed.push_str(sep);
+                            }
+                            self.committed.push_str(&self.current_sentence);
+                            self.current_sentence.clear();
+                            self.current_sentence_id = -1; // 等下一个新句
+                        }
+
+                        // partial 拼接也需 sep 守卫（与 commit 分支一致）：
+                        // committed（已提交句）与 current_sentence（当前句 partial）
+                        // 之间若无分隔会实时显示粘连（commit 时自愈，但 partial 高频
+                        // 显示期间会闪现粘连）。仅当两者均非空且 committed 未以 sep 结尾
+                        // 时插入 sep。
+                        let combined = if !self.committed.is_empty()
+                            && !self.current_sentence.is_empty()
+                            && !self.committed.ends_with(sep)
+                        {
+                            format!("{}{}{}", self.committed, sep, self.current_sentence)
                         } else {
-                            let _ = result_tx.send(StreamEvent::Failed(
-                                "aliyun(FunASR) WS 连接关闭但未收到稳态识别结果".into()
-                            ));
+                            format!("{}{}", self.committed, self.current_sentence)
+                        };
+                        log::debug!(
+                            "[FunASR-Stream] sid={} end={} text={:?} combined={:?}",
+                            sentence_id, sentence_end, text, combined
+                        );
+                        // 仅非空 combined 发 Text（R1：与 H1 同源——空 Text 会经
+                        // close_async 的 text=t 覆盖之前累积的非空文本，导致有效
+                        // 结果丢失。combined 在 committed+current_sentence 同时为空时
+                        // 为空串：首帧/缓冲帧/VAD 静音过渡帧。对齐同文件 Qwen line 489
+                        // 的 if !combined.is_empty() + 其他 3 家 provider）。
+                        if !combined.is_empty() {
+                            let _ = result_tx.send(StreamEvent::Text(combined));
                         }
-                        return Ok(());
+                        HandleOutcome::Continue
                     }
-                    _ => {}
+                    Some("task-finished") => {
+                        // 提交未提交的最后一句
+                        if !self.current_sentence.is_empty() {
+                            if !self.committed.is_empty() && !self.committed.ends_with(sep) {
+                                self.committed.push_str(sep);
+                            }
+                            self.committed.push_str(&self.current_sentence);
+                            self.current_sentence.clear();
+                        }
+                        log::debug!("[FunASR-Stream] task-finished total={:?}", self.committed);
+                        if !self.committed.is_empty() {
+                            let _ = result_tx.send(StreamEvent::Text(self.committed.clone()));
+                        }
+                        HandleOutcome::TerminalFinished
+                    }
+                    Some("task-failed") => {
+                        let msg = v["header"]["error_message"]
+                            .as_str()
+                            .or_else(|| v["header"]["error_code"].as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| v["header"].to_string());
+                        HandleOutcome::TerminalFailed(msg)
+                    }
+                    _ => HandleOutcome::Continue, // task-started 等忽略
                 }
             }
+            Message::Binary(_) => HandleOutcome::Continue, // binary 等忽略
+            Message::Close(_) => {
+                // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现落 _ => {} 忽略，
+                // 随后 ws.next() 返 Ok(None) → break → return Ok(()) 无终态事件，
+                // close_async 把 partial 当成功（#3）。现显式处理：有已提交稳态句
+                // 发 Finished，否则 Failed 暴露异常（参照 baidu_stream.rs:214）。
+                log::debug!("aliyun(FunASR): WS 连接关闭");
+                if !self.committed.is_empty() {
+                    let _ = result_tx.send(StreamEvent::Text(self.committed.clone()));
+                    HandleOutcome::TerminalFinished
+                } else {
+                    HandleOutcome::TerminalFailed(
+                        "aliyun(FunASR) WS 连接关闭但未收到稳态识别结果".into(),
+                    )
+                }
+            }
+            _ => HandleOutcome::Continue,
         }
     }
-    Ok(())
 }
 
 /// 构造 streaming 模式的 run-task（含 max_sentence_silence=600）。
@@ -381,7 +366,7 @@ fn pcm_s16le_to_base64(pcm: &[u8]) -> String {
 /// - 结果提取：`conversation.item.input_audio_transcription.text`（partial：text+stash）
 ///   和 `.completed`（final：transcript）
 async fn run_qwen_realtime_session(
-    mut pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
+    pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
     result_tx: mpsc::UnboundedSender<StreamEvent>,
     endpoint: String,
     key: String,
@@ -389,203 +374,181 @@ async fn run_qwen_realtime_session(
     language: String,
     pre_roll_samples: Vec<f32>,
 ) -> Result<()> {
-    // 1. 构造完整 URL（追加 ?model= 查询参数）
-    let url = if endpoint.contains("?model=") || endpoint.contains("&model=") {
-        endpoint.clone()
-    } else if endpoint.contains('?') {
-        format!("{}&model={}", endpoint, model)
-    } else {
-        format!("{}?model={}", endpoint, model)
+    let handler = AliyunQwenHandler {
+        key,
+        model,
+        language,
+        accumulated_text: String::new(),
     };
+    run_ws_session_loop(pcm_rx, result_tx, &endpoint, &pre_roll_samples, handler).await
+}
 
-    // 2. 建连 + Authorization: Bearer <key>
-    let mut request = url
-        .as_str()
-        .into_client_request()
-        .with_context(|| format!("qwen-asr WS 请求构造失败: {}", url))?;
-    request.headers_mut().insert(
-        AUTHORIZATION,
-        format!("Bearer {}", key)
-            .parse()
-            .context("qwen-asr Authorization header 构造失败")?,
-    );
-    let (mut ws, _resp) = tokio::time::timeout(
-        std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
-        connect_async(request),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("qwen-asr WS connect timeout"))?
-    .with_context(|| format!("qwen-asr WS 连接失败: {}", url))?;
+/// aliyun Qwen-ASR Realtime 协议 hook 实现（见 [`crate::session_loop::run_ws_session_loop`]）。
+///
+/// 持有 Qwen 特定状态：鉴权 key、model（拼 `?model=` query 用）、language、
+/// 结果累积（accumulated_text——transcript 逐句累积）。
+struct AliyunQwenHandler {
+    key: String,
+    model: String,
+    language: String,
+    accumulated_text: String,
+}
 
-    // 3. 发 session.update（配置音频格式 + VAD）
-    let session_update = build_qwen_session_update(&language, &qwen_event_id());
-    ws.send(Message::Text(session_update.to_string()))
-        .await
-        .context("qwen-asr WS 发送 session.update 失败")?;
+impl WsSessionHandler for AliyunQwenHandler {
+    const LABEL: &'static str = "qwen-asr";
 
-    // 4. 推 pre-roll PCM（base64 编码）
-    if !pre_roll_samples.is_empty() {
-        let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
-        let b64 = pcm_s16le_to_base64(&pcm);
+    fn build_connect_request(
+        &self,
+        endpoint: &str,
+    ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+        // 1. 构造完整 URL（追加 ?model= 查询参数）
+        let url = if endpoint.contains("?model=") || endpoint.contains("&model=") {
+            endpoint.to_string()
+        } else if endpoint.contains('?') {
+            format!("{}&model={}", endpoint, self.model)
+        } else {
+            format!("{}?model={}", endpoint, self.model)
+        };
+        // 2. 建连 + Authorization: Bearer <key>
+        let mut request = url
+            .as_str()
+            .into_client_request()
+            .with_context(|| format!("qwen-asr WS 请求构造失败: {}", url))?;
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            format!("Bearer {}", self.key)
+                .parse()
+                .context("qwen-asr Authorization header 构造失败")?,
+        );
+        Ok(request)
+    }
+
+    fn build_init_message(&self) -> Result<Option<Message>> {
+        // session.update（配置音频格式 + VAD）
+        let session_update = build_qwen_session_update(&self.language, &qwen_event_id());
+        Ok(Some(Message::Text(session_update.to_string())))
+    }
+
+    fn build_pcm_message(&self, pcm_s16le: &[u8]) -> Result<Message> {
+        // PCM 经 base64 编码后封装在 JSON input_audio_buffer.append 事件中（文本帧）
+        let b64 = pcm_s16le_to_base64(pcm_s16le);
         let append = json!({
             "event_id": qwen_event_id(),
             "type": "input_audio_buffer.append",
             "audio": b64,
         });
-        ws.send(Message::Text(append.to_string()))
-            .await
-            .context("qwen-asr WS 发送 pre-roll PCM 失败")?;
+        Ok(Message::Text(append.to_string()))
     }
 
-    // 5. 双向循环
-    let sep = sentence_separator(&language); // 句间分隔符（英文空格 / 其他中文逗号）
-    let mut accumulated_text = String::new();
-    loop {
-        tokio::select! {
-            // 收 PCM 指令
-            frame = pcm_rx.recv() => {
-                match frame {
-                    Some(PcmFrame::Samples(pcm)) => {
-                        let b64 = pcm_s16le_to_base64(&pcm);
-                        let append = json!({
-                            "event_id": qwen_event_id(),
-                            "type": "input_audio_buffer.append",
-                            "audio": b64,
-                        });
-                        ws.send(Message::Text(append.to_string()))
-                            .await
-                            .context("qwen-asr WS 发送 PCM append 失败")?;
-                    }
-                    Some(PcmFrame::Finish) => {
-                        let finish = json!({
-                            "event_id": qwen_event_id(),
-                            "type": "session.finish",
-                        });
-                        ws.send(Message::Text(finish.to_string()))
-                            .await
-                            .context("qwen-asr WS 发送 session.finish 失败")?;
-                    }
-                    None => break,
-                }
-            }
-            // 收 WS 消息（加读取超时）
-            msg = tokio::time::timeout(
-                std::time::Duration::from_secs(octopus_infra::net::WS_READ_TIMEOUT_SECS),
-                ws.next(),
-            ) => {
-                let msg = match msg {
-                    Err(_) => {
-                        let _ = result_tx.send(StreamEvent::Failed("qwen-asr WS read timeout".into()));
-                        return Ok(());
-                    }
-                    Ok(None) => break,
-                    Ok(Some(Err(e))) => {
-                        let _ = result_tx.send(StreamEvent::Failed(format!("qwen-asr WS 错误: {}", e)));
-                        return Ok(());
-                    }
-                    Ok(Some(Ok(m))) => m,
+    fn build_finish_message(&self) -> Result<Message> {
+        let finish = json!({
+            "event_id": qwen_event_id(),
+            "type": "session.finish",
+        });
+        Ok(Message::Text(finish.to_string()))
+    }
+
+    fn handle_message(
+        &mut self,
+        msg: Message,
+        result_tx: &mpsc::UnboundedSender<StreamEvent>,
+    ) -> HandleOutcome {
+        let sep = sentence_separator(&self.language); // 句间分隔符（英文空格 / 其他中文逗号）
+        match msg {
+            Message::Text(t) => {
+                let v: Value = match serde_json::from_str(&t) {
+                    Ok(v) => v,
+                    Err(_) => return HandleOutcome::Continue,
                 };
-                match msg {
-                    Message::Text(t) => {
-                        let v: Value = match serde_json::from_str(&t) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
-                        let event_type = v["type"].as_str().unwrap_or("");
-                        match event_type {
-                            // partial 结果（高频流式）：text（已确认前缀）+ stash（预测后缀）
-                            // partial 只含当前句，需拼上已完成句的 accumulated_text
-                            "conversation.item.input_audio_transcription.text" => {
-                                let text = v["text"].as_str().unwrap_or("");
-                                let stash = v["stash"].as_str().unwrap_or("");
-                                let partial = format!("{}{}", text, stash);
-                                // partial 拼接补 sep 守卫（与 completed 分支一致）：
-                                // accumulated_text（已完成句）与 partial（当前句）之间若无
-                                // 分隔，实时显示会粘连（completed 时自愈，partial 期间闪现）。
-                                // 仅当两者均非空且 accumulated_text 未以 sep 结尾时插 sep。
-                                let combined = if !accumulated_text.is_empty()
-                                    && !partial.is_empty()
-                                    && !accumulated_text.ends_with(sep)
-                                {
-                                    format!("{}{}{}", accumulated_text, sep, partial)
-                                } else {
-                                    format!("{}{}", accumulated_text, partial)
-                                };
-                                log::debug!(
-                                    "[Qwen-Stream] partial text={:?} stash={:?} combined={:?}",
-                                    text, stash, combined
-                                );
-                                if !combined.is_empty() {
-                                    let _ = result_tx.send(StreamEvent::Text(combined));
-                                }
-                            }
-                            // 最终结果（per-utterance）：累积 transcript
-                            "conversation.item.input_audio_transcription.completed" => {
-                                if let Some(t) = v["transcript"].as_str() {
-                                    log::debug!(
-                                        "[Qwen-Stream] completed transcript={:?} prev_accumulated={:?}",
-                                        t, accumulated_text
-                                    );
-                                    if !t.is_empty() {
-                                        if !accumulated_text.is_empty()
-                                            && !accumulated_text.ends_with(sep)
-                                        {
-                                            accumulated_text.push_str(sep);
-                                        }
-                                        accumulated_text.push_str(t);
-                                        let _ = result_tx.send(
-                                            StreamEvent::Text(accumulated_text.clone()),
-                                        );
-                                    }
-                                }
-                            }
-                            // 会话结束：服务端已完成所有识别
-                            "session.finished" => {
-                                if !accumulated_text.is_empty() {
-                                    let _ = result_tx.send(StreamEvent::Text(
-                                        accumulated_text.clone(),
-                                    ));
-                                }
-                                let _ = result_tx.send(StreamEvent::Finished);
-                                break;
-                            }
-                            // 错误事件
-                            "error" => {
-                                let msg = v["error"]["message"]
-                                    .as_str()
-                                    .or_else(|| v["error"]["code"].as_str())
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_else(|| v["error"].to_string());
-                                let _ = result_tx.send(StreamEvent::Failed(msg));
-                                break;
-                            }
-                            _ => {} // session.created/updated, speech_started/stopped 等忽略
-                        }
-                    }
-                    Message::Binary(_) => {} // binary 等忽略
-                    Message::Close(_) => {
-                        // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现落 _ => {} 忽略，
-                        // 随后 ws.next() 返 Ok(None) → break → return Ok(()) 无终态事件，
-                        // close_async 把 partial 当成功（#3）。现显式处理：有已提交稳态
-                        // 文本（...completed 累积的 accumulated_text）发 Finished，否则
-                        // Failed 暴露异常（参照 baidu_stream.rs:214）。
-                        log::debug!("aliyun(Qwen): WS 连接关闭");
-                        if !accumulated_text.is_empty() {
-                            let _ = result_tx.send(StreamEvent::Text(accumulated_text.clone()));
-                            let _ = result_tx.send(StreamEvent::Finished);
+                let event_type = v["type"].as_str().unwrap_or("");
+                match event_type {
+                    // partial 结果（高频流式）：text（已确认前缀）+ stash（预测后缀）
+                    // partial 只含当前句，需拼上已完成句的 accumulated_text
+                    "conversation.item.input_audio_transcription.text" => {
+                        let text = v["text"].as_str().unwrap_or("");
+                        let stash = v["stash"].as_str().unwrap_or("");
+                        let partial = format!("{}{}", text, stash);
+                        // partial 拼接补 sep 守卫（与 completed 分支一致）：
+                        // accumulated_text（已完成句）与 partial（当前句）之间若无
+                        // 分隔，实时显示会粘连（completed 时自愈，partial 期间闪现）。
+                        // 仅当两者均非空且 accumulated_text 未以 sep 结尾时插 sep。
+                        let combined = if !self.accumulated_text.is_empty()
+                            && !partial.is_empty()
+                            && !self.accumulated_text.ends_with(sep)
+                        {
+                            format!("{}{}{}", self.accumulated_text, sep, partial)
                         } else {
-                            let _ = result_tx.send(StreamEvent::Failed(
-                                "aliyun(Qwen) WS 连接关闭但未收到稳态识别结果".into()
-                            ));
+                            format!("{}{}", self.accumulated_text, partial)
+                        };
+                        log::debug!(
+                            "[Qwen-Stream] partial text={:?} stash={:?} combined={:?}",
+                            text, stash, combined
+                        );
+                        if !combined.is_empty() {
+                            let _ = result_tx.send(StreamEvent::Text(combined));
                         }
-                        return Ok(());
+                        HandleOutcome::Continue
                     }
-                    _ => {}
+                    // 最终结果（per-utterance）：累积 transcript
+                    "conversation.item.input_audio_transcription.completed" => {
+                        if let Some(t) = v["transcript"].as_str() {
+                            log::debug!(
+                                "[Qwen-Stream] completed transcript={:?} prev_accumulated={:?}",
+                                t, self.accumulated_text
+                            );
+                            if !t.is_empty() {
+                                if !self.accumulated_text.is_empty()
+                                    && !self.accumulated_text.ends_with(sep)
+                                {
+                                    self.accumulated_text.push_str(sep);
+                                }
+                                self.accumulated_text.push_str(t);
+                                let _ = result_tx
+                                    .send(StreamEvent::Text(self.accumulated_text.clone()));
+                            }
+                        }
+                        HandleOutcome::Continue
+                    }
+                    // 会话结束：服务端已完成所有识别
+                    "session.finished" => {
+                        if !self.accumulated_text.is_empty() {
+                            let _ = result_tx
+                                .send(StreamEvent::Text(self.accumulated_text.clone()));
+                        }
+                        HandleOutcome::TerminalFinished
+                    }
+                    // 错误事件
+                    "error" => {
+                        let msg = v["error"]["message"]
+                            .as_str()
+                            .or_else(|| v["error"]["code"].as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| v["error"].to_string());
+                        HandleOutcome::TerminalFailed(msg)
+                    }
+                    _ => HandleOutcome::Continue, // session.created/updated, speech_started/stopped 等忽略
                 }
             }
+            Message::Binary(_) => HandleOutcome::Continue, // binary 等忽略
+            Message::Close(_) => {
+                // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现落 _ => {} 忽略，
+                // 随后 ws.next() 返 Ok(None) → break → return Ok(()) 无终态事件，
+                // close_async 把 partial 当成功（#3）。现显式处理：有已提交稳态
+                // 文本（...completed 累积的 accumulated_text）发 Finished，否则
+                // Failed 暴露异常（参照 baidu_stream.rs:214）。
+                log::debug!("aliyun(Qwen): WS 连接关闭");
+                if !self.accumulated_text.is_empty() {
+                    let _ = result_tx.send(StreamEvent::Text(self.accumulated_text.clone()));
+                    HandleOutcome::TerminalFinished
+                } else {
+                    HandleOutcome::TerminalFailed(
+                        "aliyun(Qwen) WS 连接关闭但未收到稳态识别结果".into(),
+                    )
+                }
+            }
+            _ => HandleOutcome::Continue,
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]

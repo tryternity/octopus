@@ -23,36 +23,10 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
     if app_handle.get_webview_window(WINDOW_LABEL).is_some() {
         // macOS: app 可能被其他应用遮挡——set_focus 仅设焦点不激活 app。
         // 需要切 Regular + 主线程 activate 才能把 app 带到前台。
-        // 用 activation::activate_self 双保险（NSApplication + NSRunningApplication），
-        // 应对托盘菜单关闭时 macOS 焦点恢复覆盖 activate 的"偶尔不激活"问题。
-        //
-        // 第十三轮 P2-1：窗口可能在浮窗存活期间被 before_floating_window_show 临时隐藏
+        // ensure_show=true：窗口可能在浮窗存活期间被 before_floating_window_show 临时隐藏
         //（settings_window 在 WINDOWS_TO_HIDE_ON_FLOAT 列表）。此时 set_focus 对 hidden
-        // 窗口无效，且 restore_hidden_windows_only 因 depth>0 不恢复 → 用户点托盘「打开设置」
-        // 无反应，直到 ESC 关浮窗。补 w.show() 对齐 compact_editor_commands:243 范式。
-        #[cfg(target_os = "macos")]
-        {
-            let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-            let ah = app_handle.clone();
-            let _ = app_handle.run_on_main_thread(move || {
-                crate::platform::activation::activate_self();
-                let _ = ah.get_webview_window(WINDOW_LABEL).map(|w| {
-                    if !w.is_visible().unwrap_or(false) {
-                        let _ = w.show();
-                    }
-                    let _ = w.set_focus();
-                });
-            });
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = app_handle.get_webview_window(WINDOW_LABEL).map(|w| {
-                if !w.is_visible().unwrap_or(false) {
-                    let _ = w.show();
-                }
-                let _ = w.set_focus();
-            });
-        }
+        // 窗口无效 → 补 w.show()（P2-1 修复，对齐 compact_editor_command 范式）。
+        crate::platform::activation::focus_regular_window(&app_handle, WINDOW_LABEL, true);
         // 窗口已存在：暂存页面 + emit 让前端切页
         if let Some(ref page) = initial_page {
             *PENDING_PAGE.lock() = Some(page.clone());
@@ -63,15 +37,7 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
     // macOS: 打开设置窗口 → Dock 显示图标 + 设置应用图标 + 激活到前台
     #[cfg(target_os = "macos")]
     {
-        let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-        // activate_self + set_dock_icon 调 AppKit，必须在主线程执行。
-        // open_settings 是 Tauri command（worker 线程），用 run_on_main_thread 调度。
-        // ⚠️ 必须显式 activate——app 在 Accessory 模式下从托盘点击时，
-        // macOS 不会自动把 app 带到前台（窗口创建了但不前置）。
-        let _ = app_handle.run_on_main_thread(|| {
-            crate::platform::activation::activate_self();
-            set_dock_icon();
-        });
+        crate::platform::activation::activate_regular_for_new_window(&app_handle);
     }
 
     // 暂存初始页面，等前端 mount 后调 get_initial_page 拉取
@@ -109,30 +75,4 @@ pub fn get_initial_page() -> Option<String> {
 #[cfg(target_os = "macos")]
 pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
     crate::platform::activation::restore_accessory_if_no_regular_window(app_handle);
-}
-
-/// macOS: 手动设置 Dock 图标（release 裸二进制无 .app bundle，Tauri 仅在
-/// debug 模式自动设置）。必须在主线程调用（由 open_settings 通过
-/// run_on_main_thread 调度）。
-#[cfg(target_os = "macos")]
-pub fn set_dock_icon() {
-    use objc2::{AnyThread, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
-
-    const ICON_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/icon.png"));
-
-    // 安全检查：仅主线程可调 AppKit
-    let mtm = match MainThreadMarker::new() {
-        Some(mtm) => mtm,
-        None => {
-            log::warn!("set_dock_icon called off main thread, skipping");
-            return;
-        }
-    };
-    let app = NSApplication::sharedApplication(mtm);
-    let data = NSData::with_bytes(ICON_PNG);
-    if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
-        unsafe { app.setApplicationIconImage(Some(&app_icon)) };
-    }
 }

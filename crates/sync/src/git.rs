@@ -41,19 +41,10 @@ fn git_command(args: &[&str]) -> Command {
 }
 
 /// 跑 git 命令——成功返 stdout，失败返 SyncError（按 stderr 分类）。
+///
+/// `run_git_allow_codes(path, args, &[], &[])` 的特例（2026-08-05 委托，消除重复）。
 fn run_git(path: &Path, args: &[&str]) -> Result<String, SyncError> {
-    let output = git_command(args)
-        .current_dir(path)
-        .output()
-        .context("git 命令调用失败（git 未安装?）")
-        .map_err(SyncError::Other)?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(classify_git_error(&stderr))
-    }
+    run_git_allow_codes(path, args, &[], &[])
 }
 
 /// 跑 git 命令但允许特定退出码——用于"nothing to commit"等非错误场景。

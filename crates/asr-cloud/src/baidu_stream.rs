@@ -20,12 +20,12 @@
 //! - `type=HEARTBEAT`：心跳（忽略）
 
 use anyhow::{Context, Result};
-use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::cloud_types::{CloudStreamHandle, PcmFrame, StreamEvent};
+use crate::session_loop::{HandleOutcome, WsSessionHandler, run_ws_session_loop};
 use octopus_asr_local::sentence_separator;
 
 /// 固定 endpoint。
@@ -85,14 +85,13 @@ pub(crate) struct BaiduSessionConfig {
 /// `endpoint` 参数化（P2-1 WS mock）：prod 调用传真 `const ENDPOINT`（`wss://...`），
 /// 测试用 in-process server 时传 `ws://127.0.0.1:{port}`（见 `test_ws_server`）。
 async fn run_baidu_session(
-    mut pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
+    pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
     result_tx: mpsc::UnboundedSender<StreamEvent>,
     config: BaiduSessionConfig,
 ) -> Result<()> {
-    // 从 config 解包（函数体内用裸名，保持原逻辑不变）
     let BaiduSessionConfig { endpoint, appid, appkey, dev_pid, language, pre_roll_samples } = config;
 
-    // 1. 解析 appid / dev_pid 字符串为整数（fail-fast：配置错误时明确报错，而非静默发 0）
+    // fail-fast：配置错误时明确报错，而非静默发 0
     let appid_int: i64 = appid
         .parse()
         .with_context(|| format!("baidu appid '{}' 不是有效整数（应为百度控制台 AppID）", appid))?;
@@ -100,170 +99,167 @@ async fn run_baidu_session(
         .parse()
         .with_context(|| format!("baidu dev_pid '{}' 不是有效整数", dev_pid))?;
 
-    // 2. 构造 sn（UUID，用于排查日志）
-    let sn = uuid::Uuid::new_v4().to_string();
-    let cuid = sn.clone(); // cuid 也用 UUID（统计 UV，不影响识别）
+    let handler = BaiduHandler {
+        appid_int,
+        appkey,
+        dev_pid_int,
+        cuid: uuid::Uuid::new_v4().to_string(),
+        language,
+        fin_texts: Vec::new(),
+        current_partial: String::new(),
+    };
+    run_ws_session_loop(pcm_rx, result_tx, &endpoint, &pre_roll_samples, handler).await
+}
 
-    // 3. 建连
-    let ws_url = format!("{}?sn={}", endpoint, sn);
-    let (mut ws, _resp) = tokio::time::timeout(
-        std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
-        connect_async(&ws_url),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("baidu WS connect timeout"))?
-    .with_context(|| format!("baidu WS 连接失败: {}", ws_url))?;
+/// baidu WS session 协议 hook 实现（见 [`crate::session_loop::run_ws_session_loop`]）。
+///
+/// 持有 baidu 特定状态：鉴权参数（appid_int/appkey/dev_pid_int/cuid）、语言（用于句间分隔符）、
+/// 结果累积（fin_texts 稳态句 / current_partial 非稳态）。endpoint 不在 handler——它只是
+/// `build_connect_request` 的入参，由 loop 持有。
+struct BaiduHandler {
+    appid_int: i64,
+    appkey: String,
+    dev_pid_int: i64,
+    cuid: String,
+    language: String,
+    // 结果累积：FIN_TEXT 存入 Vec（按顺序拼接），MID_TEXT 覆盖 current_partial
+    fin_texts: Vec<String>,
+    current_partial: String,
+}
 
-    // 4. 发 START 帧
-    let start_frame = json!({
-        "type": "START",
-        "data": {
-            "appid": appid_int,
-            "appkey": appkey,
-            "dev_pid": dev_pid_int,
-            "cuid": cuid,
-            "format": "pcm",
-            "sample": 16000,
-        }
-    });
-    ws.send(Message::Text(start_frame.to_string()))
-        .await
-        .context("baidu WS 发送 START 帧失败")?;
+impl WsSessionHandler for BaiduHandler {
+    const LABEL: &'static str = "baidu";
 
-    // 5. 推 pre-roll PCM
-    if !pre_roll_samples.is_empty() {
-        let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
-        ws.send(Message::Binary(pcm))
-            .await
-            .context("baidu WS 发送 pre-roll PCM 失败")?;
+    fn build_connect_request(
+        &self,
+        endpoint: &str,
+    ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+        // 拼 sn query（与 cuid 同值——原实现 let cuid = sn.clone()，保持不变量）
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let ws_url = format!("{}?sn={}", endpoint, self.cuid);
+        Ok(ws_url.as_str().into_client_request()?)
     }
 
-    // 6. 双向循环
-    // 文本累积：FIN_TEXT 存入 Vec（按顺序拼接），MID_TEXT 覆盖 current_partial
-    let mut fin_texts: Vec<String> = Vec::new();
-    let mut current_partial = String::new();
-
-    loop {
-        tokio::select! {
-            // 收 PCM 指令
-            frame = pcm_rx.recv() => {
-                match frame {
-                    Some(PcmFrame::Samples(pcm)) => {
-                        ws.send(Message::Binary(pcm))
-                            .await
-                            .context("baidu WS 发送音频帧失败")?;
-                    }
-                    Some(PcmFrame::Finish) => {
-                        // 发 FINISH 帧
-                        ws.send(Message::Text(r#"{"type":"FINISH"}"#.into()))
-                            .await
-                            .context("baidu WS 发送 FINISH 帧失败")?;
-                    }
-                    None => break,
-                }
+    fn build_init_message(&self) -> Result<Option<Message>> {
+        let start_frame = json!({
+            "type": "START",
+            "data": {
+                "appid": self.appid_int,
+                "appkey": self.appkey,
+                "dev_pid": self.dev_pid_int,
+                "cuid": self.cuid,
+                "format": "pcm",
+                "sample": 16000,
             }
-            // 收 WS 响应（加读取超时）
-            msg = tokio::time::timeout(
-                std::time::Duration::from_secs(octopus_infra::net::WS_READ_TIMEOUT_SECS),
-                ws.next(),
-            ) => {
-                let msg = match msg {
-                    Err(_) => {
-                        let _ = result_tx.send(StreamEvent::Failed("baidu WS read timeout".into()));
-                        return Ok(());
+        });
+        Ok(Some(Message::Text(start_frame.to_string())))
+    }
+
+    fn build_pcm_message(&self, pcm_s16le: &[u8]) -> Result<Message> {
+        Ok(Message::Binary(pcm_s16le.to_vec()))
+    }
+
+    fn build_finish_message(&self) -> Result<Message> {
+        Ok(Message::Text(r#"{"type":"FINISH"}"#.into()))
+    }
+
+    fn handle_message(
+        &mut self,
+        msg: Message,
+        result_tx: &mpsc::UnboundedSender<StreamEvent>,
+    ) -> HandleOutcome {
+        match msg {
+            Message::Text(text) => {
+                let json: Value = match serde_json::from_str(&text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::warn!("baidu JSON 解析失败: {}（text={}）", e, text);
+                        return HandleOutcome::Continue;
                     }
-                    Ok(None) => break,
-                    Ok(Some(Err(e))) => {
-                        let _ = result_tx.send(StreamEvent::Failed(format!("baidu WS 读错误: {}", e)));
-                        return Ok(());
-                    }
-                    Ok(Some(Ok(m))) => m,
                 };
-                match msg {
-                    Message::Text(text) => {
-                        let json: Value = match serde_json::from_str(&text) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                log::warn!("baidu JSON 解析失败: {}（text={}）", e, text);
-                                continue;
-                            }
-                        };
-                        let err_no = json["err_no"].as_i64().unwrap_or(0);
-                        if err_no != 0 {
-                            let err_msg = json["err_msg"].as_str().unwrap_or("未知错误");
-                            let _ = result_tx.send(StreamEvent::Failed(
-                                format!("baidu 错误 {}: {}", err_no, err_msg)
-                            ));
-                            return Ok(());
-                        }
-                        let msg_type = json["type"].as_str().unwrap_or("");
-                        match msg_type {
-                            "MID_TEXT" => {
-                                // 临时结果（非稳态）
-                                current_partial = json["result"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .to_string();
-                                let display = accumulate_display(&fin_texts, &current_partial, &language);
-                                if !display.is_empty() {
-                                    let _ = result_tx.send(StreamEvent::Text(display));
-                                }
-                            }
-                            "FIN_TEXT" => {
-                                // 最终结果（稳态）——提交此句
-                                let result = json["result"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .to_string();
-                                fin_texts.push(result);
-                                current_partial.clear();
-                                let display = accumulate_display(&fin_texts, &current_partial, &language);
-                                if !display.is_empty() {
-                                    let _ = result_tx.send(StreamEvent::Text(display));
-                                }
-                            }
-                            "HEARTBEAT" => {
-                                // 心跳，忽略
-                            }
-                            _ => {
-                                log::debug!("baidu: 未知消息类型 '{}'", msg_type);
-                            }
-                        }
-                    }
-                    Message::Close(_) => {
-                        // 服务端主动 Close（鉴权失败/超时/限流等）。按是否收到过稳态结果
-                        // （FIN_TEXT，即 fin_texts 非空）判断：
-                        // - 有稳态 → Finished（display 一定非空，因 fin_texts.join 非空）
-                        // - 仅 partial（fin_texts 空但 current_partial 非空）→ Failed
-                        //   （旧实现仅查 display 非空就发 Finished，把不稳态 partial 当最终结果）
-                        // - 全空 → Failed
-                        log::debug!("baidu: WS 连接关闭");
-                        let stable = !fin_texts.is_empty();
-                        if stable {
-                            let display = accumulate_display(&fin_texts, &current_partial, &language);
+                let err_no = json["err_no"].as_i64().unwrap_or(0);
+                if err_no != 0 {
+                    let err_msg = json["err_msg"].as_str().unwrap_or("未知错误");
+                    return HandleOutcome::TerminalFailed(format!(
+                        "baidu 错误 {}: {}",
+                        err_no, err_msg
+                    ));
+                }
+                let msg_type = json["type"].as_str().unwrap_or("");
+                match msg_type {
+                    "MID_TEXT" => {
+                        // 临时结果（非稳态）
+                        self.current_partial =
+                            json["result"].as_str().unwrap_or("").to_string();
+                        let display = accumulate_display(
+                            &self.fin_texts,
+                            &self.current_partial,
+                            &self.language,
+                        );
+                        if !display.is_empty() {
                             let _ = result_tx.send(StreamEvent::Text(display));
-                            let _ = result_tx.send(StreamEvent::Finished);
-                        } else if !current_partial.is_empty() {
-                            let _ = result_tx.send(StreamEvent::Failed(
-                                "baidu WS 连接关闭但仅收到非稳态 partial".into()
-                            ));
-                        } else {
-                            let _ = result_tx.send(StreamEvent::Failed(
-                                "baidu WS 连接关闭但未收到识别结果".into()
-                            ));
                         }
-                        return Ok(());
                     }
-                    Message::Binary(_) => {
-                        // 百度不发 binary 响应，忽略
+                    "FIN_TEXT" => {
+                        // 最终结果（稳态）——提交此句
+                        let result = json["result"].as_str().unwrap_or("").to_string();
+                        // 第十五轮 P3-D：过滤空 result——FIN_TEXT 协议异常发空时，
+                        // push 空串会导致 accumulate_display 的 join(sep) 产生多余分隔符（你好，，世界）。
+                        if !result.is_empty() {
+                            self.fin_texts.push(result);
+                        }
+                        self.current_partial.clear();
+                        let display = accumulate_display(
+                            &self.fin_texts,
+                            &self.current_partial,
+                            &self.language,
+                        );
+                        if !display.is_empty() {
+                            let _ = result_tx.send(StreamEvent::Text(display));
+                        }
                     }
-                    _ => {} // ping 等忽略
+                    "HEARTBEAT" => {
+                        // 心跳，忽略
+                    }
+                    _ => {
+                        log::debug!("baidu: 未知消息类型 '{}'", msg_type);
+                    }
+                }
+                HandleOutcome::Continue
+            }
+            Message::Close(_) => {
+                // 服务端主动 Close（鉴权失败/超时/限流等）。按是否收到过稳态结果
+                // （FIN_TEXT，即 fin_texts 非空）判断：
+                // - 有稳态 → Finished（display 一定非空，因 fin_texts.join 非空）
+                // - 仅 partial（fin_texts 空但 current_partial 非空）→ Failed
+                //   （旧实现仅查 display 非空就发 Finished，把不稳态 partial 当最终结果）
+                // - 全空 → Failed
+                log::debug!("baidu: WS 连接关闭");
+                if !self.fin_texts.is_empty() {
+                    let display = accumulate_display(
+                        &self.fin_texts,
+                        &self.current_partial,
+                        &self.language,
+                    );
+                    let _ = result_tx.send(StreamEvent::Text(display));
+                    HandleOutcome::TerminalFinished
+                } else if !self.current_partial.is_empty() {
+                    HandleOutcome::TerminalFailed(
+                        "baidu WS 连接关闭但仅收到非稳态 partial".into(),
+                    )
+                } else {
+                    HandleOutcome::TerminalFailed(
+                        "baidu WS 连接关闭但未收到识别结果".into(),
+                    )
                 }
             }
+            Message::Binary(_) => {
+                // 百度不发 binary 响应，忽略
+                HandleOutcome::Continue
+            }
+            _ => HandleOutcome::Continue, // ping 等忽略
         }
     }
-
-    Ok(())
 }
 
 /// 拼接稳态句 + 当前 partial 为显示文本。

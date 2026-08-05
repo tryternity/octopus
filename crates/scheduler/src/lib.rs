@@ -141,25 +141,7 @@ impl Scheduler {
                     std::thread::sleep(Duration::from_secs(tick));
 
                     // 轻量任务（skip_idle_check=true）不受 CPU 空闲检查，每 tick 到期即跑
-                    for task in tasks.iter() {
-                        if task.skip_idle_check && task.is_due() {
-                            log::debug!("[scheduler] 执行轻量任务: {}", task.name);
-                            // catch_unwind 防一个任务 panic 杀死整个调度线程
-                            // （闭包非 UnwindSafe，需 AssertUnwindSafe 包装）。
-                            // panic 也 mark_run：否则 is_due() 下个 tick 仍 true，
-                            // deterministic panic 每 tick 重跑（默认 interval 600s 给问题任务冷却期）。
-                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (task.run)())) {
-                                Ok(_) => task.mark_run(),
-                                Err(_) => {
-                                    log::error!(
-                                        "[scheduler] 任务 {} panic，已吞，标记 last_run 避免每 tick 重试，继续调度",
-                                        task.name
-                                    );
-                                    task.mark_run();
-                                }
-                            }
-                        }
-                    }
+                    run_due_tasks(&tasks, true, "轻量任务");
 
                     // 重任务（skip_idle_check=false）需 CPU 空闲才跑
                     if !octopus_infra::cpu::is_cpu_idle(threshold) {
@@ -167,27 +149,128 @@ impl Scheduler {
                         continue;
                     }
 
-                    for task in tasks.iter() {
-                        if !task.skip_idle_check && task.is_due() {
-                            log::debug!("[scheduler] 执行任务: {}", task.name);
-                            // catch_unwind 防一个任务 panic 杀死整个调度线程
-                            // （闭包非 UnwindSafe，需 AssertUnwindSafe 包装）。
-                            // panic 也 mark_run：否则 is_due() 下个 tick 仍 true，
-                            // deterministic panic 每 tick 重跑（默认 interval 600s 给问题任务冷却期）。
-                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (task.run)())) {
-                                Ok(_) => task.mark_run(),
-                                Err(_) => {
-                                    log::error!(
-                                        "[scheduler] 任务 {} panic，已吞，标记 last_run 避免每 tick 重试，继续调度",
-                                        task.name
-                                    );
-                                    task.mark_run();
-                                }
-                            }
-                        }
-                    }
+                    run_due_tasks(&tasks, false, "任务");
                 }
             })
             .expect("failed to spawn scheduler thread");
+    }
+}
+
+/// 跑到期任务——`skip_idle_filter` true=只跑轻量任务（skip_idle_check=true），
+/// false=只跑重任务（skip_idle_check=false）。`label` 用于日志（"轻量任务"/"任务"）。
+///
+/// catch_unwind 防一个任务 panic 杀死整个调度线程（闭包非 UnwindSafe，需 AssertUnwindSafe 包装）。
+/// panic 也 mark_run：否则 is_due() 下个 tick 仍 true，deterministic panic 每 tick 重跑
+/// （默认 interval 600s 给问题任务冷却期）。
+///
+/// 2026-08-05 抽取：消除 spawn 中轻量/重任务两段逐字重复的 catch_unwind + match 块。
+fn run_due_tasks(tasks: &[ScheduledTask], skip_idle_filter: bool, label: &str) {
+    for task in tasks {
+        // skip_idle_filter 决定本次跑轻量（task.skip_idle_check==true）还是重（==false）任务
+        if task.skip_idle_check != skip_idle_filter {
+            continue;
+        }
+        if !task.is_due() {
+            continue;
+        }
+        log::debug!("[scheduler] 执行{}: {}", label, task.name);
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (task.run)())) {
+            Ok(_) => task.mark_run(),
+            Err(_) => {
+                log::error!(
+                    "[scheduler] 任务 {} panic，已吞，标记 last_run 避免每 tick 重试，继续调度",
+                    task.name
+                );
+                task.mark_run();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    /// 构造一个任务，run 闭包递增 counter。never_run=true 保持 last_run=None（is_due 返 true）。
+    fn make_task(name: &str, skip_idle_check: bool, counter: Arc<AtomicU32>) -> ScheduledTask {
+        let c = counter.clone();
+        ScheduledTask {
+            name: name.to_string(),
+            interval_secs: 600,
+            last_run: Mutex::new(None), // None → is_due() 返 true（从未执行过）
+            run: Box::new(move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            }),
+            skip_idle_check,
+        }
+    }
+
+    /// 构造一个 panic 任务（验证 catch_unwind 吞 panic 不杀调用方）。
+    fn make_panic_task(name: &str, skip_idle_check: bool) -> ScheduledTask {
+        ScheduledTask {
+            name: name.to_string(),
+            interval_secs: 600,
+            last_run: Mutex::new(None),
+            run: Box::new(|| panic!("test panic")),
+            skip_idle_check,
+        }
+    }
+
+    /// filter 分流：skip_idle_filter=true 只跑轻量任务（skip_idle_check=true），重任务不跑。
+    #[test]
+    fn run_due_tasks_light_filter_skips_heavy() {
+        let light_counter = Arc::new(AtomicU32::new(0));
+        let heavy_counter = Arc::new(AtomicU32::new(0));
+        let tasks = vec![
+            make_task("light", true, light_counter.clone()),
+            make_task("heavy", false, heavy_counter.clone()),
+        ];
+        run_due_tasks(&tasks, true, "轻量任务");
+        assert_eq!(light_counter.load(Ordering::SeqCst), 1, "轻量任务应执行");
+        assert_eq!(heavy_counter.load(Ordering::SeqCst), 0, "重任务不应执行");
+    }
+
+    /// filter 分流：skip_idle_filter=false 只跑重任务，轻量任务不跑。
+    #[test]
+    fn run_due_tasks_heavy_filter_skips_light() {
+        let light_counter = Arc::new(AtomicU32::new(0));
+        let heavy_counter = Arc::new(AtomicU32::new(0));
+        let tasks = vec![
+            make_task("light", true, light_counter.clone()),
+            make_task("heavy", false, heavy_counter.clone()),
+        ];
+        run_due_tasks(&tasks, false, "任务");
+        assert_eq!(light_counter.load(Ordering::SeqCst), 0, "轻量任务不应执行");
+        assert_eq!(heavy_counter.load(Ordering::SeqCst), 1, "重任务应执行");
+    }
+
+    /// panic 吞掉不传播：panic 任务后 mark_run（is_due 变 false），不影响同批其他任务。
+    #[test]
+    fn run_due_tasks_swallows_panic_and_marks_run() {
+        let ok_counter = Arc::new(AtomicU32::new(0));
+        let tasks = vec![
+            make_panic_task("panic", false),
+            make_task("ok", false, ok_counter.clone()),
+        ];
+        // 不应 panic（catch_unwind 吞掉）
+        run_due_tasks(&tasks, false, "任务");
+        // panic 任务也应被 mark_run（last_run 变 Some → is_due 变 false）
+        assert!(!tasks[0].is_due(), "panic 任务应被 mark_run，is_due 变 false");
+        // 后续任务正常执行
+        assert_eq!(ok_counter.load(Ordering::SeqCst), 1, "panic 后的任务应正常执行");
+    }
+
+    /// 到期判定：mark_run 后 is_due 变 false，再次 run_due_tasks 不重跑。
+    #[test]
+    fn run_due_tasks_respects_mark_run() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let tasks = vec![make_task("task", false, counter.clone())];
+        run_due_tasks(&tasks, false, "任务");
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "首次执行");
+        // mark_run 后 interval_secs=600 内不再到期
+        run_due_tasks(&tasks, false, "任务");
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "mark_run 后不重跑");
     }
 }

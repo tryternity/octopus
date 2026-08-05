@@ -22,8 +22,8 @@ use crate::fbank::compute_fbank_features;
 ///       → **CMVN** `(feat+addshift)*rescale`（am.mvn）→ 喂 4 输入 → greedy CTC（blank=0）
 ///       → tokens.json 文本拼接（跳 `<...>` 特殊 token）。
 ///
-/// 与 [`crate::sensevoice::SenseVoiceEngine`]（sherpa nano 单输入 `x` 版，CMVN 烤进 ONNX）
-/// I/O / 词表 / tokens 格式（base64 vs json）均不兼容，故独立引擎 + 独立 category `sensevoice-orig`。
+/// 与已移除的 sherpa nano 单输入 `x` 版 SenseVoice（CMVN 烤进 ONNX）I/O / 词表 /
+/// tokens 格式（base64 vs json）均不兼容，故独立引擎 + 独立 category `sensevoice-orig`。
 ///
 /// **CMVN 是必须的**：缺失时真实麦克风语音出现系统性近音字错误（如"开始语音识别"→
 /// "开始于饮食别"），合成 TTS 音频因落在模型鲁棒区仍能侥幸通过，故早期合成-wav e2e 未暴露。

@@ -52,14 +52,18 @@ impl StreamingZipformer {
 
         // Read chunk parameters from model metadata
         let metadata = session.metadata()?;
+        // 第十四轮 P3-8：.max(1) 下界保护——异常模型（metadata=0）会导致 frame_idx += 0
+        // 原地踏步死循环。unwrap_or 已兜底默认值，但 metadata 显式 0 仍会穿透。
         let chunk_len: usize = metadata
             .custom("T")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(77);
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(77)
+            .max(1);
         let chunk_shift: usize = metadata
             .custom("decode_chunk_len")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(64);
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(64)
+            .max(1);
         let is_whisper = metadata
             .custom("feature")
             .map(|s| s == "whisper")
@@ -525,26 +529,32 @@ impl StreamingZipformerTransducer {
             .commit_from_file(&joiner_path)?;
 
         let metadata = encoder_session.metadata()?;
+        // 第十五轮 P3-8 补漏：Transducer 的 chunk_len/shift 也需 .max(1)（对齐 CTC StreamingZipformer :57-66）。
+        // Transducer 的外层 chunk 推进循环 frame_idx += self.chunk_shift（:1009），metadata=0 时死循环。
         let chunk_len: usize = metadata
             .custom("T")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(77);
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(77)
+            .max(1);
         let chunk_shift: usize = metadata
             .custom("decode_chunk_len")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(64);
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(64)
+            .max(1);
         let is_whisper = metadata
             .custom("feature")
             .map(|s| s == "whisper")
             .unwrap_or(false);
         drop(metadata);
 
+        // 第十七轮 P3-2：.max(1) 防 metadata=0（对齐离线 zipformer :820）。
         let context_size = decoder_session
             .metadata()
             .ok()
             .and_then(|m| m.custom("context_size"))
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(2);
+            .unwrap_or(2)
+            .max(1);
 
         let states = crate::zipformer::initial_encoder_states(&encoder_session);
         let vocab = crate::zipformer::load_vocab(&hf_path)?;

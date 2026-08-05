@@ -12,29 +12,13 @@ const WINDOW_LABEL: &str = "onboarding_window";
 /// 仅首次启动调用（AppConfig.onboarding_completed == false）。
 pub fn open_onboarding(app_handle: &tauri::AppHandle) {
     if app_handle.get_webview_window(WINDOW_LABEL).is_some() {
-        #[cfg(target_os = "macos")]
-        {
-            let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-            let ah = app_handle.clone();
-            let _ = app_handle.run_on_main_thread(move || {
-                crate::platform::activation::activate_self();
-                let _ = ah.get_webview_window(WINDOW_LABEL).map(|w| w.set_focus());
-            });
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = app_handle.get_webview_window(WINDOW_LABEL).map(|w| w.set_focus());
-        }
+        crate::platform::activation::focus_regular_window(app_handle, WINDOW_LABEL, false);
         return;
     }
     // macOS: 打开引导窗口 → Dock 显示图标 + 激活到前台
     #[cfg(target_os = "macos")]
     {
-        let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-        let _ = app_handle.run_on_main_thread(|| {
-            crate::platform::activation::activate_self();
-            crate::ui::settings_window::set_dock_icon();
-        });
+        crate::platform::activation::activate_regular_for_new_window(app_handle);
     }
 
     // 背景色 hex URL 注入（与 settings_window 一致，首帧即有色）

@@ -12,7 +12,7 @@
 
 use octopus_record::{
     AudioConfig, Outputs, RecordSession, RecordStore, RecordingMeta,
-    RecordingRequest, Source, StartedInfo, VideoConfig,
+    RecordingRequest, Source, StartedInfo, VideoCodec, VideoConfig,
 };
 use octopus_record::platform::HelperProvider;
 use tauri::{command, AppHandle, Emitter, State};
@@ -295,6 +295,10 @@ pub async fn record_stop(
     source_type: String,
     has_system_audio: bool,
     has_microphone: bool,
+    // 第十四轮 P2-4：fps/codec（前端路径；前端不直接调此命令，走 hotkey/tray derive 路径，
+    // 但签名补全保持一致，默认值兼容旧调用）
+    fps: Option<u32>,
+    codec: Option<String>,
 ) -> Result<Option<RecordingMeta>, String> {
     // 前端显式传字段路径：直接用前端给的值组装 MetaFields。
     // mic_device_name：stop 时 session 没存 start 解析的设备名，重新调
@@ -306,6 +310,8 @@ pub async fn record_stop(
         source_type,
         has_system_audio,
         has_microphone,
+        fps: fps.unwrap_or(30),
+        codec: codec.unwrap_or_else(|| "h264".to_string()),
         mic_device_name: resolve_mic_device_name(None),
     };
     // State<'_, RecordSession> deref 到 &RecordSession，stop_and_store 接裸引用。
@@ -362,6 +368,12 @@ fn derive_fields_from_request(req: &RecordingRequest) -> Result<MetaFields, Stri
         source_type: source_type.to_string(),
         has_system_audio: req.audio.system.enabled,
         has_microphone: req.audio.microphone.enabled,
+        // 第十四轮 P2-4：fps/codec 从 req.video 取（hotkey/tray 路径，req 是 start 快照）
+        fps: req.video.fps,
+        codec: match req.video.codec {
+            VideoCodec::H264 => "h264",
+            VideoCodec::Hevc => "hevc",
+        }.to_string(),
         // hotkey/tray 路径：req.audio.microphone.device_name 在 start 时已解析过
         // （start_with_config 行 327-330），但 resolve_mic_device_name 是幂等的，
         // 再调一次保证拿到当前 DB 配置（用户可能在录屏中改了 ASR 麦克风）。
@@ -377,6 +389,10 @@ pub(crate) struct MetaFields {
     pub source_type: String,
     pub has_system_audio: bool,
     pub has_microphone: bool,
+    /// 第十四轮 P2-4：fps/codec 从 req.video 取（原硬编 30/h264，用户改 60fps/HEVC 后
+    /// 入库 recordings.fps/codec 与实际 mp4 元数据不一致，前端列表展示错误）。
+    pub fps: u32,
+    pub codec: String,
     /// 麦克风设备名（start 时解析的三级回退值）。
     ///
     /// stop 时 session 没存 start 解析的设备名，但 `resolve_mic_device_name` 是幂等的
@@ -398,6 +414,8 @@ async fn stop_and_store_inner(
         source_type,
         has_system_audio,
         has_microphone,
+        fps,
+        codec,
         mic_device_name,
     } = fields;
 
@@ -459,8 +477,8 @@ async fn stop_and_store_inner(
         duration_ms: stopped.duration_ms,
         width,
         height,
-        fps: 30,
-        codec: "h264".into(),
+        fps,
+        codec,
         has_system_audio,
         has_microphone,
         audio_tracks: audio_tracks.clone(),

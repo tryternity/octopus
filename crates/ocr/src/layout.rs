@@ -212,16 +212,31 @@ enum LineKind {
 /// 判断文本是否以无序列表标记开头，返回去掉标记后的正文。
 /// 支持：• · ○ ● ■ □ ◆ ◇ ► ▶ － - — ＊ * + 空格
 fn strip_unordered_marker(text: &str) -> Option<&str> {
+    // 第十四轮 P3-5：ASCII 标记（-/*/+) 要求后续空格——否则 -1/*5/+1/+5°C 等数学/代码片段
+    // 被误判列表项。Unicode 符号（•·○● 等）不要求（它们在文档中只用作项目符号）。
     let markers: &[&str] = &[
         "•", "·", "○", "●", "■", "□", "◆", "◇", "►", "▶",
-        "－", "-", "—", "＊", "*", "+",
+        "－", "—", "＊", // 全角符号不要求后续空格（文档中少用于数学）
     ];
+    let ascii_markers: &[&str] = &["-", "*", "+"]; // ASCII 要求后续空格
     let trimmed = text.trim_start();
+    // Unicode 符号：不要求后续空格
     for m in markers {
         if let Some(rest) = trimmed.strip_prefix(m) {
             let rest = rest.trim_start();
             if !rest.is_empty() {
                 return Some(rest);
+            }
+        }
+    }
+    // ASCII 标记：要求后续空格（防 -1/*5 误判）
+    for m in ascii_markers {
+        if let Some(rest) = trimmed.strip_prefix(m) {
+            if rest.starts_with(' ') {
+                let rest = rest.trim_start();
+                if !rest.is_empty() {
+                    return Some(rest);
+                }
             }
         }
     }
