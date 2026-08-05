@@ -489,11 +489,94 @@ pub fn activate_self_no_raise() {
     log::info!("[activation] activate_self_no_raise (no ActivateAllWindows)");
 }
 
+/// macOS: 手动设置 Dock 图标（release 裸二进制无 .app bundle，Tauri 仅在
+/// debug 模式自动设置）。必须在主线程调用（由各窗口的 open 函数经
+/// `run_on_main_thread` 调度）。
+///
+/// 2026-08-05：从 `ui/settings_window.rs` 迁入 platform 层（职责归位——
+/// NSApplication/NSImage 是 platform 操作，不该在 ui 模块）。
+#[cfg(target_os = "macos")]
+pub fn set_dock_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    const ICON_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/icon.png"));
+
+    // 安全检查：仅主线程可调 AppKit
+    let mtm = match MainThreadMarker::new() {
+        Some(mtm) => mtm,
+        None => {
+            log::warn!("set_dock_icon called off main thread, skipping");
+            return;
+        }
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    let data = NSData::with_bytes(ICON_PNG);
+    if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
+        unsafe { app.setApplicationIconImage(Some(&app_icon)) };
+    }
+}
+
+/// 新建常规窗口时调用：切 Regular 激活策略 + 主线程 activate_self + set_dock_icon。
+///
+/// 用于 settings/onboarding/terminal/compact_editor 等常规窗口的**新建**路径。
+/// 收敛 5 处「set_activation_policy(Regular) + run_on_main_thread(activate_self +
+/// set_dock_icon)」三件套复制（2026-08-05 问题 F）。
+#[cfg(target_os = "macos")]
+pub fn activate_regular_for_new_window(app_handle: &tauri::AppHandle) {
+    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+    let _ = app_handle.run_on_main_thread(|| {
+        activate_self();
+        set_dock_icon();
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn activate_regular_for_new_window(_app_handle: &tauri::AppHandle) {}
+
+/// 单例常规窗口已存在时调用：切 Regular + 主线程 activate_self + 可选 show + set_focus。
+///
+/// `ensure_show`：true 时补 `w.show()`（settings 用——浮窗存活期间窗口可能被
+/// `before_floating_window_show` 临时隐藏，set_focus 对 hidden 窗口无效，P2-1 修复）。
+/// 其他窗口（onboarding/terminal_agent）传 false。
+///
+/// 收敛 3 处「set_activation_policy(Regular) + run_on_main_thread(activate_self +
+/// set_focus)」复制（2026-08-05 问题 F）。
+#[cfg(target_os = "macos")]
+pub fn focus_regular_window(app_handle: &tauri::AppHandle, label: &str, ensure_show: bool) {
+    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+    let ah = app_handle.clone();
+    let label = label.to_string();
+    let _ = app_handle.run_on_main_thread(move || {
+        activate_self();
+        let _ = ah.get_webview_window(&label).map(|w| {
+            if ensure_show && !w.is_visible().unwrap_or(false) {
+                let _ = w.show();
+            }
+            let _ = w.set_focus();
+        });
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn focus_regular_window(app_handle: &tauri::AppHandle, label: &str, ensure_show: bool) {
+    let _ = app_handle.get_webview_window(label).map(|w| {
+        if ensure_show && !w.is_visible().unwrap_or(false) {
+            let _ = w.show();
+        }
+        let _ = w.set_focus();
+    });
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn activate_self_no_raise() {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn activate_self() {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_dock_icon() {}
 
 #[cfg(not(target_os = "macos"))]
 #[allow(dead_code)]

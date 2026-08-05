@@ -79,21 +79,17 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
 
 /// 创建统一查看器窗口（调用方已确保当前不存在同名窗口）。
 ///
-/// ⚠️ 必须在主线程调用：内含 macOS AppKit 主线程操作（set_activation_policy +
-/// set_dock_icon，后者用 `MainThreadMarker::new_unchecked` 强制假定主线程）。
-/// 从 async worker 线程同步调用会导致整个应用僵死。若需从 worker 触发建窗，
-/// 用 `app_handle.run_on_main_thread(...)` 投递（见 screenshot_commands::ocr_screenshot）。
+/// macOS 激活逻辑（set_activation_policy + activate_self + set_dock_icon）经
+/// `activate_regular_for_new_window` 内部 `run_on_main_thread` 调度，可从任意线程
+/// 安全调用。若需从 worker 触发建窗直接调用即可（见 screenshot_commands::ocr_screenshot）。
 pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Option<&PendingTabFull>) {
     log::info!("[compact-editor] create start");
     // macOS：编辑窗口切 Regular 让 Dock 显示图标（与 settings 一致）。
+    // activate_regular_for_new_window 内部 run_on_main_thread 调度 activate_self +
+    // set_dock_icon，不依赖调用方线程（更安全）。
     #[cfg(target_os = "macos")]
     {
-        log::info!("[compact-editor] before set_activation_policy(Regular)");
-        let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-        log::info!("[compact-editor] after set_activation_policy(Regular)");
-        log::info!("[compact-editor] before set_dock_icon");
-        crate::ui::settings_window::set_dock_icon();
-        log::info!("[compact-editor] after set_dock_icon");
+        crate::platform::activation::activate_regular_for_new_window(app_handle);
     }
 
     let state = load_window_state();

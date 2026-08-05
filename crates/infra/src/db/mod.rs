@@ -630,12 +630,15 @@ fn is_leap(year: u64) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
+/// 测试辅助函数共享模块——各子模块的 `#[cfg(test)] mod tests` 经
+/// `use crate::db::test_support::*` 引入 `open_init` / `setup_test_db`，
+/// 消除原 7 处 `open_init` + 3 处 `setup_test_db` 逐字复制（2026-08-05 问题 5）。
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
+    use super::{Connection, INIT_SQL};
 
     /// 在内存 DB 上执行 INIT_SQL，返回初始化好的连接。
-    fn open_init() -> Connection {
+    pub fn open_init() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         conn
@@ -643,15 +646,21 @@ mod tests {
 
     /// 全局测试 DB 初始化（进程级 Once）。
     ///
-    /// 调用 [`init_test_db`] 切换到 in-memory 模式——所有经 [`with_db`] /
-    /// [`ensure_db`] 的测试不再打开 `~/.octopus/octopus.db`，彻底隔离开发库。
+    /// 调用 [`super::init_test_db`] 切换到 in-memory 模式——所有经 [`super::with_db`] /
+    /// [`super::ensure_db`] 的测试不再打开 `~/.octopus/octopus.db`，彻底隔离开发库。
     /// 详见架构文档「测试数据库隔离」。
     static TEST_DB_SETUP: std::sync::Once = std::sync::Once::new();
-    fn setup_test_db() {
+    pub fn setup_test_db() {
         TEST_DB_SETUP.call_once(|| {
-            init_test_db();
+            super::init_test_db();
         });
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_support::{open_init, setup_test_db};
 
     // ── action_bar shortcut 测试见 db/action_bar.rs ──
 

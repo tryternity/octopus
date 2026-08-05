@@ -15,6 +15,8 @@ pub mod tencent_stream;
 pub mod baidu_stream;
 pub mod config;
 pub mod batch;
+/// WS session 主循环骨架（4 provider 共用，trait + run_ws_session_loop）。
+pub(crate) mod session_loop;
 #[cfg(test)]
 pub(crate) mod test_ws_server;
 

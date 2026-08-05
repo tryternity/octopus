@@ -189,24 +189,7 @@ pub fn find_prompt_by_bundle_id(bundle_id: &str) -> Result<Option<PromptRecord>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{init_test_db, INIT_SQL};
-    use rusqlite::Connection;
-    use std::sync::Once;
-
-    /// 在内存 DB 上执行 INIT_SQL，返回初始化好的连接。
-    fn open_init() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        conn
-    }
-
-    /// 全局测试 DB 初始化（进程级 Once）。
-    static TEST_DB_SETUP: Once = Once::new();
-    fn setup_test_db() {
-        TEST_DB_SETUP.call_once(|| {
-            init_test_db();
-        });
-    }
+    use crate::db::test_support::{open_init, setup_test_db};
 
     #[test]
     fn prompts_table_seeded_with_default() {

@@ -178,15 +178,7 @@ pub fn delete_env_var(key: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::INIT_SQL;
-    use rusqlite::Connection;
-
-    /// 在内存 DB 上执行 INIT_SQL，返回初始化好的连接。
-    fn open_init() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        conn
-    }
+    use crate::db::test_support::open_init;
 
     /// AppConfig 全字段 DB 往返：save → load 必须完整还原每个字段。
     /// 这是 serde 自动 load/save 的回归守卫——新增字段后若遗漏注册（旧手动枚举的坑），

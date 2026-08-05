@@ -184,7 +184,7 @@ impl OpusMTEngine {
         }
 
         log::info!("opus-mt 长文本分段：{} tokens", token_count);
-        let sentences = split_sentences(text);
+        let sentences = crate::text_split::split_sentences(text);
         let mut results: Vec<String> = Vec::with_capacity(sentences.len());
 
         for (i, sent) in sentences.iter().enumerate() {
@@ -264,32 +264,6 @@ fn resolve_opus_dir(source_lang: &str, target_lang: &str) -> Result<(std::path::
 
 fn lang_prefix(lang: &str) -> String {
     lang.get(..2).unwrap_or(lang).to_lowercase()
-}
-
-/// 按句子边界切分文本。支持 CJK 标点和 Latin 标点 + 换行。
-fn split_sentences(text: &str) -> Vec<String> {
-    let mut sentences: Vec<String> = Vec::new();
-    let mut current = String::new();
-
-    for ch in text.chars() {
-        current.push(ch);
-        if is_sentence_end(ch) {
-            sentences.push(std::mem::take(&mut current));
-        }
-    }
-    if !current.is_empty() {
-        sentences.push(current);
-    }
-
-    if sentences.is_empty() {
-        vec![text.to_string()]
-    } else {
-        sentences
-    }
-}
-
-fn is_sentence_end(ch: char) -> bool {
-    matches!(ch, '。' | '！' | '？' | '．' | '\n' | '.' | '!' | '?' | ';' | '；')
 }
 
 /// 判断字符是否为 CJK 表意文字/假名/韩文（用于空格规范化）。

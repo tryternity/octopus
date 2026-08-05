@@ -20,19 +20,18 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
-use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
 use sha1::Sha1;
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{
-    connect_async,
     tungstenite::client::IntoClientRequest,
     tungstenite::Message,
 };
 
 use crate::cloud_types::{CloudStreamHandle, PcmFrame, StreamEvent};
+use crate::session_loop::{HandleOutcome, WsSessionHandler, run_ws_session_loop};
 // 多句拼接分隔符（英文=空格 / 其他=中文逗号，参照 baidu_stream.rs accumulate_display）。
 use octopus_asr_local::sentence_separator;
 
@@ -97,161 +96,165 @@ pub fn open(
 /// `ws_url` 参数化（P2-1 WS mock）：prod 调用传真签名 URL（`wss://...&signature=...`），
 /// 测试用 in-process server 时传 `ws://127.0.0.1:{port}`（不校验签名，见 `test_ws_server`）。
 async fn run_tencent_session(
-    mut pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
+    pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
     result_tx: mpsc::UnboundedSender<StreamEvent>,
     ws_url: String,
     pre_roll_samples: Vec<f32>,
     language: String,
 ) -> Result<()> {
-    // 多句拼接分隔符（英文空格 / 其他中文逗号）。R4-3：避免多稳态句粘连。
-    let sep = sentence_separator(&language);
-    // 1. 建连（URL 已在 open() 签名完成）
-    let request = ws_url.into_client_request().context("tencent WS 请求构造失败")?;
-    let (mut ws, _resp) = tokio::time::timeout(
-        std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
-        connect_async(request),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("tencent WS connect timeout"))?
-    .context("tencent WS 连接失败")?;
+    let handler = TencentHandler {
+        language,
+        stable_segments: BTreeMap::new(),
+        current_partial: String::new(),
+    };
+    run_ws_session_loop(pcm_rx, result_tx, &ws_url, &pre_roll_samples, handler).await
+}
 
-    // 4. 推 pre-roll PCM
-    if !pre_roll_samples.is_empty() {
-        let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
-        ws.send(Message::Binary(pcm))
-            .await
-            .context("tencent WS 发送 pre-roll PCM 失败")?;
+/// tencent WS session 协议 hook 实现（见 [`crate::session_loop::run_ws_session_loop`]）。
+///
+/// 持有 tencent 特定状态：语言（句间分隔符）、结果累积（stable_segments 按 index 存稳态 /
+/// current_partial 非稳态）。签名 URL 由 `open()` 构造，handler 只做 `into_client_request()`。
+struct TencentHandler {
+    language: String,
+    // 按 index 存 slice_type=2 稳态文本；partial 覆盖当前句
+    stable_segments: BTreeMap<i64, String>,
+    current_partial: String,
+}
+
+impl WsSessionHandler for TencentHandler {
+    const LABEL: &'static str = "tencent";
+
+    fn build_connect_request(
+        &self,
+        endpoint: &str,
+    ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+        Ok(endpoint.into_client_request()?)
     }
 
-    // 5. 双向循环
-    // 文本累积：按句 index 存 slice_type=2 稳态文本，partial 覆盖当前句
-    let mut stable_segments: BTreeMap<i64, String> = BTreeMap::new();
-    let mut current_partial = String::new();
+    fn build_init_message(&self) -> Result<Option<Message>> {
+        // tencent 鉴权在 URL（签名 query），无独立 init 帧
+        Ok(None)
+    }
 
-    loop {
-        tokio::select! {
-            // 收 PCM 指令
-            frame = pcm_rx.recv() => {
-                match frame {
-                    Some(PcmFrame::Samples(pcm)) => {
-                        ws.send(Message::Binary(pcm))
-                            .await
-                            .context("tencent WS 发送音频帧失败")?;
+    fn build_pcm_message(&self, pcm_s16le: &[u8]) -> Result<Message> {
+        Ok(Message::Binary(pcm_s16le.to_vec()))
+    }
+
+    fn build_finish_message(&self) -> Result<Message> {
+        Ok(Message::Text(r#"{"type":"end"}"#.into()))
+    }
+
+    fn handle_message(
+        &mut self,
+        msg: Message,
+        result_tx: &mpsc::UnboundedSender<StreamEvent>,
+    ) -> HandleOutcome {
+        let sep = sentence_separator(&self.language); // 句间分隔符（英文空格 / 其他中文逗号）
+        match msg {
+            Message::Text(text) => {
+                let json: Value = match serde_json::from_str(&text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // 原实现用 .context("tencent 响应 JSON 解析失败")? 向上传播（Err），
+                        // 等价于 TerminalFailed（loop 发 Failed 后 return）。
+                        return HandleOutcome::TerminalFailed(format!(
+                            "tencent 响应 JSON 解析失败: {}",
+                            e
+                        ));
                     }
-                    Some(PcmFrame::Finish) => {
-                        // 发结束信号 text frame
-                        ws.send(Message::Text(r#"{"type":"end"}"#.into()))
-                            .await
-                            .context("tencent WS 发送 end 信号失败")?;
-                    }
-                    None => break,
-                }
-            }
-            // 收 WS 响应（加读取超时）
-            msg = tokio::time::timeout(
-                std::time::Duration::from_secs(octopus_infra::net::WS_READ_TIMEOUT_SECS),
-                ws.next(),
-            ) => {
-                let msg = match msg {
-                    Err(_) => {
-                        let _ = result_tx.send(StreamEvent::Failed("tencent WS read timeout".into()));
-                        return Ok(());
-                    }
-                    Ok(None) => break,
-                    Ok(Some(Err(e))) => {
-                        let _ = result_tx.send(StreamEvent::Failed(format!("tencent WS 读错误: {}", e)));
-                        return Ok(());
-                    }
-                    Ok(Some(Ok(m))) => m,
                 };
-                match msg {
-                    Message::Text(text) => {
-                        let json: Value = serde_json::from_str(&text)
-                            .context("tencent 响应 JSON 解析失败")?;
-                        let code = json["code"].as_i64().unwrap_or(-1);
-                        if code != 0 {
-                            let message = json["message"].as_str().unwrap_or("未知错误");
-                            let _ = result_tx.send(StreamEvent::Failed(
-                                format!("tencent 错误 {}: {}", code, message)
-                            ));
-                            return Ok(());
-                        }
-                        // 检查 final=1（全部识别结束）
-                        if json.get("final").and_then(|f| f.as_i64()) == Some(1) {
-                            // 最终文本 = 所有稳态句拼接（sep 分隔，避免多句粘连）
-                            let stable: String =
-                                stable_segments.values().cloned().collect::<Vec<_>>().join(sep);
-                            if !stable.is_empty() {
-                                let _ = result_tx.send(StreamEvent::Text(stable));
-                            }
-                            let _ = result_tx.send(StreamEvent::Finished);
-                            return Ok(());
-                        }
-                        // 处理识别结果
-                        if let Some(result) = json.get("result") {
-                            let slice_type = result["slice_type"].as_i64().unwrap_or(0);
-                            let index = result["index"].as_i64().unwrap_or(0);
-                            let voice_text = result["voice_text_str"]
-                                .as_str()
-                                .unwrap_or("")
-                                .to_string();
-                            match slice_type {
-                                2 => {
-                                    // 稳态终态：提交此句
-                                    stable_segments.insert(index, voice_text);
-                                    current_partial.clear();
-                                }
-                                0 | 1 => {
-                                    // 非稳态：更新当前 partial
-                                    current_partial = voice_text;
-                                }
-                                _ => {}
-                            }
-                            // 发送累积显示文本 = 稳态句（sep 分隔）+ 当前 partial
-                            let stable: String =
-                                stable_segments.values().cloned().collect::<Vec<_>>().join(sep);
-                            let display = if current_partial.is_empty() {
-                                stable
-                            } else if stable.is_empty() {
-                                // 首句 partial（无稳态句）——直接 partial，不加前导 sep
-                                current_partial.clone()
-                            } else {
-                                // 有稳态句 + partial——stable 与 partial 间插 sep（句间分隔）
-                                format!("{}{}{}", stable, sep, current_partial)
-                            };
-                            if !display.is_empty() {
-                                let _ = result_tx.send(StreamEvent::Text(display));
-                            }
-                        }
+                let code = json["code"].as_i64().unwrap_or(-1);
+                if code != 0 {
+                    let message = json["message"].as_str().unwrap_or("未知错误");
+                    return HandleOutcome::TerminalFailed(format!(
+                        "tencent 错误 {}: {}",
+                        code, message
+                    ));
+                }
+                // 检查 final=1（全部识别结束）
+                if json.get("final").and_then(|f| f.as_i64()) == Some(1) {
+                    // 最终文本 = 所有稳态句拼接（sep 分隔，避免多句粘连）
+                    let stable: String = self
+                        .stable_segments
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(sep);
+                    if !stable.is_empty() {
+                        let _ = result_tx.send(StreamEvent::Text(stable));
                     }
-                    Message::Binary(_) => {
-                        // 腾讯 ASR 不发 binary 响应，忽略
-                    }
-                    Message::Close(_) => {
-                        // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现落 _ => {} 忽略，
-                        // 随后 ws.next() 返 Ok(None) → break → return Ok(()) 无终态事件，
-                        // close_async 把 partial 当成功（#3）。现显式处理：有稳态结果发
-                        // Finished，否则 Failed 暴露异常（参照 baidu_stream.rs:214）。
-                        log::debug!("tencent: WS 连接关闭");
-                        let stable: String =
-                            stable_segments.values().cloned().collect::<Vec<_>>().join(sep);
-                        if !stable.is_empty() {
-                            let _ = result_tx.send(StreamEvent::Text(stable));
-                            let _ = result_tx.send(StreamEvent::Finished);
-                        } else {
-                            let _ = result_tx.send(StreamEvent::Failed(
-                                "tencent WS 连接关闭但未收到稳态识别结果".into()
-                            ));
+                    return HandleOutcome::TerminalFinished;
+                }
+                // 处理识别结果
+                if let Some(result) = json.get("result") {
+                    let slice_type = result["slice_type"].as_i64().unwrap_or(0);
+                    let index = result["index"].as_i64().unwrap_or(0);
+                    let voice_text = result["voice_text_str"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                    match slice_type {
+                        2 => {
+                            // 稳态终态：提交此句
+                            self.stable_segments.insert(index, voice_text);
+                            self.current_partial.clear();
                         }
-                        return Ok(());
+                        0 | 1 => {
+                            // 非稳态：更新当前 partial
+                            self.current_partial = voice_text;
+                        }
+                        _ => {}
                     }
-                    _ => {} // ping 等忽略
+                    // 发送累积显示文本 = 稳态句（sep 分隔）+ 当前 partial
+                    let stable: String = self
+                        .stable_segments
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(sep);
+                    let display = if self.current_partial.is_empty() {
+                        stable
+                    } else if stable.is_empty() {
+                        // 首句 partial（无稳态句）——直接 partial，不加前导 sep
+                        self.current_partial.clone()
+                    } else {
+                        // 有稳态句 + partial——stable 与 partial 间插 sep（句间分隔）
+                        format!("{}{}{}", stable, sep, self.current_partial)
+                    };
+                    if !display.is_empty() {
+                        let _ = result_tx.send(StreamEvent::Text(display));
+                    }
+                }
+                HandleOutcome::Continue
+            }
+            Message::Binary(_) => {
+                // 腾讯 ASR 不发 binary 响应，忽略
+                HandleOutcome::Continue
+            }
+            Message::Close(_) => {
+                // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现落 _ => {} 忽略，
+                // 随后 ws.next() 返 Ok(None) → break → return Ok(()) 无终态事件，
+                // close_async 把 partial 当成功（#3）。现显式处理：有稳态结果发
+                // Finished，否则 Failed 暴露异常（参照 baidu_stream.rs:214）。
+                log::debug!("tencent: WS 连接关闭");
+                let stable: String = self
+                    .stable_segments
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(sep);
+                if !stable.is_empty() {
+                    let _ = result_tx.send(StreamEvent::Text(stable));
+                    HandleOutcome::TerminalFinished
+                } else {
+                    HandleOutcome::TerminalFailed(
+                        "tencent WS 连接关闭但未收到稳态识别结果".into(),
+                    )
                 }
             }
+            _ => HandleOutcome::Continue, // ping 等忽略
         }
     }
-
-    Ok(())
 }
 
 // ── 签名 URL 构造 ──

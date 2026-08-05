@@ -144,7 +144,7 @@ impl M2M100Engine {
         log::info!("长文本分段：{} tokens，按句子切分", full_ids.len());
 
         // 按句子边界切分（CJK + Latin 标点 + 换行）
-        let sentences = split_sentences(text);
+        let sentences = crate::text_split::split_sentences(text);
         let mut chunks: Vec<String> = Vec::new();
         let mut current = String::new();
         let mut current_token_count = 2usize; // lang + eos 预留
@@ -223,32 +223,8 @@ impl TranslationEngine for M2M100Engine {
     }
 }
 
-/// 按句子边界切分文本。支持 CJK 标点（。！？）和 Latin 标点（.!?）+ 换行。
-fn split_sentences(text: &str) -> Vec<String> {
-    let mut sentences: Vec<String> = Vec::new();
-    let mut current = String::new();
-
-    for ch in text.chars() {
-        current.push(ch);
-        if is_sentence_end(ch) {
-            sentences.push(std::mem::take(&mut current));
-        }
-    }
-    if !current.is_empty() {
-        sentences.push(current);
-    }
-
-    if sentences.is_empty() {
-        vec![text.to_string()]
-    } else {
-        sentences
-    }
-}
-
-fn is_sentence_end(ch: char) -> bool {
-    matches!(ch, '。' | '！' | '？' | '．' | '\n' | '.' | '!' | '?' | ';' | '；')
-}
-
+/// 句子边界 + 空格/逗号判定（m2m100 单句超限时硬切用）。
+/// `is_sentence_end` 已抽取到 `text_split` 模块共享。
 fn is_boundary(ch: char) -> bool {
-    is_sentence_end(ch) || ch == ' ' || ch == ',' || ch == '，'
+    crate::text_split::is_sentence_end(ch) || ch == ' ' || ch == ',' || ch == '，'
 }
