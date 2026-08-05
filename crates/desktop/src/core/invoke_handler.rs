@@ -118,6 +118,7 @@ macro_rules! handler {
             crate::commands::hotword_commands::set_fuzzy_dialect_rule,
             // ── clipboard_commands ──
             crate::clipboard::clipboard_commands::query_clipboard_history,
+            crate::clipboard::clipboard_commands::get_clipboard_item,
             crate::clipboard::clipboard_commands::toggle_clipboard_favorite,
             crate::clipboard::clipboard_commands::delete_clipboard_item,
             crate::clipboard::clipboard_commands::delete_clipboard_items,

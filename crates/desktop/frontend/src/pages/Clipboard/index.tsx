@@ -1,5 +1,7 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, memo } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { invoke, listen } from "@/lib/tauri";
 import { useClipboardHistory } from "@/hooks/useClipboardHistory";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
@@ -77,7 +79,7 @@ export default function Clipboard() {
       return next;
     });
   }, []);
-  // 入栈：把当前多选 ids 推到 paste_stack → toast「已入栈 N 条」→ 清多选。
+  // 入栈：把当前多选 ids 推到 paste_stack → toast「已入栈 N 条」→ 清多选 → 切到 queue tab。
   // 同步反馈用入栈结果 size（后端 push 返回栈大小），不依赖外部 toast 库——
   // 浮窗无 toast 依赖（package.json 无 sonner 等），用一个 1.5s 的本地气泡反馈。
   const [pushedCount, setPushedCount] = useState<number | null>(null);
@@ -90,6 +92,7 @@ export default function Clipboard() {
       if (pushTimer.current) clearTimeout(pushTimer.current);
       pushTimer.current = setTimeout(() => setPushedCount(null), 1500);
       setSelectedIds([]); // 入栈后清多选
+      setFilter("queue"); // 入栈后自动聚焦到队列 tab（2026-08-05 反馈需求）
     } catch (e) {
       console.error(e);
     }
@@ -118,9 +121,7 @@ export default function Clipboard() {
       console.error("peek_paste_stack failed:", e);
     }
   }, []);
-  // 拖拽状态：dragIndex=被拖起的条目序号；dropTarget=当前悬停目标序号（用于插入位视觉提示）。
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
-  const [dropTarget, setDropTarget] = useState<number | null>(null);
+  // 拖拽状态已迁移到 @dnd-kit/sortable（SortableQueueItem 内部 useSortable 自管）。
   const handleQueueRemove = useCallback(async (index: number) => {
     try {
       await invoke("remove_from_paste_stack", { index });
@@ -184,9 +185,12 @@ export default function Clipboard() {
     } else {
       setQueueItems([]);
     }
-    // 切走时清拖拽中间态（避免回到 queue 时残留高亮）。
-    setDragIndex(null);
-    setDropTarget(null);
+    // queue tab 没有选中条目概念——切到 queue 时清 previewItem，
+    // 否则上次历史 tab 的 previewItem 会驱动 hover overlay 渲染，
+    // 叠加到 queue 列表第一个条目上（selectedIndex 仍是 0）。
+    if (filter === "queue") {
+      setPreviewItem(null);
+    }
   }, [filter, refreshQueue]);
   const handleClearStack = useCallback(() => {
     invoke("clear_paste_stack").catch(console.error);
@@ -535,15 +539,11 @@ export default function Clipboard() {
       <div className="clipboard-list flex-1 overflow-y-auto pb-1 relative">
         {/* ── 队列 tab：渲染 paste stack 内容（与历史列表互斥）──
             序号 badge（①②③）= 出栈顺序（index 0 = 下一个 Cmd+Shift+V 弹出）；
-            拖拽 = HTML5 drag events → move_paste_stack_item；× = 单条删除；
+            拖拽 = @dnd-kit/sortable → move_paste_stack_item；× = 单条删除；
             底部「清空队列」按钮。 */}
         {filter === "queue" ? (
           <QueueListView
             items={queueItems}
-            dragIndex={dragIndex}
-            dropTarget={dropTarget}
-            setDragIndex={setDragIndex}
-            setDropTarget={setDropTarget}
             onRemove={handleQueueRemove}
             onMove={handleQueueMove}
             onClear={handleQueueClear}
@@ -571,8 +571,9 @@ export default function Clipboard() {
           ))
         )}
 
-        {/* hover 预览 overlay：200px 宽，高度约为列表 1/3，根据选中位置上/下弹出 */}
-        {previewEnabled && previewItem && (() => {
+        {/* hover 预览 overlay：200px 宽，高度约为列表 1/3，根据选中位置上/下弹出。
+            queue tab 不渲染此 overlay（QueueListView 内部自管 hover 详情，数据源独立）。 */}
+        {previewEnabled && previewItem && filter !== "queue" && (() => {
           // 选中条目在列表上半部分 → 预览弹在下方；下半部分 → 弹在上方
           const itemEl = document.querySelector(`[data-clip-index="${selectedIndex}"]`) as HTMLElement | null;
           const listEl = itemEl?.offsetParent as HTMLElement | null;
@@ -592,37 +593,7 @@ export default function Clipboard() {
             }
           }
           return (
-          <div
-            className="absolute right-0 w-[200px] z-30 flex flex-col overflow-hidden rounded-l-lg border border-foreground/15 shadow-2xl shadow-black/20 bg-background"
-            style={{ top: previewTop, height: `${previewH}px` }}
-          >
-            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/60 flex-shrink-0">
-              <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
-                {previewItem.itemType === "voice" ? "ASR" : previewItem.itemType}
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto thin-scrollbar min-h-0">
-              {previewItem.itemType === "image" ? (
-                <div className="flex items-center justify-center p-2 min-h-full">
-                  {previewThumb ? (
-                    <img src={previewThumb} alt="preview" className="max-w-full max-h-full rounded object-contain" />
-                  ) : (
-                    <span className="text-[11px] text-muted-foreground">Loading...</span>
-                  )}
-                </div>
-              ) : previewItem.itemType === "file" ? (
-                <pre className="px-2 py-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap break-all font-mono">
-                  {previewItem.refData || ""}
-                </pre>
-              ) : (
-                <pre className="px-2 py-1.5 text-[11px] text-foreground whitespace-pre-wrap break-words font-mono leading-relaxed">
-                  {previewItem.content.length > 500
-                    ? previewItem.content.slice(0, 500) + "\n\n…"
-                    : previewItem.content}
-                </pre>
-              )}
-            </div>
-          </div>
+            <HoverOverlay item={previewItem} thumb={previewThumb} top={previewTop} height={previewH} />
           );
         })()}
 
@@ -725,15 +696,61 @@ export default function Clipboard() {
   );
 }
 
+/// hover/预览 overlay 的内容体——history tab 和 queue tab 共用。
+/// 区分 image（缩略图）/ file（refData）/ 其他（content 前 500 字符），
+/// 顶部带类型 badge（voice→ASR）。容器定位（top/height）由调用方决定。
+function HoverOverlay({
+  item,
+  thumb,
+  top,
+  height,
+}: {
+  item: ClipboardItem;
+  thumb?: string | null;
+  top: string;
+  height: number;
+}) {
+  return (
+    <div
+      className="absolute right-0 w-[200px] z-30 flex flex-col overflow-hidden rounded-l-lg border border-foreground/15 shadow-2xl shadow-black/20 bg-background"
+      style={{ top, height: `${height}px` }}
+    >
+      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/60 flex-shrink-0">
+        <ItemTypeGlyph type={item.itemType} />
+        <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
+          {item.itemType === "voice" ? "ASR" : item.itemType}
+        </span>
+      </div>
+      <div className="flex-1 overflow-y-auto thin-scrollbar min-h-0">
+        {item.itemType === "image" ? (
+          <div className="flex items-center justify-center p-2 min-h-full">
+            {thumb ? (
+              <img src={thumb} alt="preview" className="max-w-full max-h-full rounded object-contain" />
+            ) : (
+              <span className="text-[11px] text-muted-foreground">Loading...</span>
+            )}
+          </div>
+        ) : item.itemType === "file" ? (
+          <pre className="px-2 py-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap break-all font-mono">
+            {item.refData || ""}
+          </pre>
+        ) : (
+          <pre className="px-2 py-1.5 text-[11px] text-foreground whitespace-pre-wrap break-words font-mono leading-relaxed">
+            {item.content.length > 500
+              ? item.content.slice(0, 500) + "\n\n…"
+              : item.content}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /// 队列 tab 内容：渲染 paste stack（FIFO，① = 下一个弹出）。
-/// 拖拽用原生 HTML5 drag events（不引第三方库），drop 时调 move_paste_stack_item。
-/// 父组件持有 dragIndex/dropTarget 状态——切走 tab 时统一清空，避免残留高亮。
+/// 拖拽用 @dnd-kit/sortable（WKWebView 的 HTML5 DnD 不可靠，AGENTS.md 已踩坑）。
+/// onDragEnd → arrayMove 计算 from/to → onMove → move_paste_stack_item。
 function QueueListView({
   items,
-  dragIndex,
-  dropTarget,
-  setDragIndex,
-  setDropTarget,
   onRemove,
   onMove,
   onClear,
@@ -741,16 +758,49 @@ function QueueListView({
   clearText,
 }: {
   items: PasteStackItemDto[];
-  dragIndex: number | null;
-  dropTarget: number | null;
-  setDragIndex: (n: number | null) => void;
-  setDropTarget: (n: number | null) => void;
   onRemove: (index: number) => void;
   onMove: (from: number, to: number) => void;
   onClear: () => void;
   emptyText: string;
   clearText: string;
 }) {
+  // PointerSensor：8px 激活距离避免普通点击误判为拖拽（点删除按钮时不触发 drag）。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+  );
+  // hover 详情：独立于 history tab 的 previewItem——queue 数据源是 queueItems，
+  // 复用父 selectedIndex/items 会错位（已踩坑：overlay 永远盖第一个）。
+  // 这里基于 queueItems 自己管 hoverIndex，overlay 显示按 historyId 查到的完整
+  // ClipboardItem（content 前 500 字符 / image 缩略图，与 history overlay 一致）。
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [hoverFullItem, setHoverFullItem] = useState<ClipboardItem | null>(null);
+  const [hoverThumb, setHoverThumb] = useState<string | null>(null);
+  // 拖拽期间禁用 hover（避免 dragOver 误触 hover 高亮）。
+  const [isDragging, setIsDragging] = useState(false);
+  const hoverId = hoverIndex === null ? null : items[hoverIndex]?.historyId ?? null;
+
+  // hoverIndex 变化 → 按 historyId 查完整 ClipboardItem（竞态守卫）。
+  // PasteStackItemDto 只有 preview（前 50 字符），overlay 需完整 content 才能和
+  // history overlay 显示一致长度（500 字符）。
+  useEffect(() => {
+    if (hoverId === null) { setHoverFullItem(null); setHoverThumb(null); return; }
+    let cancelled = false;
+    invoke<ClipboardItem | null>("get_clipboard_item", { id: hoverId })
+      .then((item) => { if (!cancelled) setHoverFullItem(item); })
+      .catch((e) => { console.error("get_clipboard_item failed:", e); if (!cancelled) setHoverFullItem(null); });
+    return () => { cancelled = true; };
+  }, [hoverId]);
+
+  // hoverFullItem 是 image 时拉缩略图（竞态守卫，复用 get_image_thumb）。
+  useEffect(() => {
+    if (hoverFullItem?.itemType !== "image") { setHoverThumb(null); return; }
+    let cancelled = false;
+    invoke<string>("get_image_thumb", { id: hoverFullItem.id })
+      .then((data) => { if (!cancelled) setHoverThumb(data); })
+      .catch(() => { if (!cancelled) setHoverThumb(null); });
+    return () => { cancelled = true; };
+  }, [hoverFullItem]);
+
   if (items.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-1 text-muted-foreground/50">
@@ -759,73 +809,60 @@ function QueueListView({
       </div>
     );
   }
+  const onDragEnd = (e: { active: { id: string | number }; over: { id: string | number } | null }) => {
+    setIsDragging(false);
+    if (!e.over || e.active.id === e.over.id) return;
+    const from = items.findIndex((it) => it.historyId === e.active.id);
+    const to = items.findIndex((it) => it.historyId === e.over!.id);
+    if (from === -1 || to === -1) return;
+    onMove(from, to);
+  };
   return (
     <div className="flex flex-col h-full">
-      <ul className="flex-1 overflow-y-auto thin-scrollbar">
-        {items.map((item, i) => {
-          const isDragging = dragIndex === i;
-          const isDropTarget = dropTarget === i && dragIndex !== null && dragIndex !== i;
-          return (
-            <li
-              key={item.historyId}
-              draggable
-              onDragStart={(e) => {
-                setDragIndex(i);
-                // 必须设 dataTransfer 才能触发 dragover/drop（浏览器规范）。
-                e.dataTransfer.effectAllowed = "move";
-                e.dataTransfer.setData("text/plain", String(i));
-              }}
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
-                if (dropTarget !== i) setDropTarget(i);
-              }}
-              onDragLeave={(e) => {
-                // 仅当离开 li 本体才清（避免子元素切换误清）。
-                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-                  if (dropTarget === i) setDropTarget(null);
-                }
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                const from = dragIndex;
-                setDragIndex(null);
-                setDropTarget(null);
-                if (from !== null && from !== i) onMove(from, i);
-              }}
-              onDragEnd={() => {
-                setDragIndex(null);
-                setDropTarget(null);
-              }}
-              className={cn(
-                "group flex items-center gap-1.5 px-2 py-1.5 border-b border-border/40 cursor-grab active:cursor-grabbing transition-colors",
-                isDragging && "opacity-40",
-                isDropTarget && "bg-emerald-500/10 border-t border-t-emerald-500",
-              )}
-            >
-              {/* 序号 badge：①②③… = 出栈顺序；前置 Grip 提示可拖 */}
-              <GripVertical className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
-              <span className="flex-shrink-0 w-4 text-center text-sm text-emerald-600 leading-none">
-                {queueBadge(i + 1)}
-              </span>
-              <ItemTypeGlyph type={item.itemType} />
-              <span className="flex-1 min-w-0 text-xs text-foreground truncate">
-                {item.preview || <span className="text-muted-foreground/50">（无内容预览）</span>}
-              </span>
-              <button
-                className="flex-shrink-0 opacity-0 group-hover:opacity-100 rounded p-0.5 text-muted-foreground hover:text-red-500 hover:bg-red-500/15 transition-all"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRemove(i);
-                }}
-                title="删除"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={onDragEnd}
+        onDragStart={() => { setIsDragging(true); setHoverIndex(null); }}
+        onDragCancel={() => setIsDragging(false)}
+      >
+        <SortableContext items={items.map((it) => it.historyId)} strategy={verticalListSortingStrategy}>
+          <ul className="flex-1 overflow-y-auto thin-scrollbar">
+            {items.map((item, i) => (
+              <SortableQueueItem
+                key={item.historyId}
+                item={item}
+                index={i}
+                onRemove={onRemove}
+                isHovered={!isDragging && hoverIndex === i}
+                onHover={(idx) => setHoverIndex(idx)}
+              />
+            ))}
+          </ul>
+        </SortableContext>
+      </DndContext>
+      {/* hover 详情 overlay：与 history tab 同样 200px 宽，按 hover 行位置上/下弹出。
+          内容用完整 ClipboardItem（500 字符 / image 缩略图），通过 HoverOverlay 组件复用。 */}
+      {hoverFullItem && (() => {
+        const itemEl = document.querySelector(`[data-queue-index="${hoverIndex}"]`) as HTMLElement | null;
+        const listEl = itemEl?.offsetParent as HTMLElement | null;
+        const previewH = 200;
+        let previewTop = '0px';
+        if (itemEl && listEl) {
+          const itemMid = itemEl.offsetTop + itemEl.offsetHeight / 2 - listEl.scrollTop;
+          const listH = listEl.clientHeight;
+          if (itemMid < listH / 2) {
+            const top = itemEl.offsetTop + itemEl.offsetHeight - 2;
+            previewTop = `${Math.min(top, listEl.scrollTop + listH - previewH)}px`;
+          } else {
+            const top = itemEl.offsetTop - previewH + 2;
+            previewTop = `${Math.max(top, listEl.scrollTop)}px`;
+          }
+        }
+        return (
+          <HoverOverlay item={hoverFullItem} thumb={hoverThumb} top={previewTop} height={previewH} />
+        );
+      })()}
       {/* 底部「清空队列」按钮 */}
       <div className="flex-shrink-0 px-2 py-1.5 border-t border-border">
         <button
@@ -839,6 +876,74 @@ function QueueListView({
     </div>
   );
 }
+
+/// 单条队列条目——memo 包裹避免拖拽时 sibling 重绘。
+/// useSortable 提供 transform/transition + listeners + isDragging。
+/// 删除按钮需 stopPropagation 避免 listeners 拦截 onClick。
+/// hover 通过 onHover(index|null) 上报——dnd-kit listeners 不会拦截 mouseEnter/Leave。
+const SortableQueueItem = memo(function SortableQueueItem({
+  item,
+  index,
+  onRemove,
+  isHovered,
+  onHover,
+}: {
+  item: PasteStackItemDto;
+  index: number;
+  onRemove: (index: number) => void;
+  isHovered: boolean;
+  onHover: (index: number | null) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: item.historyId,
+  });
+  const style: React.CSSProperties = {
+    transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
+    transition,
+    zIndex: isDragging ? 10 : undefined,
+  };
+  return (
+    <li
+      ref={setNodeRef}
+      style={style}
+      data-queue-index={index}
+      {...attributes}
+      {...listeners}
+      // mouseEnter/Leave 上报 hover——dnd-kit 的 PointerSensor listeners 走 pointer 事件，
+      // 不拦截 mouse 事件，可以共存。
+      onMouseEnter={() => onHover(index)}
+      onMouseLeave={() => onHover(null)}
+      className={cn(
+        "group flex items-center gap-1.5 px-2 py-1.5 border-b border-border/40 cursor-grab active:cursor-grabbing transition-colors bg-background",
+        isDragging && "opacity-50 shadow-lg",
+        isHovered && "bg-accent/50",
+      )}
+    >
+      {/* 序号 badge：①②③… = 出栈顺序；前置 Grip 提示可拖 */}
+      <GripVertical className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
+      <span className="flex-shrink-0 w-4 text-center text-sm text-emerald-600 leading-none">
+        {queueBadge(index + 1)}
+      </span>
+      <ItemTypeGlyph type={item.itemType} />
+      <span className="flex-1 min-w-0 text-xs text-foreground truncate">
+        {item.preview || <span className="text-muted-foreground/50">（无内容预览）</span>}
+      </span>
+      <button
+        className="flex-shrink-0 opacity-0 group-hover:opacity-100 rounded p-0.5 text-muted-foreground hover:text-red-500 hover:bg-red-500/15 transition-all"
+        // listeners 会拦截整个 li 的 pointer 事件——删除按钮必须 stopPropagation
+        // 才能让 onClick 触发（dnd-kit 的 listeners 优先级高于 React onClick）。
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove(index);
+        }}
+        title="删除"
+      >
+        <X className="w-3 h-3" />
+      </button>
+    </li>
+  );
+});
 
 /// 队列条目类型小图标——按 itemType 字段挑 lucide 图标，与 FilterTabs 视觉呼应。
 /// 未知类型退化为 FileQuestion（不致崩）；itemType 来自后端 as_str()，恒为

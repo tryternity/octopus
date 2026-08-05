@@ -29,6 +29,22 @@ pub async fn query_clipboard_history(
     .map_err(e2s)
 }
 
+/// 按 id 查单条剪贴板历史（完整 ClipboardItem）。
+/// queue tab hover overlay 用：PasteStackItemDto 只携带 preview（前 50 字符），
+/// hover 详情需要完整 content/image/ASR → 按 history_id 查本体。
+/// 行不存在（已删）返 None，前端清 overlay。
+#[tauri::command]
+pub async fn get_clipboard_item(id: String) -> Result<Option<ClipboardItem>, String> {
+    tokio::task::spawn_blocking(move || {
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::get_item_by_id(conn, &id)
+        })
+    })
+    .await
+    .map_err(|e| e2s_ctx("join error: {}", e))?
+    .map_err(e2s)
+}
+
 #[tauri::command]
 pub async fn toggle_clipboard_favorite(
     history_id: String,
