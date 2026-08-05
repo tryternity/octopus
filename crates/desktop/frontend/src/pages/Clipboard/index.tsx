@@ -7,7 +7,7 @@ import { moveIndex, moveTab } from "@/lib/clipboardNav";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
-import { Pin, X, Settings2, CircleCheck, CircleX, Trash2, Eye, EyeOff } from "lucide-react";
+import { Pin, X, Settings2, CircleCheck, CircleX, Trash2, Eye, EyeOff, ClipboardList, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import type { ClipboardItem } from "@/types/clipboard";
@@ -41,6 +41,85 @@ export default function Clipboard() {
   // 预览内容：当前选中/hover 条目的完整数据
   const [previewItem, setPreviewItem] = useState<ClipboardItem | null>(null);
   const [previewThumb, setPreviewThumb] = useState<string | null>(null);
+
+  // ── 粘贴队列（Paste Stack）多选 + 栈计数 ──
+  // selectedIds: Cmd+点击追加的 history_id 列表（按入栈顺序）。空=无多选。
+  // 用数组而非 Set：序号 badge 需要按入栈顺序映射（①②③…），数组天然保序且 toggle
+  // 时 splice 简单；规模小（用户多选几条），O(n) 删除可忽略。
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  // selectedBadgeOf(id): 返回 1-based 序号（按 selectedIds 顺序）或 undefined（未选中）。
+  const selectedBadgeOf = useCallback(
+    (id: string): number | undefined => {
+      const idx = selectedIds.indexOf(id);
+      return idx === -1 ? undefined : idx + 1;
+    },
+    [selectedIds],
+  );
+  const handleCmdClick = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const idx = prev.indexOf(id);
+      if (idx === -1) return [...prev, id]; // 追加（保序）
+      const next = [...prev];
+      next.splice(idx, 1); // 再次 Cmd+点击取消选中
+      return next;
+    });
+  }, []);
+  // 入栈：把当前多选 ids 推到 paste_stack → toast「已入栈 N 条」→ 清多选。
+  // 同步反馈用入栈结果 size（后端 push 返回栈大小），不依赖外部 toast 库——
+  // 浮窗无 toast 依赖（package.json 无 sonner 等），用一个 1.5s 的本地气泡反馈。
+  const [pushedCount, setPushedCount] = useState<number | null>(null);
+  const pushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handlePushToStack = useCallback(async () => {
+    if (selectedIds.length === 0) return;
+    try {
+      const size = await invoke<number>("push_to_paste_stack", { ids: selectedIds });
+      setPushedCount(size);
+      if (pushTimer.current) clearTimeout(pushTimer.current);
+      pushTimer.current = setTimeout(() => setPushedCount(null), 1500);
+      setSelectedIds([]); // 入栈后清多选
+    } catch (e) {
+      console.error(e);
+    }
+  }, [selectedIds]);
+  // 卸载清 timer
+  useEffect(() => {
+    return () => {
+      if (pushTimer.current) clearTimeout(pushTimer.current);
+    };
+  }, []);
+
+  // 粘贴队列栈计数：mount poll 一次 + 监听 paste-stack://updated 实时更新。
+  // remaining=0 时隐藏计数 badge（spec §4.3）。
+  const [stackRemaining, setStackRemaining] = useState(0);
+  const [stackPreview, setStackPreview] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    invoke<{ remaining: number; nextPreview: string | null }>("paste_stack_status")
+      .then((s) => {
+        if (cancelled) return;
+        setStackRemaining(s.remaining);
+        setStackPreview(s.nextPreview);
+      })
+      .catch(() => {});
+    const unlisten = listen<number>("paste-stack://updated", (remaining) => {
+      // 后端 emit 的是裸 remaining 数字（event payload）。
+      const n = typeof remaining === "number" ? remaining : 0;
+      setStackRemaining(n);
+      // 同步刷新 preview（含下一条内容）
+      invoke<{ remaining: number; nextPreview: string | null }>("paste_stack_status")
+        .then((s) => { if (!cancelled) setStackPreview(s.nextPreview); })
+        .catch(() => {});
+    });
+    return () => {
+      cancelled = true;
+      unlisten.then((f) => f());
+    };
+  }, []);
+  const handleClearStack = useCallback(() => {
+    invoke("clear_paste_stack").catch(console.error);
+    setStackRemaining(0);
+    setStackPreview(null);
+  }, []);
   // 一键清理两步确认：点 1 次 → confirming=true（变红 + 3s 超时），再点才执行。
   const [confirming, setConfirming] = useState(false);
   const confirmTimer = useRef<number | null>(null);
@@ -311,6 +390,30 @@ export default function Clipboard() {
         </button>
         <span className="text-[11px] font-medium tracking-wide text-muted-foreground">{t("clipboard.title")}</span>
         <div className="flex items-center gap-0.5">
+          {/* 粘贴队列栈计数 badge：remaining>0 时显示，含下一条预览（title）+ × 清空。
+              点击 × 调 clear_paste_stack；点击 badge 本身聚焦提示（无动作）。
+              remaining=0 时完全隐藏（spec §4.3）。 */}
+          {stackRemaining > 0 && (
+            <button
+              className="flex items-center gap-0.5 px-1 rounded cursor-default text-emerald-600 hover:bg-emerald-500/15 transition-colors"
+              title={`粘贴队列剩余 ${stackRemaining} 条${stackPreview ? `（下一条：${stackPreview}）` : ""}\n按 Cmd+Shift+V 逐条粘贴`}
+            >
+              <ClipboardList className="w-3.5 h-3.5" />
+              <span className="text-[10px] font-bold tabular-nums">{stackRemaining}</span>
+              <span
+                role="button"
+                tabIndex={-1}
+                className="ml-0.5 -mr-0.5 rounded p-0.5 text-muted-foreground hover:text-red-500 hover:bg-red-500/15"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleClearStack();
+                }}
+                title="清空粘贴队列"
+              >
+                <X className="w-2.5 h-2.5" />
+              </span>
+            </button>
+          )}
           {/* 监听开关：复制敏感内容前可在此快速暂停。与 Pin 同为状态 toggle，成组于右侧。 */}
           <button
             className={cn(
@@ -372,6 +475,8 @@ export default function Clipboard() {
               onSelect={handleSelect}
               onHover={handleHover}
               onChanged={refresh}
+              selectedBadge={selectedBadgeOf(item.id)}
+              onCmdClick={handleCmdClick}
             />
           ))
         )}
@@ -430,6 +535,35 @@ export default function Clipboard() {
           </div>
           );
         })()}
+
+        {/* 粘贴队列「入栈」浮动按钮：Cmd+点击多选 ≥1 条时显示，固定在列表底部居中。
+            点击 → push_to_paste_stack → toast（pushedCount）→ 清多选。
+            出栈粘贴由全局热键 Cmd+Shift+V 触发（后端 pop_and_paste）。 */}
+        {selectedIds.length > 0 && (
+          <div className="absolute left-1/2 bottom-2 z-40 -translate-x-1/2 flex items-center gap-1 rounded-full bg-emerald-600 px-3 py-1.5 shadow-lg shadow-emerald-900/30">
+            <button
+              className="flex items-center gap-1.5 text-[11px] font-semibold text-white"
+              onClick={handlePushToStack}
+              title="入栈后切到目标应用，按 Cmd+Shift+V 逐条粘贴"
+            >
+              <Layers className="w-3.5 h-3.5" />
+              入栈 {selectedIds.length} 条
+            </button>
+            <button
+              className="text-white/80 hover:text-white"
+              onClick={() => setSelectedIds([])}
+              title="取消多选"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+        {/* 入栈成功 toast 气泡（无 sonner 依赖，本地 1.5s 反馈） */}
+        {pushedCount !== null && (
+          <div className="absolute left-1/2 bottom-12 z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-foreground px-2.5 py-1 text-[10px] font-medium text-background shadow">
+            已入栈，剩余 {pushedCount} 条 · Cmd+Shift+V 逐条粘贴
+          </div>
+        )}
       </div>
 
       {/* Footer */}

@@ -161,6 +161,14 @@ pub struct AppConfig {
     #[serde(default = "default_clipboard_shortcut")]
     pub clipboard_shortcut: String,
 
+    /// 粘贴队列（Paste Stack）出栈粘贴全局快捷键。默认 "CmdOrCtrl+Shift+V"。
+    ///
+    /// 用户在剪贴板窗口多选条目入栈后，切到目标 app，按此键逐条（FIFO）弹出并
+    /// 模拟 Cmd+V 粘贴。与 clipboard_shortcut（打开浮窗）正交，可同时注册。
+    /// 详见 docs/superpowers/specs/2026-08-05-paste-stack-design.md。
+    #[serde(default = "default_paste_stack_shortcut")]
+    pub paste_stack_shortcut: String,
+
     /// 剪贴板最大保留条数（不含收藏，超出自动清理）。默认 1000。
     #[serde(default = "default_clipboard_max_items")]
     pub clipboard_max_items: i64,
@@ -301,6 +309,9 @@ fn default_download_mirror() -> String {
 fn default_clipboard_shortcut() -> String {
     "Alt+C".into()
 }
+fn default_paste_stack_shortcut() -> String {
+    "CmdOrCtrl+Shift+V".into()
+}
 fn default_clipboard_max_items() -> i64 {
     1000
 }
@@ -374,6 +385,7 @@ impl Default for AppConfig {
             edit_global_shortcut: default_edit_global_shortcut(),
             download_mirror: default_download_mirror(),
             clipboard_shortcut: default_clipboard_shortcut(),
+            paste_stack_shortcut: default_paste_stack_shortcut(),
             clipboard_max_items: default_clipboard_max_items(),
             clipboard_max_age_days: default_clipboard_max_age_days(),
             clipboard_enabled: default_clipboard_enabled(),

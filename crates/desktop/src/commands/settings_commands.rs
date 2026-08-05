@@ -137,9 +137,9 @@ pub fn set_config(
         .map_err(|e| e2s_ctx("写入 DB 失败", e))?;
         return Ok(());
     }
-    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_screenshot_sc, old_action_bar_sc, old_vault_autotype_sc, old_record_sc, mut cfg) = {
+    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_screenshot_sc, old_action_bar_sc, old_vault_autotype_sc, old_record_sc, old_paste_stack_sc, mut cfg) = {
         let g = rc.read();
-        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.action_bar_shortcut.clone(), g.vault_autotype_shortcut.clone(), g.record_shortcut.clone(), g.clone())
+        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.action_bar_shortcut.clone(), g.vault_autotype_shortcut.clone(), g.record_shortcut.clone(), g.paste_stack_shortcut.clone(), g.clone())
     };
     // vault feature off 时 old_vault_autotype_sc 不被读；非 macOS 时 old_record_sc 不被读——
     // 统一标 unused 避免 warning。
@@ -182,6 +182,18 @@ pub fn set_config(
         if let Err(e) = crate::clipboard::clipboard_window::register_clipboard_shortcut(&app_handle, &cfg.clipboard_shortcut) {
             // 注册失败：恢复旧快捷键，避免用户完全失去快捷键
             let _ = crate::clipboard::clipboard_window::register_clipboard_shortcut(&app_handle, &old_clipboard_sc);
+            return Err(format!("快捷键注册失败，配置未更改: {}", e));
+        }
+    }
+
+    // paste_stack_shortcut 热重载：与 clipboard_shortcut 同模式（注销旧 + 注册新）。
+    if key == "paste_stack_shortcut" && cfg.paste_stack_shortcut != old_paste_stack_sc {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        if let Ok(old) = old_paste_stack_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let _ = app_handle.global_shortcut().unregister(old);
+        }
+        if let Err(e) = crate::clipboard::clipboard_window::register_paste_stack_shortcut(&app_handle, &cfg.paste_stack_shortcut) {
+            let _ = crate::clipboard::clipboard_window::register_paste_stack_shortcut(&app_handle, &old_paste_stack_sc);
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }
@@ -410,6 +422,9 @@ fn apply_config_value(
         // 激活态统一走 switch_active_model 命令（DB models.is_enabled）。set_config 不再处理这 4 个 key。
         "clipboard_shortcut" => {
             cfg.clipboard_shortcut = value.as_str().ok_or("clipboard_shortcut 需要字符串")?.to_string();
+        }
+        "paste_stack_shortcut" => {
+            cfg.paste_stack_shortcut = value.as_str().ok_or("paste_stack_shortcut 需要字符串")?.to_string();
         }
         "clipboard_max_items" => {
             let v = value.as_i64().or_else(|| value.as_f64().map(|f| f as i64))

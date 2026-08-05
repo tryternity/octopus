@@ -17,6 +17,11 @@ function ClipboardItemRow({
   onSelect,
   onHover,
   onChanged,
+  // ── Paste Stack 多选（Cmd+点击）──
+  // selectedBadge: 进入粘贴队列多选集合时，按入栈顺序的序号（1-based）。undefined=未选中。
+  // onCmdClick: Cmd/Ctrl+点击回调（toggle 多选）；普通点击仍走 onSelect + copy。
+  selectedBadge,
+  onCmdClick,
 }: {
   item: ClipboardItem;
   index: number;
@@ -25,6 +30,8 @@ function ClipboardItemRow({
   onSelect: (index: number) => void;
   onHover: (index: number) => void;
   onChanged: () => void;
+  selectedBadge?: number;
+  onCmdClick?: (id: string) => void;
 }) {
   const t = useT();
   const [deletePending, setDeletePending] = useState(false);
@@ -86,20 +93,29 @@ function ClipboardItemRow({
 
   // 单击：选中条目 + 复制（copy_clipboard_item，不隐藏浮窗、不触发粘贴）。
   // 2026-07-21：原仅选中，现加复制——单击即拷贝到剪贴板，配合图标按钮改为粘贴。
-  const handleClick = () => {
+  //
+  // Cmd/Ctrl+点击：进入粘贴队列多选（toggle selectedIds）——不复制、不选中，
+  // 单独走 onCmdClick 回调，由父组件维护 selectedIds 集合。
+  const handleClick = (e: React.MouseEvent) => {
     if (deletePending) return;
+    if ((e.metaKey || e.ctrlKey) && onCmdClick) {
+      e.preventDefault();
+      onCmdClick(item.id);
+      return;
+    }
+    // 有多选态时，普通点击清空多选并回退到「选中 + 复制」（避免点击即粘贴的歧义）
     onSelect(index);
     // 复制到剪贴板 + 动效；文件丢失时红色气泡提示 + 感叹号
     invoke("copy_clipboard_item", { id: item.id }).then(() => {
       setCopied(true);
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopied(false), 1500);
-    }).catch((e) => {
+    }).catch((err) => {
       setFileMissing(true);
       setCopyFailed(true);
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopyFailed(false), 2000);
-      console.error(e);
+      console.error(err);
     });
   };
 
@@ -180,16 +196,31 @@ function ClipboardItemRow({
         // hover 用更淡的色，selected 用 accent + 左侧指示条，避免同时两行同色高亮
         isSelected && !deletePending ? "bg-accent" : "hover:bg-muted",
         deletePending && "bg-red-500/15",
+        // 粘贴队列多选：绿色背景 + 左侧实心指示条，覆盖普通 selected 高亮
+        selectedBadge !== undefined && !deletePending && "bg-emerald-500/15",
       )}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onMouseEnter={() => onHover(index)}
     >
-      {isSelected && !deletePending && (
+      {selectedBadge !== undefined && !deletePending && (
+        <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-emerald-500" />
+      )}
+      {selectedBadge === undefined && isSelected && !deletePending && (
         <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-voice" />
       )}
-      {isVoice && !isSelected && (
+      {isVoice && isSelected && selectedBadge === undefined && (
         <div className="absolute left-0 top-2 bottom-2 w-[2px] rounded-r bg-voice/50" />
+      )}
+
+      {/* 粘贴队列多选序号 badge（①②③…）。固定在右上角，不抢占类型图标位置。 */}
+      {selectedBadge !== undefined && (
+        <span
+          className="pointer-events-none absolute right-1.5 top-1.5 z-10 flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-bold leading-none text-white shadow"
+          title="粘贴队列选中"
+        >
+          {selectedBadge}
+        </span>
       )}
 
       {/* 类型图标(单击粘贴)：左列跨两行垂直居中、放大一档(w-4→w-5)，作为条目「头像」。

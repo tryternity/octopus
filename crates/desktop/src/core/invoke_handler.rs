@@ -141,6 +141,11 @@ macro_rules! handler {
             crate::clipboard::clipboard_commands::check_image_file_exists,
             crate::clipboard::clipboard_commands::save_image_dialog,
             crate::clipboard::clipboard_commands::copy_image_to_clipboard,
+            // ── paste_stack（粘贴队列）──
+            crate::clipboard::clipboard_commands::push_to_paste_stack,
+            crate::clipboard::clipboard_commands::pop_and_paste,
+            crate::clipboard::clipboard_commands::paste_stack_status,
+            crate::clipboard::clipboard_commands::clear_paste_stack,
             // ── screenshot_commands ──
             crate::record::screenshot_commands::start_screenshot,
             crate::record::screenshot_commands::confirm_screenshot,
