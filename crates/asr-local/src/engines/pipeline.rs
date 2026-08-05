@@ -138,24 +138,10 @@ fn transcribe_segments(
                 let text_cleaned = text.replace("<|nospeech|>", "");
                 let text_trimmed = text_cleaned.trim();
                 if !text_trimmed.is_empty() {
-                    if !final_text.is_empty() {
-                        // 段间空格判定（第五轮 A1）：改字节级 ASCII 判定，对齐 paraformer.rs:350-356
-                        // smart_append。旧 char 级 is_cjk 漏 CJK 标点(0x3000-303F)/全角(FF00-FFEF)
-                        // → 段以「。」结尾 + 下段汉字 → needs_space=true →「你好。 世界」错插空格。
-                        // 字节级 <0x80 判 ASCII：CJK 标点/全角/汉字首字节均 ≥0x80 → 判非 ASCII →
-                        // 两侧都非 ASCII 时不插空格（CJK 之间无空格），与 smart_append 一致。
-                        let last_byte = final_text.as_bytes().last().copied().unwrap_or(0);
-                        let next_byte = text_trimmed.as_bytes().first().copied().unwrap_or(0);
-                        let last_is_ascii = last_byte < 0x80;
-                        let next_is_ascii = next_byte < 0x80;
-                        let needs_space = (last_is_ascii || next_is_ascii)
-                            && last_byte != b' '
-                            && next_byte != b' ';
-                        if needs_space {
-                            final_text.push(' ');
-                        }
-                    }
-                    final_text.push_str(text_trimmed);
+                    // 段间空格判定复用 paraformer::smart_append（字节级 ASCII 判定，
+                    // 对齐 sherpa-onnx Convert 空格逻辑）。旧实现内联重复了 smart_append
+                    // 的逻辑（第五轮 A1 修复），现统一调用（2026-08-05）。
+                    crate::paraformer::smart_append(&mut final_text, text_trimmed);
                 }
             }
         }

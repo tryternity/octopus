@@ -100,9 +100,9 @@ impl Qwen3AsrEngine {
         let prefer_int8 = true;
 
         // Discover ONNX files
-        let conv_path = discover_onnx(&hf_path, "conv_frontend", prefer_int8)?;
-        let encoder_path = discover_onnx(&hf_path, "encoder", prefer_int8)?;
-        let decoder_path = discover_onnx(&hf_path, "decoder", prefer_int8)?;
+        let conv_path = crate::config::discover_onnx(&hf_path, "conv_frontend", prefer_int8)?;
+        let encoder_path = crate::config::discover_onnx(&hf_path, "encoder", prefer_int8)?;
+        let decoder_path = crate::config::discover_onnx(&hf_path, "decoder", prefer_int8)?;
 
         // Load ONNX sessions
         let conv_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&conv_path)?;
@@ -422,44 +422,7 @@ fn is_language_scaffold(text: &str) -> bool {
     text.trim_start().starts_with("language ")
 }
 
-// ── ONNX discovery ──
-
-fn discover_onnx(
-    base: &std::path::Path,
-    name: &str,
-    prefer_int8: bool,
-) -> Result<std::path::PathBuf> {
-    let int8 = base.join(format!("{}.int8.onnx", name));
-    let fp32 = base.join(format!("{}.onnx", name));
-
-    if prefer_int8 {
-        if int8.exists() {
-            Ok(int8)
-        } else if fp32.exists() {
-            Ok(fp32)
-        } else {
-            anyhow::bail!(
-                "{}.onnx / {}.int8.onnx not found at {}",
-                name,
-                name,
-                base.display()
-            )
-        }
-    } else {
-        if fp32.exists() {
-            Ok(fp32)
-        } else if int8.exists() {
-            Ok(int8)
-        } else {
-            anyhow::bail!(
-                "{}.onnx / {}.int8.onnx not found at {}",
-                name,
-                name,
-                base.display()
-            )
-        }
-    }
-}
+// discover_onnx 已抽取到 config.rs（pub(crate)），本文件调 crate::config::discover_onnx
 
 // ── Prompt building ──
 

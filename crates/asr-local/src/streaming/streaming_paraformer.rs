@@ -6,8 +6,9 @@ use anyhow::{Context, Result};
 use ort::session::Session;
 
 use crate::config;
+use crate::fbank::apply_lfr;
 use crate::paraformer::{
-    apply_lfr, decode_tokens, extract_cmvn_from_metadata, FBANK_FFT, FBANK_FFT_SIZE,
+    decode_tokens, extract_cmvn_from_metadata, FBANK_FFT, FBANK_FFT_SIZE,
     FBANK_FRAME_LEN, FBANK_FRAME_SHIFT, FBANK_NUM_BINS, LFR_WINDOW_SHIFT, LFR_WINDOW_SIZE,
     MEL_FILTERBANK, MEL_FILTERBANK_RANGE, POVEY_WINDOW,
 };
@@ -73,8 +74,8 @@ impl StreamingParaformer {
 
         let prefer_int8 = true;
 
-        let encoder_path = discover_onnx(&hf_path, "encoder", prefer_int8)?;
-        let decoder_path = discover_onnx(&hf_path, "decoder", prefer_int8)?;
+        let encoder_path = crate::config::discover_onnx(&hf_path, "encoder", prefer_int8)?;
+        let decoder_path = crate::config::discover_onnx(&hf_path, "decoder", prefer_int8)?;
 
         let encoder_session = crate::config::apply_session_acceleration(Session::builder()?)?
             .commit_from_file(&encoder_path)?;
@@ -777,43 +778,7 @@ impl StreamingParaformer {
 
 // ── Helpers ──
 
-fn discover_onnx(
-    hf_path: &std::path::Path,
-    name: &str,
-    prefer_int8: bool,
-) -> Result<std::path::PathBuf> {
-    if prefer_int8 {
-        let int8 = hf_path.join(format!("{}.int8.onnx", name));
-        let fp32 = hf_path.join(format!("{}.onnx", name));
-        if int8.exists() {
-            Ok(int8)
-        } else if fp32.exists() {
-            Ok(fp32)
-        } else {
-            anyhow::bail!(
-                "{}.onnx / {}.int8.onnx not found at {}",
-                name,
-                name,
-                hf_path.display()
-            )
-        }
-    } else {
-        let fp32 = hf_path.join(format!("{}.onnx", name));
-        let int8 = hf_path.join(format!("{}.int8.onnx", name));
-        if fp32.exists() {
-            Ok(fp32)
-        } else if int8.exists() {
-            Ok(int8)
-        } else {
-            anyhow::bail!(
-                "{}.onnx / {}.int8.onnx not found at {}",
-                name,
-                name,
-                hf_path.display()
-            )
-        }
-    }
-}
+// discover_onnx 已抽取到 config.rs（pub(crate)），本文件调 crate::config::discover_onnx
 
 // ── CIF alpha overlap mask（去 chunk 间 overlap，防 CIF 重复 fire）──
 

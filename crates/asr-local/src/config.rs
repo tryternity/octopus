@@ -492,6 +492,50 @@ fn fallback_resolved_engine() -> ResolvedEngine {
     }
 }
 
+/// ONNX 模型文件发现——按 `prefer_int8` 优先选 int8 或 fp32，不存在则 bail。
+///
+/// `base` — 模型目录；`name` — 文件基名（如 "encoder"/"decoder"）。
+/// 查找 `{base}/{name}.int8.onnx` 和 `{base}/{name}.onnx`。
+///
+/// 2026-08-05 抽取：消除 qwen3_asr.rs / streaming_paraformer.rs 的逐字重复副本 +
+/// paraformer.rs 的手写 if-else 链（encoder/decoder 各一份）。zipformer 的
+/// `discover_streaming_zipformer_onnx` 是更复杂的扫描变体，不合并。
+pub(crate) fn discover_onnx(
+    base: &std::path::Path,
+    name: &str,
+    prefer_int8: bool,
+) -> Result<std::path::PathBuf> {
+    let int8 = base.join(format!("{}.int8.onnx", name));
+    let fp32 = base.join(format!("{}.onnx", name));
+    if prefer_int8 {
+        if int8.exists() {
+            Ok(int8)
+        } else if fp32.exists() {
+            Ok(fp32)
+        } else {
+            anyhow::bail!(
+                "{}.onnx / {}.int8.onnx not found at {}",
+                name,
+                name,
+                base.display()
+            )
+        }
+    } else {
+        if fp32.exists() {
+            Ok(fp32)
+        } else if int8.exists() {
+            Ok(int8)
+        } else {
+            anyhow::bail!(
+                "{}.onnx / {}.int8.onnx not found at {}",
+                name,
+                name,
+                base.display()
+            )
+        }
+    }
+}
+
 /// 从已加载的 AsrConfig 取 zipformer-small 条目构造兜底 ResolvedEngine。
 /// 配置中无该条目时返回 None（调用方走硬构造兜底）。纯函数，仅供单测。
 #[cfg(test)]

@@ -68,43 +68,10 @@ impl ParaformerEngine {
         let hf_path = config::resolve_model_dir(&entry.source)?;
         let prefer_int8 = true;
 
-        // Discover encoder ONNX
-        let encoder_path = if prefer_int8 {
-            if hf_path.join("encoder.int8.onnx").exists() {
-                hf_path.join("encoder.int8.onnx")
-            } else if hf_path.join("encoder.onnx").exists() {
-                hf_path.join("encoder.onnx")
-            } else {
-                anyhow::bail!("encoder.onnx / encoder.int8.onnx not found at {}", hf_path.display());
-            }
-        } else {
-            if hf_path.join("encoder.onnx").exists() {
-                hf_path.join("encoder.onnx")
-            } else if hf_path.join("encoder.int8.onnx").exists() {
-                hf_path.join("encoder.int8.onnx")
-            } else {
-                anyhow::bail!("encoder.onnx / encoder.int8.onnx not found at {}", hf_path.display());
-            }
-        };
-
-        // Discover decoder ONNX
-        let decoder_path = if prefer_int8 {
-            if hf_path.join("decoder.int8.onnx").exists() {
-                hf_path.join("decoder.int8.onnx")
-            } else if hf_path.join("decoder.onnx").exists() {
-                hf_path.join("decoder.onnx")
-            } else {
-                anyhow::bail!("decoder.onnx / decoder.int8.onnx not found at {}", hf_path.display());
-            }
-        } else {
-            if hf_path.join("decoder.onnx").exists() {
-                hf_path.join("decoder.onnx")
-            } else if hf_path.join("decoder.int8.onnx").exists() {
-                hf_path.join("decoder.int8.onnx")
-            } else {
-                anyhow::bail!("decoder.onnx / decoder.int8.onnx not found at {}", hf_path.display());
-            }
-        };
+        // Discover encoder/decoder ONNX（2026-08-05：改用 config::discover_onnx 公共版，
+        // 消除手写 if-else 链——与 qwen3/streaming_paraformer 统一）
+        let encoder_path = crate::config::discover_onnx(&hf_path, "encoder", prefer_int8)?;
+        let decoder_path = crate::config::discover_onnx(&hf_path, "decoder", prefer_int8)?;
 
         let encoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&encoder_path)?;
         let decoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&decoder_path)?;
@@ -436,7 +403,7 @@ pub(crate) fn decode_tokens(sample_ids: &[i64], vocab: &[String]) -> String {
 pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
     let scaled: Vec<f32> = samples.iter().map(|&s| s * 32768.0).collect();
     let fbank = compute_fbank(&scaled, &HAMMING_WINDOW, 0.97)?;
-    let lfr = apply_lfr(&fbank, LFR_WINDOW_SIZE, LFR_WINDOW_SHIFT);
+    let lfr = feature::apply_lfr(&fbank, LFR_WINDOW_SIZE, LFR_WINDOW_SHIFT);
     Ok(lfr)
 }
 
@@ -531,12 +498,8 @@ pub(crate) fn compute_fbank(
     Array2::from_shape_vec((n_frames, FBANK_NUM_BINS), fbank_data).map_err(Into::into)
 }
 
-// apply_lfr 已抽取至 feature.rs（保留 pub(crate) re-export 供 streaming_paraformer 使用）
-pub(crate) fn apply_lfr(fbank: &Array2<f32>, window_size: usize, window_shift: usize) -> Array2<f32> {
-    feature::apply_lfr(fbank, window_size, window_shift)
-}
-
-// povey_window / hamming_window 已抽取至 feature.rs
+// apply_lfr / povey_window / hamming_window 已抽取至 feature.rs
+//（apply_lfr 经 fbank.rs re-export，streaming_paraformer 从 fbank 引）
 // mel_filterbank_fbank 已抽取至 feature.rs（mel 空间权重，C1 修复统一）
 // hz_to_mel / mel_to_hz 已抽取至 feature.rs
 
