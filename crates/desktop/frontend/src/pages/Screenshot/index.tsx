@@ -4,7 +4,7 @@ import { invoke } from "@/lib/tauri";
 import { invoke as rawInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { type Annotation, drawAnnotation, drawAnnotationScaled, drawMosaic, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
+import { type Annotation, drawAnnotation, drawAnnotationScaled, drawBlur, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
 import { ToolButton } from "./ToolButton";
 import { ScrollPreview } from "./ScrollPreview";
 import { useAnnotationState, AnnotationToolbar, computeToolbarPosition, computeToolbarCenterX, TOOLBAR_H } from "@/components/Annotation";
@@ -653,12 +653,12 @@ export default function Screenshot() {
     tmpCanvas.height = bgH;
     const tmpCtx = tmpCanvas.getContext("2d")!;
     tmpCtx.drawImage(bg, 0, 0);
-    // 先处理 blur（像素马赛克降采样），再画其他标注
+    // 先处理 blur（像素马赛克/高斯/黑条），再画其他标注
     for (const ann of allAnns) {
-      if (ann.type === "blur") drawMosaic(tmpCtx, ann, scale);
+      if (ann.type === "blur") drawBlur(tmpCtx, ann, scale);
     }
     for (const ann of allAnns) {
-      if (ann.type === "blur") continue; // blur 已由 drawMosaic 处理，跳过避免色块叠加两次
+      if (ann.type === "blur") continue; // blur 已由 drawBlur 处理，跳过避免色块叠加两次
       drawAnnotationScaled(tmpCtx, ann, scale);
     }
 
