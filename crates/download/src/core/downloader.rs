@@ -271,6 +271,49 @@ impl Downloader {
         Err(last_err.unwrap_or(DownloadError::Fatal { status: 0, url: task.url.clone() }))
     }
 
+    /// 启动进度 pump——250ms 推 mpsc Progress，独立 task（自带 sender clone + counter + cancel）。
+    ///
+    /// `total_bytes` — Some(total) 首次下载（前端显示总进度），None 重下期间（避免与首次 total 冲突）。
+    /// 返回 JoinHandle 供调用方 abort。
+    ///
+    /// 2026-08-05 抽取：消除 download_from_source 中首次下载（345-371）与重下（418-436）
+    /// 两份逐字相同的 pump 闭包。
+    fn spawn_progress_pump(
+        progress: tokio::sync::mpsc::Sender<Progress>,
+        counter: Arc<std::sync::atomic::AtomicU64>,
+        cancel: Option<CancellationToken>,
+        total: u64,
+        total_bytes: Option<u64>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(250));
+            let mut est = SpeedEstimator::new();
+            let mut last_inst = tokio::time::Instant::now();
+            loop {
+                interval.tick().await;
+                if let Some(c) = &cancel {
+                    if c.is_cancelled() {
+                        break;
+                    }
+                }
+                let bytes = counter.load(Ordering::Relaxed);
+                let now = tokio::time::Instant::now();
+                let spd = est.update(bytes, now - last_inst, 0.4, Duration::from_millis(300));
+                last_inst = now;
+                let _ = progress
+                    .send(Progress {
+                        downloaded_bytes: bytes,
+                        total_bytes,
+                        speed_bps: Some(spd),
+                    })
+                    .await;
+                if bytes >= total {
+                    break;
+                }
+            }
+        })
+    }
+
     /// 单源下载：probe → 加载/规划分段 → 预分配 .part → 并发 → 校验 → 原子转正。
     async fn download_from_source(
         &self,
@@ -339,36 +382,13 @@ impl Downloader {
         )));
 
         // 进度 pump：250ms 推 mpsc（独立 task，自带 sender clone，避免 move 主 progress）
-        let pump_tx = progress.clone();
-        let pump_counter = Arc::clone(&counter);
-        let pump_cancel = cancel.cloned();
-        let progress_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(250));
-            let mut est = SpeedEstimator::new();
-            let mut last_inst = tokio::time::Instant::now();
-            loop {
-                interval.tick().await;
-                if let Some(c) = &pump_cancel {
-                    if c.is_cancelled() {
-                        break;
-                    }
-                }
-                let bytes = pump_counter.load(Ordering::Relaxed);
-                let now = tokio::time::Instant::now();
-                let spd = est.update(bytes, now - last_inst, 0.4, Duration::from_millis(300));
-                last_inst = now;
-                let _ = pump_tx
-                    .send(Progress {
-                        downloaded_bytes: bytes,
-                        total_bytes: Some(total),
-                        speed_bps: Some(spd),
-                    })
-                    .await;
-                if bytes >= total {
-                    break;
-                }
-            }
-        });
+        let progress_handle = Self::spawn_progress_pump(
+            progress.clone(),
+            Arc::clone(&counter),
+            cancel.cloned(),
+            total,
+            Some(total),
+        );
 
         // 执行下载（段完成回写 state + 落盘 sidecar）
         let done = self
@@ -412,28 +432,13 @@ impl Downloader {
                     let _ = Downloader::ensure_part_file(&task.dest, total)?;
                     // 重置主 counter 为 0（重下从头开始），重启进度泵
                     counter.store(0, Ordering::Relaxed);
-                    let retry_pump_tx = progress.clone();
-                    let retry_pump_counter = Arc::clone(&counter);
-                    let retry_pump_cancel = cancel.cloned();
-                    let retry_pump = tokio::spawn(async move {
-                        let mut interval = tokio::time::interval(Duration::from_millis(250));
-                        let mut est = SpeedEstimator::new();
-                        let mut last_inst = tokio::time::Instant::now();
-                        loop {
-                            interval.tick().await;
-                            if let Some(c) = &retry_pump_cancel { if c.is_cancelled() { break; } }
-                            let bytes = retry_pump_counter.load(Ordering::Relaxed);
-                            let now = tokio::time::Instant::now();
-                            let spd = est.update(bytes, now - last_inst, 0.4, Duration::from_millis(300));
-                            last_inst = now;
-                            let _ = retry_pump_tx.send(Progress {
-                                downloaded_bytes: bytes,
-                                total_bytes: None, // 重下期间不设 total（避免与首次 total 冲突）
-                                speed_bps: Some(spd),
-                            }).await;
-                            if bytes >= total { break; }
-                        }
-                    });
+                    let retry_pump = Self::spawn_progress_pump(
+                        progress.clone(),
+                        Arc::clone(&counter),
+                        cancel.cloned(),
+                        total,
+                        None, // 重下期间不设 total（避免与首次 total 冲突）
+                    );
                     let retry_result = self.download_chunked(
                         url,
                         &part,

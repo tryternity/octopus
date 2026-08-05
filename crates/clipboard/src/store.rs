@@ -375,40 +375,9 @@ pub fn permanent_delete_item(conn: &Connection, id: &str) -> Result<usize> {
 /// keep_favorite=true 时跳过收藏项。
 pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
     let fav_clause = if keep_favorite { " AND is_favorite = 0" } else { "" };
-
-    // 1. 非 voice 全部物理删（image 含 blob 清理）
-    let non_voice_rows = conn.execute(
-        &format!("DELETE FROM clipboard_history WHERE item_type != 'voice'{} AND is_deleted = 0", fav_clause),
-        [],
-    )?;
-    if non_voice_rows > 0 {
-        cleanup_unreferenced_images(conn)?;
-    }
-
-    // 2a. 所有 voice 软删（进回收站）
-    let voice_rows = conn.execute(
-        &format!("UPDATE clipboard_history SET is_deleted = 1 WHERE item_type = 'voice'{fav} AND is_deleted = 0", fav = fav_clause),
-        [],
-    )?;
-
-    // 2b. 回收站里太短的 voice（< VOICE_SOFT_DELETE_MIN_LEN）→ 物理删（对 bigram 语料无价值）
-    let short_voice = conn.execute(
-        &format!(
-            "DELETE FROM clipboard_history WHERE item_type = 'voice' AND length(content) < {min} AND is_deleted = 1",
-            min = VOICE_SOFT_DELETE_MIN_LEN,
-        ),
-        [],
-    )?;
-    if short_voice > 0 {
-        log::info!("[voice-trash] 清空历史：{} 条过短 voice 物理删（< {} 字符）", short_voice, VOICE_SOFT_DELETE_MIN_LEN);
-    }
-
-    // 3. voice 回收站容量上限（INV-1）
-    if voice_rows > 0 {
-        enforce_voice_trash_limit(conn, VOICE_TRASH_MAX)?;
-    }
-
-    Ok(non_voice_rows + short_voice + voice_rows)
+    // 复用 clear_voice_aware（2026-08-05 抽取，消除与 clear_history_by_filter 的四步流程重复）
+    let where_clause = format!("is_deleted = 0{}", fav_clause);
+    clear_voice_aware(conn, &where_clause, &where_clause)
 }
 
 /// 按 filter（类型筛选）批量清理。复用 build_where 把 filter 转 SQL where，
@@ -436,33 +405,54 @@ pub fn clear_history_by_filter(conn: &Connection, filter: &str, keep_favorite: b
         return Ok(rows);
     }
 
+    // 复用 clear_voice_aware（2026-08-05 抽取）
+    clear_voice_aware(conn, &where_clause, &where_clause)
+}
+
+/// voice 软删感知的批量清理四步流程（clear_history / clear_history_by_filter 共用）。
+///
+/// `select_where` — 用于 voice 软删 UPDATE 的 WHERE（含 is_deleted=0 等过滤）
+/// `delete_where` — 用于非 voice 物理删 DELETE 的 WHERE（通常同 select_where）
+///
+/// 四步：
+/// 1. 非 voice 物理删（image 含 blob 清理）
+/// 2a. voice 软删（进回收站）
+/// 2b. 回收站太短 voice 物理删（< VOICE_SOFT_DELETE_MIN_LEN，对 bigram 无价值）
+/// 3. voice 回收站容量上限（INV-1，enforce_voice_trash_limit）
+fn clear_voice_aware(conn: &Connection, select_where: &str, delete_where: &str) -> Result<usize> {
     // 1. 非 voice 全部物理删（image 含 blob 清理）
-    let non_voice_sql = format!("DELETE FROM clipboard_history WHERE item_type != 'voice' AND {}", where_clause);
-    let non_voice_rows = conn.execute(&non_voice_sql, [])?;
+    let non_voice_rows = conn.execute(
+        &format!("DELETE FROM clipboard_history WHERE item_type != 'voice' AND {}", delete_where),
+        [],
+    )?;
     if non_voice_rows > 0 {
         cleanup_unreferenced_images(conn)?;
     }
 
     // 2a. 所有匹配的 voice 软删（进回收站）
-    let voice_sql = format!(
-        "UPDATE clipboard_history SET is_deleted = 1 WHERE item_type = 'voice' AND {wc}",
-        wc = where_clause
-    );
-    let voice_rows = conn.execute(&voice_sql, [])?;
+    let voice_rows = conn.execute(
+        &format!("UPDATE clipboard_history SET is_deleted = 1 WHERE item_type = 'voice' AND {}", select_where),
+        [],
+    )?;
 
-    // 2b. 回收站里太短的 voice → 物理删（对 bigram 语料无价值）
-    let short_sql = format!(
-        "DELETE FROM clipboard_history WHERE item_type = 'voice' AND length(content) < {min} AND is_deleted = 1",
-        min = VOICE_SOFT_DELETE_MIN_LEN
-    );
-    let short_rows = conn.execute(&short_sql, [])?;
+    // 2b. 回收站里太短的 voice（< VOICE_SOFT_DELETE_MIN_LEN）→ 物理删（对 bigram 语料无价值）
+    let short_voice = conn.execute(
+        &format!(
+            "DELETE FROM clipboard_history WHERE item_type = 'voice' AND length(content) < {min} AND is_deleted = 1",
+            min = VOICE_SOFT_DELETE_MIN_LEN,
+        ),
+        [],
+    )?;
+    if short_voice > 0 {
+        log::info!("[voice-trash] 清空历史：{} 条过短 voice 物理删（< {} 字符）", short_voice, VOICE_SOFT_DELETE_MIN_LEN);
+    }
 
     // 3. voice 回收站容量上限（INV-1）
     if voice_rows > 0 {
         enforce_voice_trash_limit(conn, VOICE_TRASH_MAX)?;
     }
 
-    Ok(non_voice_rows + short_rows + voice_rows)
+    Ok(non_voice_rows + short_voice + voice_rows)
 }
 
 // ── image_data CRUD ──
