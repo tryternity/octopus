@@ -83,6 +83,20 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
     use crate::store;
     use crate::image;
 
+    // ── ConcealedType 检测（macOS 密码管理器保护）──
+    // 1Password / Bitwarden / iCloud Keychain 等复制密码时标记
+    // org.nspasteboard.ConcealedType，明确告知消费方不要记录。
+    // 静默跳过避免密码明文入库 + FTS5 索引 + 跨设备 sync 传播。
+    // 仅 macOS——Windows/Linux 无此约定；octopus autotype 走 suppress_next
+    // 双重保险（跨平台保底 + macOS ConcealedType 兜底）。
+    #[cfg(target_os = "macos")]
+    {
+        const CONCEALED_TYPE: &str = "org.nspasteboard.ConcealedType";
+        if handle.has(ContentFormat::Other(CONCEALED_TYPE.to_string())) {
+            return;
+        }
+    }
+
     // 按优先级判断类型：files > image > text
     let result: anyhow::Result<()> = (|| {
         if handle.has(ContentFormat::Files) {
