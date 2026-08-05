@@ -164,7 +164,11 @@ impl WsSessionHandler for AliyunFunAsrHandler {
             Message::Text(t) => {
                 let v: Value = match serde_json::from_str(&t) {
                     Ok(v) => v,
-                    Err(_) => return HandleOutcome::Continue,
+                    // 第二十一轮 P2-a2：补 log::warn!（原静默吞，对比 baidu/tencent 都 warn）
+                    Err(e) => {
+                        log::warn!("[aliyun] JSON 解析失败: {}（text={}）", e, &t[..t.len().min(200)]);
+                        return HandleOutcome::Continue;
+                    }
                 };
                 match v["header"]["event"].as_str() {
                     Some("result-generated") => {
@@ -458,7 +462,11 @@ impl WsSessionHandler for AliyunQwenHandler {
             Message::Text(t) => {
                 let v: Value = match serde_json::from_str(&t) {
                     Ok(v) => v,
-                    Err(_) => return HandleOutcome::Continue,
+                    // 第二十一轮 P2-a2：补 log::warn!（同 FunASR :167）
+                    Err(e) => {
+                        log::warn!("[aliyun-qwen] JSON 解析失败: {}（text={}）", e, &t[..t.len().min(200)]);
+                        return HandleOutcome::Continue;
+                    }
                 };
                 let event_type = v["type"].as_str().unwrap_or("");
                 match event_type {

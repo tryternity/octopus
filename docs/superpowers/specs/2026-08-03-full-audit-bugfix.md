@@ -407,6 +407,7 @@
 | 18 | `8ef36db0` | P1 vault_sync_clone/resolve spawn_blocking + P2 import_hotwords BOM + P2 reindex_apps spawn_blocking |
 | 19 | `d0378d46` | P2-1 itemId 崩溃 + P2-2 MarkdownPreview listener + BOM 错位补修 + config fail-soft |
 | 20 | `e12364d2` | P2-4 opus_mt 超长单句硬切 + P2-5 翻译引擎未知名显式报错 + P2-6 驳回 |
+| 21 | `d6b8b138` | P2-v1 resolve attempt_guard + P2-a3 whisper 空音频 + P2-a2 aliyun warn + P2-s5 clipboard 复活保护 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -946,3 +947,45 @@ React 18+ 不再警告 setState-on-unmount，但不符合项目既有范式（Re
 
 - `cargo build` translation —— 0 error 0 warning。
 - `cargo test`：translation 20 全过。
+
+## 24. 第二十一轮审查修复（2026-08-05，4 P2 修 + sync P2 留后续）
+
+第二十一轮全新核查（sync/vault/asr/clipboard 4 核心模块）。报告 10 P2 + ~23 P3。本轮修 4 P2（vault 安全 + asr 兜底/可观测 + clipboard 复活保护），sync 6 P2 留后续（系统性设计），fbank 热路径留后续（性能）。
+
+### P2-v1. resolve_with_remote/local 绕过暴力破解防护 🟠（安全）
+
+**根因**：`engine.rs:893/965` resolve 两函数全程无 attempt_guard——密码验证失败直接返 Err，无 record_failure/退避。DevTools 反复 invoke 暴力破解无指数退避。对比 unlock 路径有完整 attempt_guard（check_remaining + record_failure + reset）。
+
+**修复**：两函数入口加 remaining_wait check + 密码失败 record_failure + 成功 reset，对齐 unlock 模式。
+
+### P2-a3. Whisper transcribe 无空音频守卫 🟠
+
+**根因**：`whisper.rs:340 transcribe` 无 `audio.is_empty()` 守卫。空音频 → compute_mel 对空 slice fold + len=0 除零 → NaN 传播。对比 qwen3_asr.rs:165 有守卫。
+
+**修复**：transcribe 开头 `if audio.is_empty() { return Ok(String::new()); }`。
+
+### P2-a2. aliyun FunASR/Qwen JSON 解析失败静默忽略 🟠
+
+**根因**：`aliyun_stream.rs:167/465` `Err(_) => return HandleOutcome::Continue`——服务端推非 JSON 帧时静默吞。对比 baidu/tencent 解析失败均 warn。
+
+**修复**：补 `log::warn!`（两处：FunASR + Qwen）。
+
+### P2-s5. clipboard pull_favorite active 分支缺反向复活保护 🟠
+
+**根因**：`clipboard.rs:622-638` active 分支直接 upsert + set is_favorite=true，无「DB 已 tombstone + 远程 active 拒绝」检查。对比 hotword pull_set 有此保护。
+
+**修复**：active 分支前查 DB，已 tombstone 则 Ok(false)（拒绝复活，对齐 hotword + vault P2-2）。
+
+### 留后续（需系统性设计）
+
+- **P2-s1** export_all 非原子清空+重建（remove_dir_all 后崩溃 → 残破）
+- **P2-s2** merge 阶段 1/2 文件写被阶段 3 覆盖（无效 IO）
+- **P2-s3** pull_set/pull_word 吞 DB 错误（混淆 name 冲突）
+- **P2-s4** unwrap_or_default 吞损坏 outline → version 假阳性递增
+- **P2-s6** pull_favorite tombstone 两步非事务
+- **P2-a1** fbank 热路径每次分配 512-Complex vec（性能）
+
+### 验证
+
+- `cargo build` vault/asr-local/asr-cloud/sync —— 0 error 0 warning。
+- `cargo test`：vault 264 / asr-local 170 / asr-cloud 62 / sync 153 全过。

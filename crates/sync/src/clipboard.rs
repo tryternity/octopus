@@ -622,6 +622,20 @@ fn pull_favorite(fav: &octopus_infra::db::ClipboardFavorite) -> Result<bool> {
     } else {
         // active——需解密 payload 取 HistoryRowJson（file_to_row 已解一次，
         // 但 ClipboardFavorite 不存 payload；这里重读文件解密，与原 pull_favorite 等价）。
+
+        // 第二十一轮 P2-s5：反向复活保护（对齐 hotword pull_set :971-982 + vault P2-2）——
+        // DB 已 tombstone（本地删了）+ 远程 active（旧状态/git revert/第三方设备）→ 拒绝 pull，
+        // 防删除被远程旧 active 复活。可自愈（用户重删，下次 sync 推 tombstone）。
+        if let Some(db_fav) = octopus_infra::db::load_favorite(history_id)? {
+            if db_fav.is_deleted > 0 {
+                log::info!(
+                    "[sync] 收藏 pull: {} 本地已 tombstone，远程 active，拒绝复活",
+                    history_id
+                );
+                return Ok(false);
+            }
+        }
+
         let key = thread_clipboard_key();
         let file = read_favorite_file(history_id)?;
         let payload = decrypt_payload(&key, &file.encrypted_payload, history_id)?;
