@@ -1,5 +1,7 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, memo } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { invoke, listen } from "@/lib/tauri";
 import { useClipboardHistory } from "@/hooks/useClipboardHistory";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
@@ -7,7 +9,7 @@ import { moveIndex, moveTab } from "@/lib/clipboardNav";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
-import { Pin, X, Settings2, CircleCheck, CircleX, Trash2, Eye, EyeOff, ClipboardList, Layers } from "lucide-react";
+import { Pin, X, Settings2, CircleCheck, CircleX, Trash2, Eye, EyeOff, ClipboardList, Layers, GripVertical, Type, Mic, ScanText, Image as ImageIcon, FileText, FileQuestion } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import type { ClipboardItem } from "@/types/clipboard";
@@ -16,8 +18,21 @@ interface ConfigResponse {
   config: Record<string, string | number | boolean>;
 }
 
-// 与 FilterTabs.tsx TABS 数组顺序一致——Cmd+N 序号映射。
-const TABS_VALUES = ["all", "favorite", "asr", "text", "ocr", "image", "file"] as const;
+// 队列 tab 单条目 DTO（与后端 PasteStackItemDto 对齐：historyId / itemType / preview）。
+interface PasteStackItemDto {
+  historyId: string;
+  itemType: string;
+  preview: string;
+}
+
+// 序号 badge：① ② ③ … ⑨ ⑩（U+2460..U+2469）；超过 10 用「N.」。
+const CIRCLED_DIGITS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
+function queueBadge(n: number): string {
+  return n >= 1 && n <= CIRCLED_DIGITS.length ? CIRCLED_DIGITS[n - 1] : `${n}.`;
+}
+
+// 与 FilterTabs.tsx TAB_DEFS 数组顺序一致——Cmd+N / Ctrl+N / ←→ 按 tab 在数组中的序号映射。
+const TABS_VALUES = ["all", "favorite", "asr", "text", "ocr", "image", "file", "queue"] as const;
 
 export default function Clipboard() {
   const t = useT();
@@ -64,7 +79,7 @@ export default function Clipboard() {
       return next;
     });
   }, []);
-  // 入栈：把当前多选 ids 推到 paste_stack → toast「已入栈 N 条」→ 清多选。
+  // 入栈：把当前多选 ids 推到 paste_stack → toast「已入栈 N 条」→ 清多选 → 切到 queue tab。
   // 同步反馈用入栈结果 size（后端 push 返回栈大小），不依赖外部 toast 库——
   // 浮窗无 toast 依赖（package.json 无 sonner 等），用一个 1.5s 的本地气泡反馈。
   const [pushedCount, setPushedCount] = useState<number | null>(null);
@@ -77,6 +92,7 @@ export default function Clipboard() {
       if (pushTimer.current) clearTimeout(pushTimer.current);
       pushTimer.current = setTimeout(() => setPushedCount(null), 1500);
       setSelectedIds([]); // 入栈后清多选
+      setFilter("queue"); // 入栈后自动聚焦到队列 tab（2026-08-05 反馈需求）
     } catch (e) {
       console.error(e);
     }
@@ -92,6 +108,48 @@ export default function Clipboard() {
   // remaining=0 时隐藏计数 badge（spec §4.3）。
   const [stackRemaining, setStackRemaining] = useState(0);
   const [stackPreview, setStackPreview] = useState<string | null>(null);
+
+  // ── 队列 tab 数据源（filter === "queue" 时启用，与 useClipboardHistory 互斥）──
+  // 必须在 paste-stack://updated 监听 effect 之前声明：监听 effect 把 refreshQueue
+  // 列入 deps，JS const TDZ 要求引用前先初始化。
+  const [queueItems, setQueueItems] = useState<PasteStackItemDto[]>([]);
+  const refreshQueue = useCallback(async () => {
+    try {
+      const items = await invoke<PasteStackItemDto[]>("peek_paste_stack");
+      setQueueItems(items);
+    } catch (e) {
+      console.error("peek_paste_stack failed:", e);
+    }
+  }, []);
+  // 拖拽状态已迁移到 @dnd-kit/sortable（SortableQueueItem 内部 useSortable 自管）。
+  const handleQueueRemove = useCallback(async (index: number) => {
+    try {
+      await invoke("remove_from_paste_stack", { index });
+    } catch (e) {
+      console.error("remove_from_paste_stack failed:", e);
+    }
+    // 后端 emit paste-stack://updated 会触发 listen → refreshQueue，但显式调一次
+    // 保证 UI 立即响应（监听是异步，drag/连续删除场景下延迟感知差）。
+    await refreshQueue();
+  }, [refreshQueue]);
+  const handleQueueMove = useCallback(async (from: number, to: number) => {
+    if (from === to) return;
+    try {
+      await invoke("move_paste_stack_item", { from, to });
+    } catch (e) {
+      console.error("move_paste_stack_item failed:", e);
+    }
+    await refreshQueue();
+  }, [refreshQueue]);
+  const handleQueueClear = useCallback(async () => {
+    try {
+      await invoke("clear_paste_stack");
+    } catch (e) {
+      console.error("clear_paste_stack failed:", e);
+    }
+    await refreshQueue();
+  }, [refreshQueue]);
+
   useEffect(() => {
     let cancelled = false;
     invoke<{ remaining: number; nextPreview: string | null }>("paste_stack_status")
@@ -110,12 +168,30 @@ export default function Clipboard() {
       invoke<{ remaining: number; nextPreview: string | null }>("paste_stack_status")
         .then((s) => { if (!cancelled) setStackPreview(s.nextPreview); })
         .catch(() => {});
+      // 队列 tab 打开时同步刷新列表（pop/push/remove/move/clear 都 emit 此事件）。
+      if (filterRef.current === "queue") {
+        refreshQueue();
+      }
     });
     return () => {
       cancelled = true;
       unlisten.then((f) => f());
     };
-  }, []);
+  }, [refreshQueue]);
+  // filter 切到 queue 时拉一次列表；离开时清空（避免残留旧数据误导）。
+  useEffect(() => {
+    if (filter === "queue") {
+      refreshQueue();
+    } else {
+      setQueueItems([]);
+    }
+    // queue tab 没有选中条目概念——切到 queue 时清 previewItem，
+    // 否则上次历史 tab 的 previewItem 会驱动 hover overlay 渲染，
+    // 叠加到 queue 列表第一个条目上（selectedIndex 仍是 0）。
+    if (filter === "queue") {
+      setPreviewItem(null);
+    }
+  }, [filter, refreshQueue]);
   const handleClearStack = useCallback(() => {
     invoke("clear_paste_stack").catch(console.error);
     setStackRemaining(0);
@@ -461,7 +537,20 @@ export default function Clipboard() {
 
       {/* List */}
       <div className="clipboard-list flex-1 overflow-y-auto pb-1 relative">
-        {items.length === 0 ? (
+        {/* ── 队列 tab：渲染 paste stack 内容（与历史列表互斥）──
+            序号 badge（①②③）= 出栈顺序（index 0 = 下一个 Cmd+Shift+V 弹出）；
+            拖拽 = @dnd-kit/sortable → move_paste_stack_item；× = 单条删除；
+            底部「清空队列」按钮。 */}
+        {filter === "queue" ? (
+          <QueueListView
+            items={queueItems}
+            onRemove={handleQueueRemove}
+            onMove={handleQueueMove}
+            onClear={handleQueueClear}
+            emptyText={t("clipboard.queue.empty")}
+            clearText={t("clipboard.queue.clear")}
+          />
+        ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-1 text-muted-foreground/50">
             <span className="text-xs">{t("clipboard.empty")}</span>
           </div>
@@ -482,8 +571,9 @@ export default function Clipboard() {
           ))
         )}
 
-        {/* hover 预览 overlay：200px 宽，高度约为列表 1/3，根据选中位置上/下弹出 */}
-        {previewEnabled && previewItem && (() => {
+        {/* hover 预览 overlay：200px 宽，高度约为列表 1/3，根据选中位置上/下弹出。
+            queue tab 不渲染此 overlay（QueueListView 内部自管 hover 详情，数据源独立）。 */}
+        {previewEnabled && previewItem && filter !== "queue" && (() => {
           // 选中条目在列表上半部分 → 预览弹在下方；下半部分 → 弹在上方
           const itemEl = document.querySelector(`[data-clip-index="${selectedIndex}"]`) as HTMLElement | null;
           const listEl = itemEl?.offsetParent as HTMLElement | null;
@@ -503,37 +593,7 @@ export default function Clipboard() {
             }
           }
           return (
-          <div
-            className="absolute right-0 w-[200px] z-30 flex flex-col overflow-hidden rounded-l-lg border border-foreground/15 shadow-2xl shadow-black/20 bg-background"
-            style={{ top: previewTop, height: `${previewH}px` }}
-          >
-            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/60 flex-shrink-0">
-              <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
-                {previewItem.itemType === "voice" ? "ASR" : previewItem.itemType}
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto thin-scrollbar min-h-0">
-              {previewItem.itemType === "image" ? (
-                <div className="flex items-center justify-center p-2 min-h-full">
-                  {previewThumb ? (
-                    <img src={previewThumb} alt="preview" className="max-w-full max-h-full rounded object-contain" />
-                  ) : (
-                    <span className="text-[11px] text-muted-foreground">Loading...</span>
-                  )}
-                </div>
-              ) : previewItem.itemType === "file" ? (
-                <pre className="px-2 py-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap break-all font-mono">
-                  {previewItem.refData || ""}
-                </pre>
-              ) : (
-                <pre className="px-2 py-1.5 text-[11px] text-foreground whitespace-pre-wrap break-words font-mono leading-relaxed">
-                  {previewItem.content.length > 500
-                    ? previewItem.content.slice(0, 500) + "\n\n…"
-                    : previewItem.content}
-                </pre>
-              )}
-            </div>
-          </div>
+            <HoverOverlay item={previewItem} thumb={previewThumb} top={previewTop} height={previewH} />
           );
         })()}
 
@@ -571,7 +631,8 @@ export default function Clipboard() {
       <div className="flex items-center justify-between px-3 py-1 border-t border-border text-[10px] text-muted-foreground/80">
         {/* 左：条数 + 一键清理 */}
         <div className="flex items-center gap-3">
-          <span>{total} {t("clipboard.count", { n: total })}</span>
+          {/* 队列 tab 显示栈内条数（与历史 total 解耦）；其余 tab 显示历史 total。 */}
+          <span>{filter === "queue" ? queueItems.length : total} {t("clipboard.count", { n: filter === "queue" ? queueItems.length : total })}</span>
           {/* 一键清理：删当前 tab 类别下所有非收藏条目（与搜索框正交）。
               两步确认：点 1 次 → 变红「再点确认」+ 3s 超时，再点才执行。
               收藏 tab 因 isFavorite=1 AND isFavorite=0 恒假删 0 条，禁用按钮。
@@ -579,24 +640,26 @@ export default function Clipboard() {
           <button
             className={cn(
               "flex items-center gap-0.5 transition-colors",
-              filter === "favorite" || !!search
+              filter === "favorite" || filter === "queue" || !!search
                 ? "opacity-50 cursor-not-allowed"
                 : confirming
                   ? "text-red-500"
                   : "text-foreground hover:text-red-500",
             )}
-            disabled={filter === "favorite" || !!search}
+            disabled={filter === "favorite" || filter === "queue" || !!search}
             title={
               filter === "favorite"
                 ? t("clipboard.cleanFavoriteEmpty")
-                : !!search
-                  ? t("clipboard.cleanSearchError")
-                : confirming
-                  ? t("clipboard.cleanConfirmFull")
-                  : t("clipboard.cleanNonFavorite")
+                : filter === "queue"
+                  ? t("clipboard.queue.clear")
+                  : !!search
+                    ? t("clipboard.cleanSearchError")
+                    : confirming
+                      ? t("clipboard.cleanConfirmFull")
+                      : t("clipboard.cleanNonFavorite")
             }
             onClick={() => {
-              if (filter === "favorite" || !!search) return;
+              if (filter === "favorite" || filter === "queue" || !!search) return;
               if (!confirming) {
                 setConfirming(true);
                 confirmTimer.current = window.setTimeout(() => {
@@ -631,4 +694,275 @@ export default function Clipboard() {
       )}
     </div>
   );
+}
+
+/// hover/预览 overlay 的内容体——history tab 和 queue tab 共用。
+/// 区分 image（缩略图）/ file（refData）/ 其他（content 前 500 字符），
+/// 顶部带类型 badge（voice→ASR）。容器定位（top/height）由调用方决定。
+function HoverOverlay({
+  item,
+  thumb,
+  top,
+  height,
+}: {
+  item: ClipboardItem;
+  thumb?: string | null;
+  top: string;
+  height: number;
+}) {
+  return (
+    <div
+      className="absolute right-0 w-[200px] z-30 flex flex-col overflow-hidden rounded-l-lg border border-foreground/15 shadow-2xl shadow-black/20 bg-background"
+      style={{ top, height: `${height}px` }}
+    >
+      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/60 flex-shrink-0">
+        <ItemTypeGlyph type={item.itemType} />
+        <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
+          {item.itemType === "voice" ? "ASR" : item.itemType}
+        </span>
+      </div>
+      <div className="flex-1 overflow-y-auto thin-scrollbar min-h-0">
+        {item.itemType === "image" ? (
+          <div className="flex items-center justify-center p-2 min-h-full">
+            {thumb ? (
+              <img src={thumb} alt="preview" className="max-w-full max-h-full rounded object-contain" />
+            ) : (
+              <span className="text-[11px] text-muted-foreground">Loading...</span>
+            )}
+          </div>
+        ) : item.itemType === "file" ? (
+          <pre className="px-2 py-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap break-all font-mono">
+            {item.refData || ""}
+          </pre>
+        ) : (
+          <pre className="px-2 py-1.5 text-[11px] text-foreground whitespace-pre-wrap break-words font-mono leading-relaxed">
+            {item.content.length > 500
+              ? item.content.slice(0, 500) + "\n\n…"
+              : item.content}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/// 队列 tab 内容：渲染 paste stack（FIFO，① = 下一个弹出）。
+/// 拖拽用 @dnd-kit/sortable（WKWebView 的 HTML5 DnD 不可靠，AGENTS.md 已踩坑）。
+/// onDragEnd → arrayMove 计算 from/to → onMove → move_paste_stack_item。
+function QueueListView({
+  items,
+  onRemove,
+  onMove,
+  onClear,
+  emptyText,
+  clearText,
+}: {
+  items: PasteStackItemDto[];
+  onRemove: (index: number) => void;
+  onMove: (from: number, to: number) => void;
+  onClear: () => void;
+  emptyText: string;
+  clearText: string;
+}) {
+  // PointerSensor：8px 激活距离避免普通点击误判为拖拽（点删除按钮时不触发 drag）。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+  );
+  // hover 详情：独立于 history tab 的 previewItem——queue 数据源是 queueItems，
+  // 复用父 selectedIndex/items 会错位（已踩坑：overlay 永远盖第一个）。
+  // 这里基于 queueItems 自己管 hoverIndex，overlay 显示按 historyId 查到的完整
+  // ClipboardItem（content 前 500 字符 / image 缩略图，与 history overlay 一致）。
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [hoverFullItem, setHoverFullItem] = useState<ClipboardItem | null>(null);
+  const [hoverThumb, setHoverThumb] = useState<string | null>(null);
+  // 拖拽期间禁用 hover（避免 dragOver 误触 hover 高亮）。
+  const [isDragging, setIsDragging] = useState(false);
+  const hoverId = hoverIndex === null ? null : items[hoverIndex]?.historyId ?? null;
+
+  // hoverIndex 变化 → 按 historyId 查完整 ClipboardItem（竞态守卫）。
+  // PasteStackItemDto 只有 preview（前 50 字符），overlay 需完整 content 才能和
+  // history overlay 显示一致长度（500 字符）。
+  useEffect(() => {
+    if (hoverId === null) { setHoverFullItem(null); setHoverThumb(null); return; }
+    let cancelled = false;
+    invoke<ClipboardItem | null>("get_clipboard_item", { id: hoverId })
+      .then((item) => { if (!cancelled) setHoverFullItem(item); })
+      .catch((e) => { console.error("get_clipboard_item failed:", e); if (!cancelled) setHoverFullItem(null); });
+    return () => { cancelled = true; };
+  }, [hoverId]);
+
+  // hoverFullItem 是 image 时拉缩略图（竞态守卫，复用 get_image_thumb）。
+  useEffect(() => {
+    if (hoverFullItem?.itemType !== "image") { setHoverThumb(null); return; }
+    let cancelled = false;
+    invoke<string>("get_image_thumb", { id: hoverFullItem.id })
+      .then((data) => { if (!cancelled) setHoverThumb(data); })
+      .catch(() => { if (!cancelled) setHoverThumb(null); });
+    return () => { cancelled = true; };
+  }, [hoverFullItem]);
+
+  if (items.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-1 text-muted-foreground/50">
+        <Layers className="w-5 h-5 opacity-40" />
+        <span className="text-xs">{emptyText}</span>
+      </div>
+    );
+  }
+  const onDragEnd = (e: { active: { id: string | number }; over: { id: string | number } | null }) => {
+    setIsDragging(false);
+    if (!e.over || e.active.id === e.over.id) return;
+    const from = items.findIndex((it) => it.historyId === e.active.id);
+    const to = items.findIndex((it) => it.historyId === e.over!.id);
+    if (from === -1 || to === -1) return;
+    onMove(from, to);
+  };
+  return (
+    <div className="flex flex-col h-full">
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={onDragEnd}
+        onDragStart={() => { setIsDragging(true); setHoverIndex(null); }}
+        onDragCancel={() => setIsDragging(false)}
+      >
+        <SortableContext items={items.map((it) => it.historyId)} strategy={verticalListSortingStrategy}>
+          <ul className="flex-1 overflow-y-auto thin-scrollbar">
+            {items.map((item, i) => (
+              <SortableQueueItem
+                key={item.historyId}
+                item={item}
+                index={i}
+                onRemove={onRemove}
+                isHovered={!isDragging && hoverIndex === i}
+                onHover={(idx) => setHoverIndex(idx)}
+              />
+            ))}
+          </ul>
+        </SortableContext>
+      </DndContext>
+      {/* hover 详情 overlay：与 history tab 同样 200px 宽，按 hover 行位置上/下弹出。
+          内容用完整 ClipboardItem（500 字符 / image 缩略图），通过 HoverOverlay 组件复用。 */}
+      {hoverFullItem && (() => {
+        const itemEl = document.querySelector(`[data-queue-index="${hoverIndex}"]`) as HTMLElement | null;
+        const listEl = itemEl?.offsetParent as HTMLElement | null;
+        const previewH = 200;
+        let previewTop = '0px';
+        if (itemEl && listEl) {
+          const itemMid = itemEl.offsetTop + itemEl.offsetHeight / 2 - listEl.scrollTop;
+          const listH = listEl.clientHeight;
+          if (itemMid < listH / 2) {
+            const top = itemEl.offsetTop + itemEl.offsetHeight - 2;
+            previewTop = `${Math.min(top, listEl.scrollTop + listH - previewH)}px`;
+          } else {
+            const top = itemEl.offsetTop - previewH + 2;
+            previewTop = `${Math.max(top, listEl.scrollTop)}px`;
+          }
+        }
+        return (
+          <HoverOverlay item={hoverFullItem} thumb={hoverThumb} top={previewTop} height={previewH} />
+        );
+      })()}
+      {/* 底部「清空队列」按钮 */}
+      <div className="flex-shrink-0 px-2 py-1.5 border-t border-border">
+        <button
+          className="w-full flex items-center justify-center gap-1 rounded py-1 text-[11px] text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-colors"
+          onClick={onClear}
+        >
+          <Trash2 className="w-3 h-3" />
+          {clearText}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/// 单条队列条目——memo 包裹避免拖拽时 sibling 重绘。
+/// useSortable 提供 transform/transition + listeners + isDragging。
+/// 删除按钮需 stopPropagation 避免 listeners 拦截 onClick。
+/// hover 通过 onHover(index|null) 上报——dnd-kit listeners 不会拦截 mouseEnter/Leave。
+const SortableQueueItem = memo(function SortableQueueItem({
+  item,
+  index,
+  onRemove,
+  isHovered,
+  onHover,
+}: {
+  item: PasteStackItemDto;
+  index: number;
+  onRemove: (index: number) => void;
+  isHovered: boolean;
+  onHover: (index: number | null) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: item.historyId,
+  });
+  const style: React.CSSProperties = {
+    transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
+    transition,
+    zIndex: isDragging ? 10 : undefined,
+  };
+  return (
+    <li
+      ref={setNodeRef}
+      style={style}
+      data-queue-index={index}
+      {...attributes}
+      {...listeners}
+      // mouseEnter/Leave 上报 hover——dnd-kit 的 PointerSensor listeners 走 pointer 事件，
+      // 不拦截 mouse 事件，可以共存。
+      onMouseEnter={() => onHover(index)}
+      onMouseLeave={() => onHover(null)}
+      className={cn(
+        "group flex items-center gap-1.5 px-2 py-1.5 border-b border-border/40 cursor-grab active:cursor-grabbing transition-colors bg-background",
+        isDragging && "opacity-50 shadow-lg",
+        isHovered && "bg-accent/50",
+      )}
+    >
+      {/* 序号 badge：①②③… = 出栈顺序；前置 Grip 提示可拖 */}
+      <GripVertical className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
+      <span className="flex-shrink-0 w-4 text-center text-sm text-emerald-600 leading-none">
+        {queueBadge(index + 1)}
+      </span>
+      <ItemTypeGlyph type={item.itemType} />
+      <span className="flex-1 min-w-0 text-xs text-foreground truncate">
+        {item.preview || <span className="text-muted-foreground/50">（无内容预览）</span>}
+      </span>
+      <button
+        className="flex-shrink-0 opacity-0 group-hover:opacity-100 rounded p-0.5 text-muted-foreground hover:text-red-500 hover:bg-red-500/15 transition-all"
+        // listeners 会拦截整个 li 的 pointer 事件——删除按钮必须 stopPropagation
+        // 才能让 onClick 触发（dnd-kit 的 listeners 优先级高于 React onClick）。
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove(index);
+        }}
+        title="删除"
+      >
+        <X className="w-3 h-3" />
+      </button>
+    </li>
+  );
+});
+
+/// 队列条目类型小图标——按 itemType 字段挑 lucide 图标，与 FilterTabs 视觉呼应。
+/// 未知类型退化为 FileQuestion（不致崩）；itemType 来自后端 as_str()，恒为
+/// text/voice/ocr/image/file 之一。
+function ItemTypeGlyph({ type }: { type: string }) {
+  // text→Type, voice→Mic, ocr→ScanText, image→Image, file→FileText。
+  const cls = "w-3.5 h-3.5 flex-shrink-0 text-muted-foreground";
+  switch (type) {
+    case "text":
+      return <Type className={cls} />;
+    case "voice":
+      return <Mic className={cls} />;
+    case "ocr":
+      return <ScanText className={cls} />;
+    case "image":
+      return <ImageIcon className={cls} />;
+    case "file":
+      return <FileText className={cls} />;
+    default:
+      return <FileQuestion className={cls} />;
+  }
 }

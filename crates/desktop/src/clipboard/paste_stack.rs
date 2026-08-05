@@ -49,6 +49,76 @@ pub fn status() -> (usize, Option<String>) {
     (remaining, next_preview)
 }
 
+/// 队列视图单条目：history_id + 类型 + 内容预览（前 50 字符）。
+/// 供「队列」tab 渲染列表（peek_all 返回），与剪贴板条目本体解耦——
+/// 只携带展示需要的最少字段，避免把整条 ClipboardItem 经 IPC 序列化。
+#[derive(Debug, Clone)]
+pub struct PasteStackItem {
+    pub history_id: String,
+    pub item_type: String,
+    pub preview: String,
+}
+
+/// 读取整个队列（FIFO 顺序，index 0 = 下一个要弹出的）。
+/// 对栈内每个 id 查 DB 拿类型 + 内容预览（前 50 字符）；DB 行不存在（已删）
+/// 或读失败的条目被静默过滤，保证前端拿到的列表与栈内有效 id 一一对应。
+pub fn peek_all() -> Vec<PasteStackItem> {
+    let ids: Vec<String> = stack().lock().unwrap().iter().cloned().collect();
+    ids.into_iter()
+        .filter_map(|id| {
+            octopus_infra::db::with_db(|conn| {
+                octopus_clipboard::store::get_item_by_id(conn, &id)
+            })
+            .ok()
+            .flatten()
+            .map(|item| {
+                let content = item.content;
+                let preview = if content.chars().count() > 50 {
+                    format!("{}...", content.chars().take(50).collect::<String>())
+                } else {
+                    content
+                };
+                PasteStackItem {
+                    history_id: id,
+                    item_type: item.item_type.as_str().to_string(),
+                    preview,
+                }
+            })
+        })
+        .collect()
+}
+
+/// 删除指定位置的条目（0 = 栈底/下一个弹出）。越界返 Err。
+/// 保持其余条目相对顺序不变（VecDeque::remove 仅挪动被删位之后的元素）。
+pub fn remove_at(index: usize) -> Result<(), String> {
+    let mut s = stack().lock().unwrap();
+    if index >= s.len() {
+        return Err(format!("index {} out of bounds (len {})", index, s.len()));
+    }
+    s.remove(index);
+    Ok(())
+}
+
+/// 把 `from` 位置的条目移到 `to` 位置（VecDeque::remove → insert）。
+/// 任一越界返 Err（不做 swap，保证插入位置即最终位置）。from==to 为 no-op。
+pub fn move_item(from: usize, to: usize) -> Result<(), String> {
+    let mut s = stack().lock().unwrap();
+    if from >= s.len() || to >= s.len() {
+        return Err(format!(
+            "index out of bounds: from={}, to={}, len={}",
+            from,
+            to,
+            s.len()
+        ));
+    }
+    if from == to {
+        return Ok(());
+    }
+    let item = s.remove(from).unwrap();
+    s.insert(to, item);
+    Ok(())
+}
+
 /// 把字符串截断到 ~`max` 字符并加省略号。按 char_indices 安全切片，不切断多字节。
 fn truncate_preview(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -101,5 +171,40 @@ mod tests {
         assert_eq!(truncate_preview("一二三", 2), "一二…");
         // 多字节边界不切断
         assert_eq!(truncate_preview("abc", 2), "ab…");
+    }
+
+    #[test]
+    fn remove_at_front_middle_back() {
+        let _g = TEST_LOCK.lock().unwrap();
+        clear();
+        push(vec!["a".into(), "b".into(), "c".into()]);
+        // 删栈底（下一个要弹出的）→ 剩 b,c 顺序不变
+        assert!(remove_at(0).is_ok());
+        assert_eq!(pop(), Some("b".into()));
+        assert_eq!(pop(), Some("c".into()));
+        assert_eq!(pop(), None);
+        // 越界
+        assert!(remove_at(0).is_err());
+        clear();
+    }
+
+    #[test]
+    fn move_item_reorders() {
+        let _g = TEST_LOCK.lock().unwrap();
+        clear();
+        push(vec!["a".into(), "b".into(), "c".into()]);
+        // 把 c（idx 2）提到队首（idx 0）→ c,a,b
+        assert!(move_item(2, 0).is_ok());
+        assert_eq!(pop(), Some("c".into()));
+        assert_eq!(pop(), Some("a".into()));
+        assert_eq!(pop(), Some("b".into()));
+        // from==to 是 no-op，不报错
+        clear();
+        push(vec!["x".into(), "y".into()]);
+        assert!(move_item(0, 0).is_ok());
+        // 越界
+        assert!(move_item(5, 0).is_err());
+        assert!(move_item(0, 5).is_err());
+        clear();
     }
 }
