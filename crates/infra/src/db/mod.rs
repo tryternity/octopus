@@ -542,24 +542,44 @@ fn migrate_yaml_to_db(conn: &Connection) -> Result<()> {
     let text = std::fs::read_to_string(&config_path)
         .with_context(|| format!("读取旧 config.yaml 失败: {}", config_path.display()))?;
 
-    // 复用字段名迁移逻辑（shortcut → asr_shortcut 等）
-    let mut value: serde_yaml::Value = serde_yaml::from_str(&text)?;
-    if let Some(map) = value.as_mapping_mut() {
-        migrate_yaml_key(map, "shortcut", "asr_shortcut");
-        migrate_yaml_key(map, "polish_interval", "polish_min_interval");
+    // 第十九轮 P2：fail-soft——yaml 解析失败（BOM / 类型不匹配 / typo）不 bail 卡死启动，
+    // 而是 rename .yaml.broken + log warning，让 init_schema 继续走 seed 默认值。
+    // 原 ? 传播失败 → init_schema bail → 应用每次启动失败，yaml 不改名下次重复失败，
+    // 用户按 rm DB 提示反把自己锁死（yaml 仍在）。
+    let migrate_result = (|| -> Result<()> {
+        // strip BOM（与第十八/十九轮 hotword BOM 修复同主题）
+        let text = text.trim_start_matches('\u{FEFF}');
+        // 复用字段名迁移逻辑（shortcut → asr_shortcut 等）
+        let mut value: serde_yaml::Value = serde_yaml::from_str(text)
+            .context("config.yaml YAML 解析失败")?;
+        if let Some(map) = value.as_mapping_mut() {
+            migrate_yaml_key(map, "shortcut", "asr_shortcut");
+            migrate_yaml_key(map, "polish_interval", "polish_min_interval");
+        }
+        let cfg: crate::config::AppConfig = serde_yaml::from_value(value)
+            .context("config.yaml 字段类型不匹配")?;
+
+        // 覆盖 seed 默认值（INSERT OR REPLACE）
+        config::save_app_config_at(conn, &cfg)?;
+        Ok(())
+    })();
+
+    match migrate_result {
+        Ok(()) => {
+            let bak = config_path.with_extension("yaml.bak");
+            let _ = std::fs::rename(&config_path, &bak);
+            log::info!("config.yaml → app_config 迁移完成（备份: {}）", bak.display());
+        }
+        Err(e) => {
+            // fail-soft：rename .yaml.broken 防下次重复失败，继续走 seed 默认值
+            let broken = config_path.with_extension("yaml.broken");
+            let _ = std::fs::rename(&config_path, &broken);
+            log::warn!(
+                "config.yaml 迁移失败（{}），已重命名为 .broken，使用默认配置。错误：{}",
+                broken.display(), e
+            );
+        }
     }
-    let cfg: crate::config::AppConfig = serde_yaml::from_value(value)?;
-
-    // 覆盖 seed 默认值（INSERT OR REPLACE）
-    config::save_app_config_at(conn, &cfg)?;
-
-    // 重命名旧文件
-    let bak = config_path.with_extension("yaml.bak");
-    let _ = std::fs::rename(&config_path, &bak);
-    log::info!(
-        "config.yaml → app_config 迁移完成（备份: {}）",
-        bak.display()
-    );
     Ok(())
 }
 
