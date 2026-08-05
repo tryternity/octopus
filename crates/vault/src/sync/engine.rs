@@ -1135,7 +1135,7 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
                 // 🔴 tombstone 单向优先（2026-08-05 fix 052c67cc/7da97a01 重新应用）：
                 // 远程 folder 已 tombstone 时，无论本地时间戳多新都 pull，不 push active 覆盖。
                 let remote_folder_is_tombstone = store::read_folder_file(uuid)
-                    .map(|f| f.is_deleted)
+                    .map(|f| f.is_deleted > 0)
                     .unwrap_or(false);
                 if remote_folder_is_tombstone {
                     match store::read_folder_file(uuid) {
@@ -1158,7 +1158,7 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
                             let mut row = folder_file.to_vault_folder();
                             row.sync_md5 = Some(crate::sync::fingerprint::folder_md5(&row));
                             // 第十四轮 P2-2：删除单向传播守卫（同 cipher :1196，对齐 hotword）
-                            if !row.is_deleted && db_f.is_deleted {
+                            if row.is_deleted == 0 && db_f.is_deleted > 0 {
                                 log::info!(
                                     "[sync] merge: folder {} 本地已软删，远程 active，拒绝复活",
                                     uuid
@@ -1232,7 +1232,7 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
                 // 🔴 tombstone 单向优先（2026-08-05 fix 052c67cc/7da97a01 重新应用）：
                 // 远程 cipher 已 tombstone 时，无论本地时间戳多新都 pull，不 push active 覆盖。
                 let remote_cipher_is_tombstone = store::read_cipher_file(uuid)
-                    .map(|f| f.to_vault_cipher().is_deleted)
+                    .map(|f| f.to_vault_cipher().is_deleted > 0)
                     .unwrap_or(false);
                 if remote_cipher_is_tombstone {
                     match store::read_cipher_file(uuid) {
@@ -1257,7 +1257,7 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
                             // 远程 active + 本地已软删（tombstone）时拒绝 pull，防跨设备时钟偏差
                             // + 删除竞争致删除被复活。反向（DB active + 远程 tombstone）允许——
                             // 远程删除正常传播。可自愈（用户重删，下次 sync 推删除），非数据丢失。
-                            if !row.is_deleted && db_c.is_deleted {
+                            if row.is_deleted == 0 && db_c.is_deleted > 0 {
                                 log::info!(
                                     "[sync] merge: cipher {} 本地已软删，远程 active，拒绝复活",
                                     uuid
@@ -1841,7 +1841,7 @@ mod tests {
             folder_id: None, favorite: false, atype: 1,
             name: "v1:local-legit".into(), notes: None, data: "v1:local-data".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         db::insert_vault_cipher(&local_cipher).expect("pre-seed local cipher");
 
@@ -1857,7 +1857,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: false,
+            is_deleted: 0,
             sync_md5: None,
             created_at: "2026-07-24T00:00:00".into(),
             updated_at: "2026-07-24T00:00:00".into(),
@@ -2036,7 +2036,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: false,
+            is_deleted: 0,
             sync_md5: None,
             created_at: "2026-07-24T00:00:00".into(),
             updated_at: "2026-07-24T00:00:00".into(),
@@ -2053,7 +2053,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: false,
+            is_deleted: 0,
             sync_md5: Some(md5.clone()),
         };
         octopus_infra::db::insert_vault_cipher(&input).unwrap();
@@ -2139,8 +2139,8 @@ mod tests {
     /// 改 sort_order 应改变 md5（否则 sort_order 永不同步）。
     #[test]
     fn folder_md5_includes_sort_order() {
-        let m1 = crate::sync::fingerprint::folder_md5_from_fields("id-1", "name", 0, false);
-        let m2 = crate::sync::fingerprint::folder_md5_from_fields("id-1", "name", 1, false);
+        let m1 = crate::sync::fingerprint::folder_md5_from_fields("id-1", "name", 0, 0);
+        let m2 = crate::sync::fingerprint::folder_md5_from_fields("id-1", "name", 1, 0);
         assert_ne!(
             m1, m2,
             "sort_order 变化应改变 folder md5（否则排序永不同步）"
@@ -2194,7 +2194,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: true, // 软删
+            is_deleted: 1_700_000_000, // tombstone epoch（软删）
             sync_md5: None,
             created_at: "2026-07-24T00:00:00".into(),
             updated_at: "2026-07-24T12:00:00".into(),
@@ -2231,7 +2231,7 @@ mod tests {
             .unwrap()
             .expect("cipher should exist in DB");
         assert!(
-            db_cipher.is_deleted,
+            db_cipher.is_deleted > 0,
             "H2: 软删密码 pull 后 is_deleted 必须存活（不能复活成 live）"
         );
         let _ = g;
@@ -2251,7 +2251,7 @@ mod tests {
             id: "folder-soft-delete-test".to_string(),
             name: "v1:deleted-folder".into(),
             sort_order: 0,
-            is_deleted: true,
+            is_deleted: 1_700_000_000, // tombstone epoch
             sync_md5: None,
             created_at: "2026-08-03T00:00:00".into(),
             updated_at: "2026-08-03T12:00:00".into(),
@@ -2285,7 +2285,7 @@ mod tests {
             .unwrap()
             .expect("folder should exist in DB");
         assert!(
-            db_folder.is_deleted,
+            db_folder.is_deleted > 0,
             "P0: 软删 folder pull 后 is_deleted 必须存活（不能复活成 live）"
         );
         let _ = g;
@@ -2313,7 +2313,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: true,
+            is_deleted: 1_700_000_000, // tombstone epoch
             sync_md5: None,
             created_at: "2026-07-24T00:00:00".into(),
             updated_at: "2026-07-24T10:00:00".into(),
@@ -2334,7 +2334,7 @@ mod tests {
             .unwrap()
             .expect("cipher should exist");
         assert!(
-            db_cipher.is_deleted,
+            db_cipher.is_deleted > 0,
             "H2: clone 后软删状态必须保留（之前硬编码 false → 复活）"
         );
         let _ = g;
@@ -2400,7 +2400,7 @@ mod tests {
             favorite: false, atype: 1,
             name: "v1:enc-site1".into(), notes: None, data: "v1:enc-data1".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         let c2 = VaultCipherInput {
             id: "bbb22222-2222-4222-8222-222222222222".to_string(),
@@ -2408,7 +2408,7 @@ mod tests {
             favorite: false, atype: 1,
             name: "v1:enc-site2".into(), notes: None, data: "v1:enc-data2".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert c1");
         db::insert_vault_cipher(&c2).expect("insert c2");
@@ -2481,7 +2481,7 @@ mod tests {
             folder_id: None, favorite: false, atype: 1,
             name: "v1:enc-site".into(), notes: None, data: "v1:enc-data".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert");
         push_to_files().expect("push");
@@ -2543,14 +2543,14 @@ mod tests {
             favorite: false, atype: 1,
             name: "v1:enc-name1".into(), notes: None, data: "v1:enc-data1".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         let c2 = VaultCipherInput {
             id: "bbb00000-0000-4000-8000-000000000002".to_string(),
             folder_id: None, favorite: false, atype: 1,
             name: "v1:enc-name2".into(), notes: None, data: "v1:enc-data2".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert c1");
         db::insert_vault_cipher(&c2).expect("insert c2");
@@ -2595,7 +2595,7 @@ mod tests {
             folder_id: None, favorite: false, atype: 1,
             name: "v1:enc-name3".into(), notes: None, data: "v1:enc-data3".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert");
 
@@ -2620,7 +2620,7 @@ mod tests {
             folder_id: None, favorite: false, atype: 1,
             name: "v1:old-name".into(), notes: None, data: "v1:old-data".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert");
         push_to_files().expect("push old version");
@@ -2659,7 +2659,7 @@ mod tests {
             folder_id: None, favorite: false, atype: 1,
             name: "v1:original".into(), notes: None, data: "v1:original-data".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert");
         push_to_files().expect("push");
@@ -2695,7 +2695,7 @@ mod tests {
             folder_id: None, favorite: false, atype: 1,
             name: "v1:db-version".into(), notes: None, data: "v1:db-data".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert");
         push_to_files().expect("push");
@@ -2746,7 +2746,7 @@ mod tests {
             folder_id: None, favorite: false, atype: 1,
             name: "v1:cipher-name".into(), notes: None, data: "v1:cipher-data".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert cipher");
         push_to_files().expect("push cipher to .sync");
@@ -2802,7 +2802,7 @@ mod tests {
             folder_id: None, favorite: false, atype: 1,
             name: "v1:new-cipher".into(), notes: None, data: "v1:new-data".into(),
             fields: None, password_history: None, reprompt: 0,
-            is_deleted: false, sync_md5: None,
+            is_deleted: 0, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert local cipher");
 
@@ -2867,7 +2867,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: false,
+            is_deleted: 0,
             sync_md5: None,
             created_at: "2099-01-01 00:00:00".into(),
             updated_at: "2099-12-31 23:59:59".into(),
@@ -2923,7 +2923,7 @@ mod tests {
             id: "p1-folder-ts-uuid".to_string(),
             name: "v1:remote-folder".into(),
             sort_order: 5,
-            is_deleted: false,
+            is_deleted: 0,
             sync_md5: None,
             created_at: "2099-01-01 00:00:00".into(),
             updated_at: "2099-12-31 23:59:59".into(),
@@ -2990,7 +2990,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: false,
+            is_deleted: 0,
             sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert");

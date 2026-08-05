@@ -39,7 +39,9 @@ pub struct VaultCipher {
     pub fields: Option<String>,
     pub password_history: Option<String>,
     pub reprompt: i64,
-    pub is_deleted: bool,
+    /// 软删标记（schema v60 起 i64）：0=活跃，>0=删除时刻 epoch 秒（tombstone）。
+    /// 与 hotword/clipboard 的 tombstone 语义统一，sync merge 据此传播删除意图。
+    pub is_deleted: i64,
     pub sync_md5: Option<String>, // md5 内容指纹（v45：增量同步 diff，详见 vault::sync::fingerprint）
     pub created_at: String,
     pub updated_at: String,
@@ -50,7 +52,8 @@ pub struct VaultFolder {
     pub id: String, // UUID v4 字符串
     pub name: String,
     pub sort_order: i64,
-    pub is_deleted: bool,
+    /// 软删标记（schema v60 起 i64）：0=活跃，>0=删除时刻 epoch 秒（tombstone）。
+    pub is_deleted: i64,
     pub sync_md5: Option<String>, // md5 内容指纹（v45）
     pub created_at: String,
     pub updated_at: String,
@@ -110,9 +113,9 @@ pub struct VaultCipherInput {
     pub reprompt: i64,
     /// 软删除标志（H2 修复 2026-07-24）：sync pull/clone 必须从文件取值传入，
     /// 否则软删密码在新机 clone 时复活（is_deleted=0），且跨设备软删状态不同步。
-    /// 软删除（sync 用）：false=活跃，true=回收站。
+    /// 软删除（sync 用，schema v60 起 i64）：0=活跃，>0=删除时刻 epoch 秒（tombstone）。
     /// 本机 soft_delete/restore 走专用 UPDATE 路径（不经此结构），此处仅 sync 用。
-    pub is_deleted: bool,
+    pub is_deleted: i64,
     /// md5 内容指纹（v45：增量同步 diff，由调用方算好传入）。
     /// None 表示调用方未算（向后兼容旧调用方），sync 时按需重算。
     pub sync_md5: Option<String>,
@@ -157,7 +160,7 @@ fn row_to_vault_cipher(row: &rusqlite::Row) -> rusqlite::Result<VaultCipher> {
         fields: row.get(7)?,
         password_history: row.get(8)?,
         reprompt: row.get(9)?,
-        is_deleted: row.get::<_, i32>(10)? != 0,
+        is_deleted: row.get::<_, i64>(10)?,
         sync_md5: row.get(11)?,
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
@@ -295,12 +298,12 @@ pub fn load_vault_cipher_at(conn: &Connection, id: &str) -> Result<Option<VaultC
     }
 }
 
-/// 查所有软删 cipher 的 id（is_deleted = 1），轻量查询——不解密、不读字段，
+/// 查所有软删 cipher 的 id（is_deleted > 0），轻量查询——不解密、不读字段，
 /// 仅供 `vault_empty_trash` 批量永久删除用。
 pub fn list_trash_cipher_ids() -> Result<Vec<String>> {
     ensure_db()?;
     with_db(|conn| {
-        let mut stmt = conn.prepare("SELECT id FROM vault_ciphers WHERE is_deleted = 1")?;
+        let mut stmt = conn.prepare("SELECT id FROM vault_ciphers WHERE is_deleted > 0")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut ids = Vec::new();
         for r in rows {
@@ -348,7 +351,7 @@ pub(crate) fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput
             input.fields,
             input.password_history,
             input.reprompt,
-            input.is_deleted as i32,
+            input.is_deleted,
             input.sync_md5,
         ],
     )?;
@@ -379,7 +382,7 @@ pub fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherIn
             input.fields,
             input.password_history,
             input.reprompt,
-            input.is_deleted as i32,
+            input.is_deleted,
             input.sync_md5,
             id,
         ],
@@ -414,7 +417,7 @@ pub fn insert_vault_cipher_sync_at(conn: &Connection, row: &VaultCipher) -> Resu
             row.fields,
             row.password_history,
             row.reprompt,
-            row.is_deleted as i32,
+            row.is_deleted,
             row.sync_md5,
             row.created_at,
             row.updated_at,
@@ -440,7 +443,7 @@ pub fn update_vault_cipher_sync_at(conn: &Connection, id: &str, row: &VaultCiphe
             row.fields,
             row.password_history,
             row.reprompt,
-            row.is_deleted as i32,
+            row.is_deleted,
             row.sync_md5,
             row.created_at,
             row.updated_at,
@@ -489,7 +492,7 @@ pub fn load_vault_folder_at(conn: &Connection, id: &str) -> Result<Option<VaultF
             id: row.get(0)?,
             name: row.get(1)?,
             sort_order: row.get(2)?,
-            is_deleted: row.get::<_, i32>(3)? != 0,
+            is_deleted: row.get::<_, i64>(3)?,
             sync_md5: row.get(4)?,
             created_at: row.get(5)?,
             updated_at: row.get(6)?,
@@ -510,7 +513,7 @@ pub(crate) fn list_vault_folders_at(conn: &Connection) -> Result<Vec<VaultFolder
             id: row.get(0)?,
             name: row.get(1)?,
             sort_order: row.get(2)?,
-            is_deleted: row.get::<_, i32>(3)? != 0,
+            is_deleted: row.get::<_, i64>(3)?,
             sync_md5: row.get(4)?,
             created_at: row.get(5)?,
             updated_at: row.get(6)?,
@@ -545,7 +548,7 @@ pub fn insert_vault_folder_with_sort(
     name: &str,
     sort_order: i64,
     sync_md5: &str,
-    is_deleted: bool,
+    is_deleted: i64,
 ) -> Result<()> {
     ensure_db()?;
     with_db(|conn| {
@@ -583,7 +586,7 @@ pub fn update_vault_folder_fields(
     new_name_encrypted: &str,
     sort_order: i64,
     sync_md5: &str,
-    is_deleted: bool,
+    is_deleted: i64,
 ) -> Result<usize> {
     ensure_db()?;
     with_db(|conn| {
@@ -605,7 +608,7 @@ pub fn upsert_vault_folder_sync(
     encrypted_name: &str,
     sort_order: i64,
     sync_md5: &str,
-    is_deleted: bool,
+    is_deleted: i64,
 ) -> Result<()> {
     ensure_db()?;
     with_db(|conn| {
@@ -619,12 +622,12 @@ pub fn upsert_vault_folder_sync(
         if existing.is_some() {
             conn.execute(
                 "UPDATE vault_folders SET name = ?1, sort_order = ?2, sync_md5 = ?3, is_deleted = ?4, updated_at = datetime('now') WHERE id = ?5",
-                params![encrypted_name, sort_order, sync_md5, is_deleted as i32, id],
+                params![encrypted_name, sort_order, sync_md5, is_deleted, id],
             )?;
         } else {
             conn.execute(
                 "INSERT INTO vault_folders (id, name, sort_order, sync_md5, is_deleted) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, encrypted_name, sort_order, sync_md5, is_deleted as i32],
+                params![id, encrypted_name, sort_order, sync_md5, is_deleted],
             )?;
         }
         Ok(())
@@ -688,9 +691,15 @@ pub fn update_vault_folder_sync_at(conn: &Connection, id: &str, row: &VaultFolde
 pub fn delete_vault_folder(id: &str) -> Result<()> {
     ensure_db()?;
     with_db(|conn| {
+        // schema v60：is_deleted 存删除时刻 epoch 秒（与 hotword/clipboard tombstone 一致），
+        // 不再用字面量 1。
+        let now_secs: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(1);
         conn.execute(
-            "UPDATE vault_folders SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?1",
-            params![id],
+            "UPDATE vault_folders SET is_deleted = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, now_secs],
         )?;
         Ok(())
     })
@@ -821,7 +830,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: false,
+            is_deleted: 0,
             sync_md5: None,
         };
         insert_vault_cipher_at(&conn, &input).unwrap();
@@ -831,7 +840,7 @@ mod tests {
         assert_eq!(loaded.name, "v1:enc-name");
         assert_eq!(loaded.atype, 1);
         assert!(!loaded.favorite);
-        assert!(!loaded.is_deleted);
+        assert_eq!(loaded.is_deleted, 0);
 
         // 更新
         let mut input2 = input.clone();

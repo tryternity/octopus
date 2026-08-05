@@ -61,7 +61,9 @@ pub struct CipherDto {
     pub login: Option<LoginData>,
     pub fields: Vec<Field>,
     pub reprompt: i64,
-    pub is_deleted: bool,
+    /// 软删标记（schema v60：i64，0=活跃，>0=删除时刻 epoch 秒 tombstone）。
+    /// 前端展示时按 is_deleted > 0 判定回收站项。
+    pub is_deleted: i64,
     pub created_at: String,
     pub updated_at: String,
 }
