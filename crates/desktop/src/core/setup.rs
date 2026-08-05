@@ -393,6 +393,14 @@ impl<'a> AppSetup<'a> {
             }
         }
 
+        // Register paste-stack pop shortcut (from config). 与 clipboard_shortcut 正交，
+        // 可同时注册（默认 Alt+C 开浮窗、Cmd+Shift+V 出栈粘贴）。
+        if !self.config.paste_stack_shortcut.is_empty() {
+            if let Err(e) = crate::clipboard::clipboard_window::register_paste_stack_shortcut(self.app.handle(), &self.config.paste_stack_shortcut) {
+                log::error!("Failed to register paste-stack shortcut: {}", e);
+            }
+        }
+
         // Register screenshot global shortcut (from config)
         if !self.config.screenshot_shortcut.is_empty() {
             if let Err(e) = crate::record::screenshot_commands::register_screenshot_shortcut(self.app.handle(), &self.config.screenshot_shortcut) {
