@@ -410,6 +410,7 @@
 | 21 | `d6b8b138` | P2-v1 resolve attempt_guard + P2-a3 whisper 空音频 + P2-a2 aliyun warn + P2-s5 clipboard 复活保护 |
 | 22 | （无 commit） | merge main（`c309b085` concealed hint）+ 复审 watcher.rs，**0 修复**（审查通过） |
 | 23 | （本轮，待 commit） | 全代码审查 23 P2 复查：修 12（infra 4 事务 + record thumbnail 事务 + autotype PasswordOnly verify + cloud close catch_unwind + ocr validate 激活 + llm error body 截断 + sync thread-local clear + **scheduler hang 超时兜底** + **download Etag 注释修正** + **server spawn_blocking 超时**）+ 驳回 1（P2-ocr2 误报）+ 留后续 10 |
+| 24 | （本轮，待 commit） | 留后续项推进：修 5（spawn .expect 降级 + image size guard + WAV decode spawn_blocking + Etag dead code 清理 + WS engine 校验）+ 留后续 2（P2-srv2 共享 session 重构 + P2-d1 autotype 移线程） |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1178,3 +1179,59 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 - `cargo build --release -p octopus-server -p octopus-cli` + `cargo build -p octopus-infra -p octopus-record -p octopus-paddle-ocr -p octopus-llm -p octopus-sync -p octopus-scheduler -p octopus-download -p octopus-desktop` —— 全 0 error 0 warning。
 - `cargo test`：infra 193 / record 50 / paddle-ocr 45 / llm 14 / sync 153 / **scheduler 5（+1 新增 hang 超时）** / download 33 / **server 4** / **desktop 525** 全过。
 - 新增 4 回归测试：hotword 2（P2-i1/i2 事务回滚）+ llm 1（truncate_error_body 截断）+ scheduler 1（hang 超时不阻塞后续）全过。
+
+## 27. 第二十四轮——留后续项推进（2026-08-06，5 修 + 2 留后续）
+
+### 触发
+
+第二十三轮留后续 11 项中，用户要求依次推进 6 项（P2-d1/d3/srv2/srv3/srv4/ocr3/dl1）。本轮按风险/复杂度从低到高顺序处理。
+
+### 修复明细（5 处）
+
+#### P2-d3 · ptt/clipboard spawn .expect 优雅降级
+
+**根因**：`start_clipboard_worker`（clipboard_queue.rs:41）+ `ensure_thread`（ptt.rs:375）的 `.expect("failed to spawn ...")`——spawn 失败 panic 整个 app。
+
+**修复**：
+- clipboard_queue：`start_clipboard_worker` 返 `Result<(), std::io::Error>`；**先 spawn 成功后才 set OnceLock tx**（原实现先 set 再 spawn，spawn 失败后 tx send 到已 drop rx 静默失败 → 剪贴板历史静默不记录，比 panic 更糟）；setup.rs 调用点 `if let Err(e) = ... log::error` 继续。
+- ptt：`ensure_thread` 返 `Result<Sender, String>`，spawn 失败 log error 返 Err；`register_ptt` 用 `?` 传播（用户看到「PTT 启动失败」而非 app crash）。
+
+#### P2-ocr3 · image load 无 size guard
+
+**根因**：`OcrEngine::recognize`（engine.rs:149/160）`image::load_from_memory` 默认无维度限制（max_image_width/height = None）。超大长图 → load + to_rgb8 峰值近 1GB OOM。
+
+**修复**：提取 `load_image_with_limits` helper——用 `ImageReader::with_guessed_format` + `reader.limits(Limits{max_image_width/height=Some(8192)})` 在解码前 check 维度。8192×8192 ≈ 67M 像素（RGBA ~268MB < 默认 max_alloc 512MB），覆盖正常截图（4K）+ 长图。两处 `load_from_memory` 替换。
+
+#### P2-srv4 · WAV decode 漏 spawn_blocking
+
+**根因**：`transcribe` handler（main.rs:101-112）`read_wav_16k_from_bytes`（hound 解析 + 重采样，O(n)）在 async handler 直接跑，阻塞 tokio worker；而 :142 transcribe_batch 却在 spawn_blocking——不一致。
+
+**修复**：decode 独立 spawn_blocking（返回 samples，后续 duration_ms + 400 检查 + inference 控制流不变）。第二十三轮曾尝试合并 decode+inference 到一个闭包，破坏 duration_ms 计算 + 控制流，回退——本次改为 decode 独立 spawn_blocking，不破坏结构。
+
+#### P2-dl1 · download Etag dead code 彻底清理
+
+**根因**：第二十三轮 C1 修正了 verify.rs 注释撒谎，但 `Hash::Etag` enum 变体仍在（verify 返 `Ok(true)` 永真占位）。深入核实发现：**所有 manifest（model_manifests.rs 11 个模型）均配 Sha256，无一配 Etag**——If-Range 实现零价值。
+
+**修复**：彻底删 `Hash::Etag` 变体（比"实现 If-Range"更合理）：
+- verify.rs：删 Etag 变体 + verify 的 Etag arm + 模块头注释更新
+- downloader.rs:462-463：match 去掉 Etag arm（只留 Sha256）
+- probe 探测的 etag + ResumeState.etag 字段保留（探测多读一个 header 无害，存 sidecar 未来可能用，删除涉及 resume.rs 签名改动收益不抵）
+
+#### P2-srv3 · WS ?engine= 静默忽略
+
+**根因**：`handle_ws`（main.rs:264/269）:264 校验 engine 是已知 category，:269 `StreamingSession::new(&engine, ...)` 忽略 `&engine`（内部 `resolve_active_engine("asr")`）。客户端传 `?engine=whisper` 但激活引擎是 paraformer 时静默用 paraformer。
+
+**修复**：handle_ws 加校验——`resolve_active_engine("asr")` 拿激活引擎名，与 `?engine=` 裸名比对，不一致显式报错（"流式引擎必须是激活引擎 X，请先 switch_active_engine 或改用 /transcribe 批处理端点"）。`StreamingSession::new` 的设计（强制激活引擎）不变。
+
+### 留后续（2 项，确认本轮不修）
+
+| 项 | 原因 |
+|---|---|
+| **P2-srv2**（WS 每连接重载 ONNX / 共享 session 重构） | 需拆分 StreamingSession 为「共享 ONNX Session + 每连接独立 decoder state」——asr-local 核心架构重构（streaming_engine/runner/paraformer/zipformer 多文件）。实际场景：desktop 连 server 单连接串行（每次 transcribe 新开连接），非并发 OOM 而是**每次识别冷启动延迟**。单用户场景收益（冷启动）不抵重构风险，留专项 |
+| **P2-d1**（autotype 主线程阻塞 ~1.5s） | 1.5s 是用户主动操作（点自动填充）的预期等待，非后台卡顿。焦点时序极脆弱（5 处 e2e 血泪修复），移子线程的 CGEvent/osascript/RunLoop 边缘行为需 e2e 基础设施验证。回报（低频冻结）不抵风险（autotype 回归 = 密码填错窗口） |
+
+### 验证
+
+- `cargo build --release -p octopus-server -p octopus-cli` + 全改动 crate build —— 0 error 0 warning。
+- `cargo test`：ocr 35 / download 33 / server 4 / desktop 525 全过。
+- 第二十三轮留后续 11 项 → 本轮修 5（d3/ocr3/srv4/dl1/srv3）+ 留后续 2（srv2/d1）+ 前轮已修 4（sync1/sync2 有设计 spec / srv5 已修 / l2 不修）。

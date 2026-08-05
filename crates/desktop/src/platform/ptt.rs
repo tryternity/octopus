@@ -361,10 +361,14 @@ fn dispatch_action(coordinator: &Coordinator, action: FsmAction) {
 ///
 /// HotkeyManager 必须固定在 manager 线程内（不可跨线程 move），
 /// 因此线程闭包内创建并独占持有它。
-fn ensure_thread(app: &AppHandle) -> Sender<ManagerCommand> {
+///
+/// 第二十三轮 P2-d3：spawn 失败不再 .expect panic，改为返 Err——调用方（register_ptt）
+/// 返 Err 给 Tauri 命令（用户看到「PTT 启动失败」而非 app crash）。spawn 失败=系统极端
+/// 状态，PTT 不可用可接受（其他功能继续），panic 让整个 app 消失对用户更糟。
+fn ensure_thread(app: &AppHandle) -> Result<Sender<ManagerCommand>, String> {
     let mut guard = PTT_STATE.lock();
     if let Some(state) = guard.as_ref() {
-        return state.command_sender.clone();
+        return Ok(state.command_sender.clone());
     }
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<ManagerCommand>();
@@ -372,14 +376,17 @@ fn ensure_thread(app: &AppHandle) -> Sender<ManagerCommand> {
     let handle = std::thread::Builder::new()
         .name("octopus-ptt".into())
         .spawn(move || manager_thread(cmd_rx, app_clone))
-        .expect("[ptt] failed to spawn manager thread");
+        .map_err(|e| {
+            log::error!("[ptt] failed to spawn manager thread: {}——PTT 功能将不可用", e);
+            format!("PTT manager thread spawn failed: {}", e)
+        })?;
 
     *guard = Some(PttState {
         command_sender: cmd_tx.clone(),
         thread_handle: Some(handle),
     });
     log::info!("[ptt] manager thread started");
-    cmd_tx
+    Ok(cmd_tx)
 }
 
 /// 在 manager 线程内执行注册。
@@ -427,7 +434,7 @@ fn do_unregister(
 pub fn register_ptt(app: &AppHandle, key: &str) -> Result<(), String> {
     log::info!("[ptt] register_ptt: key={}", key);
 
-    let sender = ensure_thread(app);
+    let sender = ensure_thread(app)?;
 
     let (tx, rx) = mpsc::channel();
     sender

@@ -363,13 +363,17 @@ impl<'a> AppSetup<'a> {
 
             // 启动后台 worker：watcher 回调只 enqueue（<1μs），编码/入库在 worker 异步做。
             // 避免 watcher 线程被 WebP 编码 + DB 写阻塞（连续复制时延迟入库）。
+            // 第二十三轮 P2-d3：start_clipboard_worker 返 Result——spawn 失败不 panic，
+            // log 后继续（剪贴板功能降级，其他功能不受影响）。
             let emit_handle = app_handle_for_watcher.clone();
-            crate::clipboard::clipboard_queue::start_clipboard_worker(
+            if let Err(e) = crate::clipboard::clipboard_queue::start_clipboard_worker(
                 clipboard_handle.clone(),
                 Arc::new(move || {
                     let _ = emit_handle.emit("clipboard://changed", ());
                 }),
-            );
+            ) {
+                log::error!("[setup] clipboard worker 启动失败（剪贴板历史将不记录）: {}", e);
+            }
 
             match octopus_clipboard::ClipboardWatcher::start(clipboard_handle.clone(), move || {
                 // 旧代码：直接在 watcher 线程同步处理（阻塞）

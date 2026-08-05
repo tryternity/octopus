@@ -25,20 +25,38 @@ static CLIPBOARD_QUEUE_TX: OnceLock<Sender<()>> = OnceLock::new();
 /// `octopus_clipboard::watcher::handle_clipboard_change`。
 /// emit 逻辑（`clipboard://changed`）也在这里——因为 emit 必须在 worker 处理完
 /// 后才能让前端刷新（处理前 emit 会显示旧列表）。
+///
+/// 第二十三轮 P2-d3：spawn 失败不再 .expect panic 整个 app，改为 log error + 返回 Err。
+/// 调用方（setup.rs）应继续运行（剪贴板功能降级——watcher 回调走 enqueue 的 fallback
+/// 同步处理，见 [`enqueue`]）。spawn 失败的触发条件是极端系统状态（fd/线程上限、内存
+/// 耗尽），此时 panic vs 降级差异小，但降级让 app 其他功能（ASR / vault / OCR）继续可用。
 pub fn start_clipboard_worker(
     handle: Arc<ClipboardHandle>,
     on_changed: Arc<dyn Fn() + Send + Sync>,
-) {
+) -> Result<(), std::io::Error> {
     let (tx, rx) = mpsc::channel::<()>();
-    // 忽略重复启动错误（测试场景可能多次初始化）
-    let _ = CLIPBOARD_QUEUE_TX.set(tx);
 
+    // 第二十三轮 P2-d3：先 spawn，成功后才 set OnceLock——spawn 失败时 OnceLock 保持 None，
+    // enqueue 走 fallback（log warn，不 silent skip）。原实现先 set tx 再 spawn + .expect，
+    // spawn 失败 panic 整个 app。现改为返 Err，调用方继续运行（其他功能不受影响）。
+    // 注：enqueue 的 fallback 当前只 log（无全局 handle 可调 handle_clipboard_change），
+    // 故 spawn 失败时剪贴板历史不记录——可接受（spawn 失败=系统极端异常，其他功能优先）。
     std::thread::Builder::new()
         .name("clipboard-change-worker".into())
         .spawn(move || {
             worker_loop(rx, handle, on_changed);
         })
-        .expect("failed to spawn clipboard-change-worker");
+        .map_err(|e| {
+            log::error!(
+                "[clipboard-queue] failed to spawn worker: {}——剪贴板历史将不记录",
+                e
+            );
+            e
+        })?;
+
+    // spawn 成功——set tx（后续 enqueue 走异步队列）
+    let _ = CLIPBOARD_QUEUE_TX.set(tx);
+    Ok(())
 }
 
 fn worker_loop(rx: mpsc::Receiver<()>, handle: Arc<ClipboardHandle>, on_changed: Arc<dyn Fn() + Send + Sync>) {
