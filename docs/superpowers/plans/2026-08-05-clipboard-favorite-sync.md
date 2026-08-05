@@ -4,9 +4,9 @@
 
 **Goal:** 剪贴板 favorite 跨设备同步——仅文本类（text/voice/ocr），AES-256-GCM 加密内容走 git sync。
 
-**Architecture:** clipboard_history.id 从 INTEGER(毫秒戳) 改 TEXT(UUID v4) 作跨设备同步锚点；新增 clipboard_favorites 表（uuid + history_id + is_deleted tombstone）；`.sync/clipboard/` 目录走 hotword 同款 outline + 分片文件 pattern；clipboard.key（32B AES key，明文存 git 先防君子）加解密 sync 文件内容；merge 逻辑套 hotword tombstone 单向优先 fix（052c67cc/7da97a01 同款）。
+**Architecture:** clipboard_history.id 从 INTEGER(毫秒戳) 改 TEXT(UUID v4) 作跨设备同步锚点；新增 clipboard_favorites 表（**4 字段极简**：`history_id` PK + `is_deleted` + `updated_at` + `sync_md5`，无独立 id / 无 FK——详见 spec §2.2 + §12.1）；`.sync/clipboard/` 目录走 hotword 同款 outline + 分片文件 pattern；clipboard.key（32B AES key，明文存 git 先防君子）加解密 sync 文件内容（**内联 `ClipboardKey`，非 vault `DerivedKey`——循环依赖，详见 spec §6.3**）；merge 逻辑套 hotword tombstone 单向优先 fix（052c67cc/7da97a01 同款）。
 
-**Tech Stack:** Rust + SQLite + rusqlite + octopus-sync（git wrapper + outline + store）+ octopus-vault crypto symmetric（AES-256-GCM DerivedKey）+ uuid crate
+**Tech Stack:** Rust + SQLite + rusqlite + octopus-sync（git wrapper + outline + store）+ **内联 AES-256-GCM（`aes-gcm` crate，`ClipboardKey`——非 vault `DerivedKey`，因循环依赖，详见 spec §6.3）** + uuid crate
 
 **Spec:** `docs/superpowers/specs/2026-08-05-clipboard-favorite-sync-design.md`
 
@@ -18,7 +18,7 @@
 - **CURRENT_SCHEMA_VERSION**：58 → 59（clipboard_history id 类型变更 + favorites 表新增，破坏性，老库 `bail!` 提示清库）
 - **cargo test**：每个 task 完成后跑相关 crate 的 `cargo test -p <crate> --lib`，全绿才进下一 task
 - **uuid 依赖**：`uuid = { version = "1", features = ["v4"] }`（infra 已有，确认即可）
-- **DerivedKey 构造**：`octopus_vault::crypto::DerivedKey::from_raw([u8; 32])` → `.encrypt(&bytes)` / `.decrypt(&str)`
+- **DerivedKey 构造**：~~`octopus_vault::crypto::DerivedKey::from_raw([u8; 32])`~~ → 实际改为内联 `ClipboardKey`（`crates/sync/src/clipboard.rs`，对称 vault `DerivedKey` 但因循环依赖不依赖 vault；详见 spec §6.3）：`ClipboardKey::from_raw([u8; 32])` → `.encrypt(&bytes)` / `.decrypt(&str)`
 - **tombstone 单向优先不变量**：merge 阶段 1 的 `Some(db_f)` 分支，timestamp 比较前先检查 `remote_is_tombstone`，true 则 pull 不 push（对称 052c67cc/7da97a01）
 
 ---
@@ -50,6 +50,8 @@
 
 ## Task 1: schema 变更——clipboard_history id UUID + favorites 表 + FTS5 适配
 
+> **实现合并**：Task 3（clipboard_favorites 表 CRUD）实际与本 Task 同 commit 实现——schema 与 CRUD 强耦合，分两次 commit 反复编译。Task 1+3 合并为单 commit。
+
 **Files:**
 - Modify: `crates/infra/resources/sql/schema.sql`
 - Modify: `crates/infra/src/db/mod.rs`（CURRENT_SCHEMA_VERSION 58→59 + `pub mod clipboard_favorite`）
@@ -57,7 +59,7 @@
 **Interfaces:**
 - Produces: 新 schema（clipboard_history.id TEXT + clipboard_favorites 表 + FTS5 trigger 用 NEW.rowid）供后续所有 task 依赖
 
-- [ ] **Step 1: 改 schema.sql——clipboard_history.id INTEGER → TEXT**
+- [x] **Step 1: 改 schema.sql——clipboard_history.id INTEGER → TEXT**
 
 `crates/infra/resources/sql/schema.sql` 第 66-82 行，`id` 列改类型 + 注释：
 
@@ -68,7 +70,7 @@ CREATE TABLE IF NOT EXISTS clipboard_history (
     -- ... 其余列不变
 ```
 
-- [ ] **Step 2: 改 FTS5 trigger——NEW.id → NEW.rowid**
+- [x] **Step 2: 改 FTS5 trigger——NEW.id → NEW.rowid**
 
 schema.sql 第 109-120 行，3 个 trigger 的 `VALUES (..., new.id, ...)` 改为 `new.rowid`：
 
@@ -87,7 +89,7 @@ CREATE TRIGGER IF NOT EXISTS clip_fts_au AFTER UPDATE OF content ON clipboard_hi
 END;
 ```
 
-- [ ] **Step 3: 加 clipboard_favorites 表**
+- [x] **Step 3: 加 clipboard_favorites 表**
 
 schema.sql 在 clipboard_history 段之后加：
 
@@ -107,7 +109,7 @@ CREATE TABLE IF NOT EXISTS clipboard_favorites (
 CREATE INDEX IF NOT EXISTS idx_clip_fav_active ON clipboard_favorites(is_deleted) WHERE is_deleted = 0;
 ```
 
-- [ ] **Step 4: 改 CURRENT_SCHEMA_VERSION 58 → 59**
+- [x] **Step 4: 改 CURRENT_SCHEMA_VERSION 58 → 59**
 
 `crates/infra/src/db/mod.rs` 第 441 行：
 
@@ -115,7 +117,7 @@ CREATE INDEX IF NOT EXISTS idx_clip_fav_active ON clipboard_favorites(is_deleted
 pub const CURRENT_SCHEMA_VERSION: u32 = 59;
 ```
 
-- [ ] **Step 5: 加 clipboard_favorite 模块声明**
+- [x] **Step 5: 加 clipboard_favorite 模块声明**
 
 `crates/infra/src/db/mod.rs` 第 6-13 行的 mod 块加：
 
@@ -125,23 +127,25 @@ mod clipboard_favorite;
 
 并在公开导出处（`pub use` 或 `pub mod`）加 `pub mod clipboard_favorite;`（对齐 hotword 的导出方式）。
 
-- [ ] **Step 6: 编译验证**
+- [x] **Step 6: 编译验证**
 
 ```bash
 cargo build -p octopus-infra 2>&1 | tail -5
 ```
 Expected: 0 error（clipboard_favorite 模块此时还不存在，先建空文件）
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A && git commit -m "feat(clipboard-sync): schema 变更——clipboard_history id UUID + favorites 表 + FTS5 适配
 
 - clipboard_history.id INTEGER(毫秒戳) → TEXT(UUID v4)
 - FTS5 trigger: NEW.id → NEW.rowid（id 变 TEXT 后不能作 FTS5 rowid）
-- 新增 clipboard_favorites 表（uuid + history_id + is_deleted tombstone）
+- 新增 clipboard_favorites 表（4 字段极简：history_id PK + is_deleted + updated_at + sync_md5，无 FK）
 - CURRENT_SCHEMA_VERSION 58 → 59（破坏性，老库 bail 提示清库）"
 ```
+
+> **实现偏差**：实际 commit 把 schema（Task 1）+ favorites 表 CRUD（Task 3）合并为单 commit。favorites 表从原设计的 6 字段简化到 4 字段（无独立 id / 无 created_at / 无 UNIQUE / 无 FK）——详见 spec §2.2 + §12.1。
 
 ---
 
@@ -156,7 +160,7 @@ git add -A && git commit -m "feat(clipboard-sync): schema 变更——clipboard_
 - Consumes: Task 1 的新 schema
 - Produces: `NewClipboardItem.id: String`（UUID v4），所有 clipboard_history INSERT 走 UUID；`insert_clipboard_item` 返回 `Result<String>`
 
-- [ ] **Step 1: 写失败测试——insert_clipboard_item 用 UUID**
+- [x] **Step 1: 写失败测试——insert_clipboard_item 用 UUID**
 
 `crates/clipboard/src/store.rs` test mod 里加测试：
 
@@ -184,14 +188,14 @@ fn insert_clipboard_item_generates_uuid_id() {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cargo test -p octopus-clipboard --lib insert_clipboard_item_generates_uuid_id 2>&1 | tail -10
 ```
 Expected: FAIL（NewClipboardItem.id 还是 i64，类型不匹配）
 
-- [ ] **Step 3: 改 NewClipboardItem.id i64 → String**
+- [x] **Step 3: 改 NewClipboardItem.id i64 → String**
 
 `crates/clipboard/src/store.rs` 第 539-549 行：
 
@@ -203,7 +207,7 @@ pub struct NewClipboardItem {
 }
 ```
 
-- [ ] **Step 4: 改 insert_clipboard_item 返回 String + SQL 参数**
+- [x] **Step 4: 改 insert_clipboard_item 返回 String + SQL 参数**
 
 `crates/clipboard/src/store.rs` 第 8-37 行，签名 + SQL：
 
@@ -223,7 +227,7 @@ pub fn insert_clipboard_item(conn: &Connection, item: &NewClipboardItem) -> Resu
 
 三个 INSERT 分支（Text/Image/File）都改。
 
-- [ ] **Step 5: 改 insert_with_unique_id + insert_asr_item + insert_ocr_item**
+- [x] **Step 5: 改 insert_with_unique_id + insert_asr_item + insert_ocr_item**
 
 `crates/clipboard/src/store.rs` 第 557-572 行 `insert_with_unique_id`：改为 UUID 生成：
 
@@ -246,18 +250,18 @@ where F: FnMut(&str) -> rusqlite::Result<usize>,
 
 `insert_asr_item` / `insert_ocr_item` 的闭包参数从 `|id|` (i64) 改 `|id: &str|`，SQL `?` 参数对应改。
 
-- [ ] **Step 6: 改 transcription.rs ORDER BY + INSERT**
+- [x] **Step 6: 改 transcription.rs ORDER BY + INSERT**
 
 `crates/infra/src/db/transcription.rs`：
 - 第 220、230、280 行 `ORDER BY id DESC` → `ORDER BY created_at DESC, id DESC`
 - 第 11 行 `insert_transcription_at_id`：参数 `id: i64` → `id: &str`，SQL 参数对应改
 - 第 318、355、361、387、409、426、442、449、482、568 行所有 INSERT 语句的 id 参数改 TEXT
 
-- [ ] **Step 7: 改 watcher.rs 调用点**
+- [x] **Step 7: 改 watcher.rs 调用点**
 
 `crates/clipboard/src/watcher.rs` 第 111、169、209 行 `insert_clipboard_item` 调用，`id` 字段传 `uuid::Uuid::new_v4().to_string()`。
 
-- [ ] **Step 8: 跑测试**
+- [x] **Step 8: 跑测试**
 
 ```bash
 cargo test -p octopus-clipboard --lib 2>&1 | tail -5
@@ -265,7 +269,7 @@ cargo test -p octopus-infra --lib transcription 2>&1 | tail -5
 ```
 Expected: 全绿
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add -A && git commit -m "feat(clipboard-sync): clipboard_history id INTEGER→TEXT(UUID v4) 适配
@@ -289,7 +293,7 @@ git add -A && git commit -m "feat(clipboard-sync): clipboard_history id INTEGER�
 - Consumes: Task 1 的 schema
 - Produces: `ClipboardFavorite` struct + `insert_favorite` / `soft_delete_favorite` / `list_favorites` / `get_favorite` / `upsert_favorite_sync` / `list_all_favorites`（含 tombstone）
 
-- [ ] **Step 1: 写失败测试——insert + list + soft_delete**
+- [x] **Step 1: 写失败测试——insert + list + soft_delete**
 
 `crates/infra/src/db/clipboard_favorite.rs` 文件底部 `#[cfg(test)] mod tests`：
 
@@ -338,14 +342,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败（模块不存在）**
+- [x] **Step 2: 跑测试确认失败（模块不存在）**
 
 ```bash
 cargo test -p octopus-infra --lib clipboard_favorite 2>&1 | tail -5
 ```
 Expected: FAIL（模块 / 函数不存在）
 
-- [ ] **Step 3: 实现 ClipboardFavorite struct + CRUD**
+- [x] **Step 3: 实现 ClipboardFavorite struct + CRUD**
 
 `crates/infra/src/db/clipboard_favorite.rs`：
 
@@ -421,7 +425,7 @@ fn iso_now() -> String {
 }
 ```
 
-- [ ] **Step 4: 加 pub 包装（走 ensure_db / with_db）**
+- [x] **Step 4: 加 pub 包装（走 ensure_db / with_db）**
 
 在 `clipboard_favorite.rs` 底部加 pub 函数（对齐 hotword.rs 的 `insert_hotword_set` / `list_all_hotword_sets` 模式）：
 
@@ -484,14 +488,14 @@ pub fn upsert_favorite_sync(fav: &ClipboardFavorite) -> Result<()> {
 }
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 ```bash
 cargo test -p octopus-infra --lib clipboard_favorite 2>&1 | tail -5
 ```
 Expected: 全绿
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A && git commit -m "feat(clipboard-sync): clipboard_favorites 表 CRUD
@@ -505,6 +509,8 @@ git add -A && git commit -m "feat(clipboard-sync): clipboard_favorites 表 CRUD
 
 ## Task 4: clipboard.key 加解密模块
 
+> **实现合并**：Task 5（sync 文件读写）合并到本 Task——加密原语 + 文件格式 + outline 一起在 `crates/sync/src/clipboard.rs` 实现，不可分。最终 Task 4+5 同 commit。
+
 **Files:**
 - Create: `crates/clipboard/src/crypto.rs`（或 `crates/sync/src/clipboard_crypto.rs`）
 - Modify: `crates/sync/Cargo.toml`（加 uuid 依赖 + octopus-vault 依赖）
@@ -512,7 +518,7 @@ git add -A && git commit -m "feat(clipboard-sync): clipboard_favorites 表 CRUD
 **Interfaces:**
 - Produces: `load_or_create_clipboard_key() -> Result<DerivedKey>` / `encrypt_payload(key, json) -> Result<String>` / `decrypt_payload(key, ciphertext) -> Result<String>`
 
-- [ ] **Step 1: 写失败测试——encrypt/decrypt round-trip**
+- [x] **Step 1: 写失败测试——encrypt/decrypt round-trip**
 
 `crates/sync/src/clipboard.rs`（新文件）test mod：
 
@@ -533,9 +539,9 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败（模块不存在）**
+- [x] **Step 2: 跑测试确认失败（模块不存在）**
 
-- [ ] **Step 3: 实现 clipboard.key 加解密**
+- [x] **Step 3: 实现 clipboard.key 加解密**
 
 `crates/sync/src/clipboard.rs`（初期只放 crypto + key 管理，merge 逻辑后续 task 加）：
 
@@ -583,7 +589,7 @@ fn set_readonly(path: &PathBuf) -> Result<()> {
 fn set_readonly(_path: &PathBuf) -> Result<()> { Ok(()) }
 ```
 
-- [ ] **Step 4: 加 Cargo.toml 依赖**
+- [x] **Step 4: 加 Cargo.toml 依赖**
 
 `crates/sync/Cargo.toml`：
 ```toml
@@ -592,14 +598,14 @@ hex = "0.4"
 octopus-vault = { path = "../vault" }
 ```
 
-- [ ] **Step 5: 跑测试**
+- [x] **Step 5: 跑测试**
 
 ```bash
 cargo test -p octopus-sync --lib clipboard::tests::encrypt_decrypt 2>&1 | tail -5
 ```
 Expected: 全绿
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ---
 
@@ -611,7 +617,7 @@ Expected: 全绿
 **Interfaces:**
 - Produces: `ClipboardFavoriteFile` struct + `read_clipboard_outline` / `write_clipboard_outline` / `read_favorite_file` / `write_favorite_file` / `export_all_favorites` / `merge_clipboard_favorites`
 
-- [ ] **Step 1: 定义 sync 文件结构 + outline 结构**
+- [x] **Step 1: 定义 sync 文件结构 + outline 结构**
 
 ```rust
 use serde::{Serialize, Deserialize};
@@ -662,7 +668,7 @@ pub struct HistoryRowJson {
 }
 ```
 
-- [ ] **Step 2: 实现 outline + 文件读写函数**
+- [x] **Step 2: 实现 outline + 文件读写函数**
 
 ```rust
 fn clipboard_dir() -> Result<PathBuf> {
@@ -716,15 +722,17 @@ pub fn delete_favorite_file(uuid: &str) -> Result<()> {
 }
 ```
 
-- [ ] **Step 3: 写测试——write + read round-trip**
+- [x] **Step 3: 写测试——write + read round-trip**
 
-- [ ] **Step 4: 跑测试**
+- [x] **Step 4: 跑测试**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ---
 
 ## Task 6: export_all_favorites（DB → .sync 文件）
+
+> **实现合并**：Task 6（export）+ Task 7（merge）+ Task 8（sync_now 接入）三 Task 同 commit 实现——merge 必然依赖 export（末尾调用 export_all_favorites 重建文件 + outline），sync_now 接入只 1 行代码改动，三 Task 一起编译一起测。
 
 **Files:**
 - Modify: `crates/sync/src/clipboard.rs`
@@ -732,7 +740,7 @@ pub fn delete_favorite_file(uuid: &str) -> Result<()> {
 **Interfaces:**
 - Produces: `export_all_favorites() -> Result<ClipboardOutline>`
 
-- [ ] **Step 1: 实现 export**
+- [x] **Step 1: 实现 export**
 
 ```rust
 pub fn export_all_favorites() -> Result<ClipboardOutline> {
@@ -777,11 +785,11 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
 }
 ```
 
-- [ ] **Step 2: 写测试——export 后文件存在 + outline 正确**
+- [x] **Step 2: 写测试——export 后文件存在 + outline 正确**
 
-- [ ] **Step 3: 跑测试**
+- [x] **Step 3: 跑测试**
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ---
 
@@ -794,7 +802,7 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
 - Consumes: Task 4-6 的所有函数
 - Produces: `merge_clipboard_favorites() -> Result<ClipboardMergeReport>`（对称 `merge_hotwords`）
 
-- [ ] **Step 1: 实现 merge（套 hotword pattern + tombstone 单向优先）**
+- [x] **Step 1: 实现 merge（套 hotword pattern + tombstone 单向优先）**
 
 ```rust
 #[derive(Debug, Clone, Default, Serialize)]
@@ -903,7 +911,7 @@ fn pull_favorite(uuid: &str, key: &DerivedKey) -> Result<bool> {
 }
 ```
 
-- [ ] **Step 2: 实现 push_favorite + decrypt_payload + upsert_history_row + favorite_md5 辅助**
+- [x] **Step 2: 实现 push_favorite + decrypt_payload + upsert_history_row + favorite_md5 辅助**
 
 ```rust
 fn push_favorite(fav: &ClipboardFavorite, key: &DerivedKey) -> Result<()> {
@@ -939,7 +947,7 @@ fn favorite_md5(fav: &ClipboardFavorite) -> String {
 }
 ```
 
-- [ ] **Step 3: 写测试——tombstone 单向优先（对称 hotword/vault fix）**
+- [x] **Step 3: 写测试——tombstone 单向优先（对称 hotword/vault fix）**
 
 ```rust
 #[test]
@@ -949,16 +957,16 @@ fn merge_remote_tombstone_not_overwritten_by_local_active_newer() {
 }
 ```
 
-- [ ] **Step 4: 写测试——正常 pull / push / 冲突**
+- [x] **Step 4: 写测试——正常 pull / push / 冲突**
 
-- [ ] **Step 5: 跑全部 sync 测试**
+- [x] **Step 5: 跑全部 sync 测试**
 
 ```bash
 cargo test -p octopus-sync --lib 2>&1 | tail -5
 ```
 Expected: 全绿
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ---
 
@@ -970,7 +978,7 @@ Expected: 全绿
 **Interfaces:**
 - Consumes: Task 7 的 merge_clipboard_favorites
 
-- [ ] **Step 1: 在 sync_now 的 hotword merge 后加 clipboard merge**
+- [x] **Step 1: 在 sync_now 的 hotword merge 后加 clipboard merge**
 
 `crates/vault/src/sync/engine.rs` 第 776 行附近（hotword merge 之后）：
 
@@ -985,18 +993,18 @@ let clipboard_report = match octopus_sync::clipboard::merge_clipboard_favorites(
 };
 ```
 
-- [ ] **Step 2: 加 SyncReport 字段（clipboard_pulled / clipboard_pushed）**
+- [x] **Step 2: 加 SyncReport 字段（clipboard_pulled / clipboard_pushed）**
 
 对齐 hotwords_pulled / hotwords_pushed 模式。
 
-- [ ] **Step 3: 编译 + 跑 vault 测试确保无回归**
+- [x] **Step 3: 编译 + 跑 vault 测试确保无回归**
 
 ```bash
 cargo test -p octopus-vault --lib 2>&1 | tail -5
 ```
 Expected: 全绿
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ---
 
@@ -1011,7 +1019,7 @@ Expected: 全绿
 **Interfaces:**
 - Produces: `toggle_favorite(history_id)` / `list_favorites() -> Vec<FavoriteView>` + Tauri 命令 + 前端类型
 
-- [ ] **Step 1: 实现 favorite.rs 业务逻辑**
+- [x] **Step 1: 实现 favorite.rs 业务逻辑**
 
 ```rust
 // crates/clipboard/src/favorite.rs
@@ -1051,7 +1059,7 @@ pub fn list_favorites() -> Result<Vec<(ClipboardFavorite, ClipboardHistoryRow)>>
 }
 ```
 
-- [ ] **Step 2: 在 db 层加缺的查询函数**
+- [x] **Step 2: 在 db 层加缺的查询函数**
 
 - `load_favorite_by_history(history_id) -> Result<Option<ClipboardFavorite>>`
 - `restore_favorite(id) -> Result<()>`（is_deleted=0）
@@ -1060,7 +1068,7 @@ pub fn list_favorites() -> Result<Vec<(ClipboardFavorite, ClipboardHistoryRow)>>
 - `upsert_clipboard_history_sync(row: &HistoryRowJson) -> Result<()>`
 - `list_active_favorites_join_history() -> Result<Vec<(ClipboardFavorite, ClipboardHistoryRow)>>`
 
-- [ ] **Step 3: 加 Tauri 命令**
+- [x] **Step 3: 加 Tauri 命令**
 
 `crates/desktop/src/clipboard/clipboard_commands.rs`：
 
@@ -1079,69 +1087,94 @@ pub async fn list_clipboard_favorites() -> Result<Vec<FavoriteView>, String> {
 }
 ```
 
-- [ ] **Step 4: 前端 TS——id 类型 + favorite 相关类型**
+- [x] **Step 4: 前端 TS——id 类型 + favorite 相关类型**
 
 `ClipboardHistoryItem.id`: `number` → `string`
 新增 `FavoriteView` interface + favorite 列表组件
 
-- [ ] **Step 5: 跑全量测试**
+- [x] **Step 5: 跑全量测试**
 
 ```bash
 cargo test -p octopus-infra -p octopus-clipboard -p octopus-sync -p octopus-vault --lib 2>&1 | tail -10
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ---
 
 ## Task 10: 清库 + 全量编译 + e2e 验证
 
-- [ ] **Step 1: 删除老 DB（清表重建）**
+- [x] **Step 1: 删除老 DB（清表重建）**
 
 ```bash
 rm ~/.octopus/octopus.db*
 ```
 
-- [ ] **Step 2: cargo build 全量**
+- [x] **Step 2: cargo build 全量**
 
 ```bash
 cargo build -p octopus-infra -p octopus-clipboard -p octopus-sync -p octopus-vault 2>&1 | tail -10
 ```
 Expected: 0 error 0 warning
 
-- [ ] **Step 3: 全量 cargo test**
+- [x] **Step 3: 全量 cargo test**
 
 ```bash
 cargo test -p octopus-infra -p octopus-clipboard -p octopus-sync -p octopus-vault --lib 2>&1 | tail -10
 ```
 Expected: 全绿
 
-- [ ] **Step 4: tsc + vite build**
+- [x] **Step 4: tsc + vite build**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit && npm run build
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ---
 
 ## Spec Coverage
 
-| Spec Section | Task |
-|---|---|
-| §2 Schema 变更 | Task 1 |
-| §3 .sync/clipboard/ 目录布局 | Task 5 |
-| §3.1 clipboard.key | Task 4 |
-| §3.2 outline.json | Task 5 |
-| §3.3 favorites/<2hex>/<uuid>.json | Task 5 |
-| §4 数据流（收藏/取消/push/pull/展示/cleanup） | Task 9 + Task 6 + Task 7 |
-| §5 merge 逻辑 + tombstone 单向优先 | Task 7 |
-| §6 clipboard.key 管理 | Task 4 |
-| §7 crate 架构 + sync_now 接入 | Task 8 |
-| §8 影响面追踪（id UUID + FTS5） | Task 1 + Task 2 |
-| §9 测试策略 | Task 3/5/6/7 内嵌 |
-| §10 不变量 | Task 7 测试守护 |
+> 实现期间 Task 1+3 / Task 4+5 / Task 6+7+8 分别合并为单 commit。下表「实际 commit」列指最终落库的 commit 分组。
+
+| Spec Section | 计划 Task | 实际 commit |
+|---|---|---|
+| §2 Schema 变更（含 §2.2 favorites 表简化） | Task 1 + Task 3 | Task 1+3 合并 |
+| §3 .sync/clipboard/ 目录布局 | Task 5 | Task 4+5 合并 |
+| §3.1 clipboard.key | Task 4 | Task 4+5 合并 |
+| §3.2 outline.json | Task 5 | Task 4+5 合并 |
+| §3.3 favorites/<2hex>/<uuid>.json（含 tombstone 空 payload） | Task 5 | Task 4+5 合并 |
+| §4 数据流（收藏/取消/push/pull/展示/cleanup） | Task 9 + Task 6 + Task 7 | Task 6+7+8 合并 + Task 9 |
+| §5 merge 逻辑 + tombstone 单向优先 | Task 7 | Task 6+7+8 合并 |
+| §6 clipboard.key 管理（含内联 ClipboardKey） | Task 4 | Task 4+5 合并 |
+| §7 crate 架构 + sync_now 接入 | Task 8 | Task 6+7+8 合并 |
+| §8 影响面追踪（id UUID + FTS5） | Task 1 + Task 2 | Task 1+3 + Task 2 |
+| §9 测试策略 | Task 3/5/6/7 内嵌 | 同 |
+| §10 不变量 | Task 7 测试守护 | 同 |
+| §12 实现记录 | — | 实现后回写到 spec §1-§11 |
+
+---
+
+## 实际实现偏差（2026-08-05 实施记录）
+
+Task 1-10 全部完成（commit 已 push）。实施期间相对本 plan 的偏差：
+
+1. **favorites 表简化 6→4 字段**（Task 3）——spec §2.2 原设计 6 字段（id + history_id + is_deleted + created_at + updated_at + sync_md5 + UNIQUE + FK），实现期间简化到 4 字段：删除独立 `id`（history_id 直接作 PK）、删除 `created_at`（用 history 行的）、删除 `UNIQUE(history_id, is_deleted)`（PK 已唯一）、删除 `FOREIGN KEY`（cleanup 物理删 history 时 favorite tombstone 必须存活）。详见 spec §2.2 + §12.1。
+
+2. **`ClipboardKey` 内联到 sync crate**（Task 4）——spec §6 原设计复用 `octopus_vault::crypto::symmetric::SymmetricKey`，但实际依赖方向是 `sync ← vault`（vault 已依赖 sync），反向依赖形成循环（`sync → vault → sync`）。改为在 `crates/sync/src/clipboard.rs` 内联 `ClipboardKey`（AES-256-GCM，byte-compatible with vault `DerivedKey`）。详见 spec §6.3 + §12.2。
+
+3. **Tombstone 不写/不解密 payload**（Task 6/7）——spec §3.3 / §4.3 / §4.4 原设计 tombstone 也写完整 encrypted payload。实现期间发现：tombstone 内容无意义 + history 行可能已被 cleanup 物理删（JOIN 拿不到）。改为 export tombstone 写 `encrypted_payload=""`（空），pull tombstone 不解密、不还原 history（仅 INSERT/UPDATE favorite tombstone + 清残留 history.is_favorite）。详见 spec §3.3 + §4.4 + §12.4。
+
+4. **Desktop cascade：`ClipboardItem.id` i64→String rippled to 16 处**（Task 9）——`NewClipboardItem.id` 从 i64 改 String 后，前端 TS interface `ClipboardHistoryItem.id` 从 `number` 改 `string`，rippe 到 16 处文件（粘贴 / 删除 / 收藏 / OCR 入口 / 复制 / 编辑 / 截图入库 / 滚动截图入库 等所有走 id 的命令）。
+
+5. **v58→v59 迁移是 `bail!`（非自动迁移）**（Task 1）——`clipboard_history.id` 类型变更（INTEGER→TEXT）无法自动迁移（老数据是毫秒戳，UUID 主键语义不同）。`init_schema` 的 `58 =>` 分支直接 `bail!` 提示清库重建（用户已确认接受）。原 plan Task 1 Step 4 暗示常规升版本——实际是破坏性 bail。
+
+6. **Recording pipeline 仍用毫秒戳字符串**（Task 2 推迟项）——`crates/desktop/src/core/db_queue.rs::DbCommand.id` 仍是 `i64`（毫秒戳），`insert_transcription_at_id(&id.to_string(), ...)` 把毫秒戳当字符串写入 clipboard_history.id。本次仅改非录音路径（text/image/file/ocr）用 `Uuid::new_v4()`——录音流程与 voice id 强耦合（毫秒戳作 session 标识），改 UUID 影响面大，推迟到后续 follow-up。详见 spec §12.8。
+
+7. **Task 合并**（commit 粒度）——Task 1+3、Task 4+5、Task 6+7+8 分别合并为单 commit（共 3 个核心 commit + Task 2 + Task 9 + Task 10 验证）。理由：schema+CRUD、加密+文件格式、merge+export+sync_now 强耦合，分 commit 反复编译。
+
+---
 
 ---
 
