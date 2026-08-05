@@ -543,7 +543,7 @@ pub fn get_history(limit: u32, offset: u32, search: Option<String>) -> Result<Ve
 }
 
 #[tauri::command]
-pub fn delete_history(ids: Vec<i64>, app_handle: tauri::AppHandle) -> Result<usize, String> {
+pub fn delete_history(ids: Vec<String>, app_handle: tauri::AppHandle) -> Result<usize, String> {
     use tauri::Emitter;
     // 新 schema：transcriptions 已并入 clipboard_history，delete_transcriptions 直接删 voice 条目。
     let deleted = octopus_infra::db::delete_transcriptions(&ids).map_err(e2s)?;

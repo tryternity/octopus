@@ -21,7 +21,7 @@ use crate::commands::compact_editor_window::{create_compact_editor_window, WINDO
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenTabPayload {
-    pub item_id: i64,
+    pub item_id: String,
     pub source: String,
 }
 
@@ -34,9 +34,9 @@ pub struct OpenTabPayload {
 #[derive(Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TempTabPayload {
-    /// item_id 固定 0（temp tab 不写 DB）。emit 时补齐。
+    /// item_id 固定 "0"（temp tab 不写 DB）。emit 时补齐。
     #[serde(default)]
-    pub item_id: i64,
+    pub item_id: String,
     /// source 固定 "temp"。emit 时补齐。
     #[serde(default)]
     pub source: String,
@@ -69,7 +69,7 @@ pub struct TempTabPayload {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingTabFull {
-    pub item_id: i64,
+    pub item_id: String,
     pub source: String,
     pub item_type: String,
     pub text: String,
@@ -102,7 +102,7 @@ pub struct PendingTabFull {
 /// 待开 tab 队列（支持批量双开）。open 时 push，前端 mount take 全部。
 static PENDING_TABS: Mutex<Vec<PendingTabFull>> = Mutex::new(Vec::new());
 
-fn push_pending_tab(item_id: i64, source: &str) {
+fn push_pending_tab(item_id: &str, source: &str) {
     // 读取 DB 获取 itemType + text + 图片尺寸，一次合并到 pending（前端只需 1 次 IPC）
     let (item_type, text, img_w, img_h) = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, item_id)
@@ -119,7 +119,7 @@ fn push_pending_tab(item_id: i64, source: &str) {
     .unwrap_or_else(|| ("text".into(), String::new(), 0, 0));
 
     PENDING_TABS.lock().push(PendingTabFull {
-        item_id,
+        item_id: item_id.to_string(),
         source: source.to_string(),
         item_type,
         text,
@@ -139,7 +139,7 @@ fn push_pending_tab(item_id: i64, source: &str) {
 /// 在此固定（temp tab 不写 DB）。
 pub fn store_pending_temp(payload: TempTabPayload, source: &str) {
     PENDING_TABS.lock().push(PendingTabFull {
-        item_id: 0,
+        item_id: "0".to_string(),
         source: source.to_string(),
         item_type: "text".into(),
         text: payload.text,
@@ -155,7 +155,7 @@ pub fn store_pending_temp(payload: TempTabPayload, source: &str) {
 }
 
 /// 存 pending file tab（窗口首次创建时用）。source="file"，不查 DB，text 直接携带。
-pub fn store_pending_file(item_id: i64, text: String, file_path: String) {
+pub fn store_pending_file(item_id: String, text: String, file_path: String) {
     PENDING_TABS.lock().push(PendingTabFull {
         item_id,
         source: "file".into(),
@@ -212,7 +212,7 @@ fn take_pending_tabs() -> Vec<PendingTabFull> {
 /// 第二次单开会命中 `get_webview_window=Some` 走 emit 分支，但此时 WebView/React
 /// 尚未 mount → emit 被丢 + `push_pending_tab` 覆盖首个 tab → 第二个 tab 永久丢失
 /// （截图 OCR 双开图片+文本 tab 即此 bug）。批量调用只走一次 create/emit，无中间态。
-pub fn open_compact_editor_tabs(items: &[(i64, Option<&str>)], app_handle: &tauri::AppHandle) {
+pub fn open_compact_editor_tabs(items: &[(String, Option<&str>)], app_handle: &tauri::AppHandle) {
     if items.is_empty() {
         return;
     }
@@ -230,14 +230,14 @@ pub fn open_compact_editor_tabs(items: &[(i64, Option<&str>)], app_handle: &taur
                 let s = src.unwrap_or("clipboard").to_string();
                 let _ = window.emit(
                     "compact-editor://open-tab",
-                    OpenTabPayload { item_id: *id, source: s },
+                    OpenTabPayload { item_id: id.clone(), source: s },
                 );
             }
         } else {
             log::info!("[compact-editor] window exists but not mounted → push {} tab(s) to pending", items.len());
             for (id, src) in items {
                 let s = src.unwrap_or("clipboard");
-                push_pending_tab(*id, s);
+                push_pending_tab(id, s);
             }
         }
         let _ = window.show();
@@ -251,7 +251,7 @@ pub fn open_compact_editor_tabs(items: &[(i64, Option<&str>)], app_handle: &taur
         for (id, src) in items {
             let s = src.unwrap_or("clipboard");
             log::info!("[compact-editor] open_tab item_id={} source={}", id, s);
-            push_pending_tab(*id, s);
+            push_pending_tab(id, s);
         }
         let pending_data = PENDING_TABS.lock().first().cloned();
         create_compact_editor_window(app_handle, pending_data.as_ref());
@@ -261,7 +261,7 @@ pub fn open_compact_editor_tabs(items: &[(i64, Option<&str>)], app_handle: &taur
 /// 打开统一查看器并定位到某 tab（单开，前端命令）——转调批量版单元素。
 #[tauri::command]
 pub fn open_compact_editor_tab(
-    item_id: i64,
+    item_id: String,
     source: Option<String>,
     app_handle: tauri::AppHandle,
 ) {
@@ -277,9 +277,9 @@ pub fn get_pending_compact_tabs() -> Vec<PendingTabFull> {
 
 /// 读取剪贴板条目的文本内容（content）。前端据此新建文本 tab。
 #[tauri::command]
-pub async fn get_clipboard_item_text(item_id: i64) -> Result<String, String> {
+pub async fn get_clipboard_item_text(item_id: String) -> Result<String, String> {
     let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, item_id)
+        octopus_clipboard::store::get_item_by_id(conn, &item_id)
     })
     .map_err(e2s)?;
     item.map(|i| i.content).ok_or_else(|| "条目不存在".to_string())
@@ -287,9 +287,9 @@ pub async fn get_clipboard_item_text(item_id: i64) -> Result<String, String> {
 
 /// 读取剪贴板条目的类型（text/image/file）。前端据此决定渲染 textarea 还是 ImagePreview。
 #[tauri::command]
-pub async fn get_clipboard_item_type(item_id: i64) -> Result<String, String> {
+pub async fn get_clipboard_item_type(item_id: String) -> Result<String, String> {
     let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, item_id)
+        octopus_clipboard::store::get_item_by_id(conn, &item_id)
     })
     .map_err(e2s)?;
     item.map(|i| i.item_type.as_str().to_string())
@@ -299,9 +299,9 @@ pub async fn get_clipboard_item_type(item_id: i64) -> Result<String, String> {
 /// 读取语音识别记录的全文（只读 tab）。
 /// 转译记录已合并入 clipboard_history（item_type='voice'），从 content 列读全文。
 #[tauri::command]
-pub async fn get_transcription_text(id: i64) -> Result<String, String> {
+pub async fn get_transcription_text(id: String) -> Result<String, String> {
     let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, id)
+        octopus_clipboard::store::get_item_by_id(conn, &id)
     })
     .map_err(e2s)?;
     item.map(|i| i.content)
@@ -324,12 +324,12 @@ mod tests {
     fn pending_tabs_push_multiple_and_take_all() {
         let _ = take_pending_tabs(); // 清空残留
         // push_pending_tab 读 DB（测试环境无 DB，走 fallback "text"/""）
-        push_pending_tab(1, "clipboard");
-        push_pending_tab(2, "clipboard");
+        push_pending_tab("test-1", "clipboard");
+        push_pending_tab("test-2", "clipboard");
         let got = take_pending_tabs();
         assert_eq!(got.len(), 2, "push 两个应 take 出两个");
-        assert_eq!(got[0].item_id, 1);
-        assert_eq!(got[1].item_id, 2);
+        assert_eq!(got[0].item_id, "test-1");
+        assert_eq!(got[1].item_id, "test-2");
         assert!(take_pending_tabs().is_empty(), "take 后应清空");
     }
 }

@@ -105,11 +105,11 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
             })?;
 
             if let Some(id) = existing {
-                octopus_infra::db::with_db(|conn| store::touch_created_at(conn, id))?;
+                octopus_infra::db::with_db(|conn| store::touch_created_at(conn, &id))?;
             } else {
                 octopus_infra::db::with_db(|conn| {
                     store::insert_clipboard_item(conn, &store::NewClipboardItem {
-                        id: store::chrono_millis(),
+                        id: uuid::Uuid::new_v4().to_string(),
                         item_type: ItemType::File,
                         content: String::new(),
                         ref_data: Some(paths_json),
@@ -149,7 +149,7 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
             })?;
 
             if let Some(id) = existing {
-                octopus_infra::db::with_db(|conn| store::touch_created_at(conn, id))?;
+                octopus_infra::db::with_db(|conn| store::touch_created_at(conn, &id))?;
             } else {
                 // 编码 WebP 无损 + 缩略图：复用上面的 RGBA（不再二次解码 PNG）
                 let dyn_img = ::image::DynamicImage::ImageRgba8(
@@ -167,7 +167,7 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                 // 存 clipboard_history 条目
                 octopus_infra::db::with_db(|conn| {
                     store::insert_clipboard_item(conn, &store::NewClipboardItem {
-                        id: store::chrono_millis(),
+                        id: uuid::Uuid::new_v4().to_string(),
                         item_type: ItemType::Image,
                         content: String::new(),
                         ref_data: Some(hash.clone()),
@@ -203,11 +203,11 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
             })?;
 
             if let Some(id) = existing {
-                octopus_infra::db::with_db(|conn| store::touch_created_at(conn, id))?;
+                octopus_infra::db::with_db(|conn| store::touch_created_at(conn, &id))?;
             } else {
                 octopus_infra::db::with_db(|conn| {
                     store::insert_clipboard_item(conn, &store::NewClipboardItem {
-                        id: store::chrono_millis(),
+                        id: uuid::Uuid::new_v4().to_string(),
                         item_type: ItemType::Text,
                         content: text.clone(),
                         ref_data: None,

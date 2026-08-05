@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS app_config (
 -- 统一存储 text/voice/ocr/image/file，吞并原 transcriptions 表。
 -- content + ref_data + meta_info 三层数据模型。
 CREATE TABLE IF NOT EXISTS clipboard_history (
-    id              INTEGER PRIMARY KEY,       -- 毫秒戳
+    id              TEXT PRIMARY KEY,          -- UUID v4（2026-08-05 改：原 INTEGER 毫秒戳 → TEXT UUID，作跨设备 sync 锚点）
     item_type       TEXT    NOT NULL,          -- 'text' | 'voice' | 'ocr' | 'image' | 'file'
     content         TEXT    NOT NULL DEFAULT '',  -- voice/ocr/text: 文本全文; image/file: ""
     ref_data        TEXT,                      -- image: blob_hash; file: JSON 路径数组; voice/ocr/text: NULL
@@ -86,6 +86,19 @@ CREATE INDEX IF NOT EXISTS idx_clip_favorite  ON clipboard_history(is_favorite);
 CREATE INDEX IF NOT EXISTS idx_clip_ref       ON clipboard_history(ref_data);
 CREATE INDEX IF NOT EXISTS idx_clip_deleted   ON clipboard_history(is_deleted) WHERE is_deleted = 1;
 
+-- ── 剪贴板收藏（clipboard_favorites）──────────────────────────────────────────
+-- 极简 4 字段——favorites 是 clipboard_history 的附属表，history_id 直接作主键 + 同步锚点。
+-- 内容真相在 clipboard_history（created_at 用 history 行自己的，不重复存）。
+-- is_deleted：0=active，>0=epoch 秒（tombstone，跨设备软删意图传播）。
+-- sync_md5：history 内容指纹（md5）——history 行内容可编辑，需指纹检测变化驱动 sync diff。
+CREATE TABLE IF NOT EXISTS clipboard_favorites (
+    history_id      TEXT PRIMARY KEY,           -- = clipboard_history.id（一对一，无独立 id）
+    is_deleted      INTEGER NOT NULL DEFAULT 0, -- 0=active，>0=epoch 秒（tombstone）
+    updated_at      TEXT NOT NULL,              -- sync 时间戳比较用
+    sync_md5        TEXT                        -- md5 内容指纹（检测 history 行编辑）
+);
+CREATE INDEX IF NOT EXISTS idx_clip_fav_active ON clipboard_favorites(is_deleted) WHERE is_deleted = 0;
+
 -- ── 图片缩略图存储（image_data）─────────────────────────────────────────────
 -- 原图改文件系统存储（~/Documents/octopus/screens/<hash>.jpg，2026-07-29），
 -- DB 只存缩略图（240×240，几 KB）+ 尺寸元数据，引用计数回收。
@@ -99,24 +112,25 @@ CREATE TABLE IF NOT EXISTS image_data (
 
 -- FTS5 全文索引（trigram tokenizer 支持 CJK 子串匹配）
 -- 索引 content 列：voice/ocr/text 有文本被索引，image/file content="" 自动跳过
+-- 2026-08-05：id 从 INTEGER 改 TEXT(UUID) 后，FTS5 不能用 id 作 content_rowid（必须整数）。
+-- 改为用 SQLite 隐式 rowid（自增整数），trigger 用 NEW.rowid / OLD.rowid。
 CREATE VIRTUAL TABLE IF NOT EXISTS clipboard_history_fts USING fts5(
     content,
     content='clipboard_history',
-    content_rowid='id',
     tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS clip_fts_ai AFTER INSERT ON clipboard_history BEGIN
-    INSERT INTO clipboard_history_fts(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO clipboard_history_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 CREATE TRIGGER IF NOT EXISTS clip_fts_ad AFTER DELETE ON clipboard_history BEGIN
     INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, content)
-    VALUES('delete', old.id, old.content);
+    VALUES('delete', old.rowid, old.content);
 END;
 CREATE TRIGGER IF NOT EXISTS clip_fts_au AFTER UPDATE OF content ON clipboard_history BEGIN
     INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, content)
-    VALUES('delete', old.id, old.content);
-    INSERT INTO clipboard_history_fts(rowid, content) VALUES (new.id, new.content);
+    VALUES('delete', old.rowid, old.content);
+    INSERT INTO clipboard_history_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 
 -- ── Action Bar 菜单项（两级菜单，自引用 parent_id）──────────────────────────

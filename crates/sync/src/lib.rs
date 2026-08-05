@@ -11,6 +11,7 @@
 //! - **vault crate 提供**：vault 业务数据文件格式（MetaFile / CipherFile / FolderFile）
 //!   + cipher/folder 的 md5 指纹 + vault sync engine
 //! - **hotword 模块（本 crate）**：热词同步（两级 outline + HotwordSetMeta / HotwordWordFile + engine）
+//! - **clipboard 模块（本 crate）**：剪贴板收藏同步（clipboard.key AES-256-GCM 加密 + outline + favorites/<2hex>/<uuid>.json）。clip 加密原语内联在本 crate（vault 已依赖 sync，不能反向依赖 vault）
 //!
 //! ## 跨 crate 依赖方向
 //!
@@ -22,6 +23,7 @@
 //!
 //! 详见 spec：`docs/superpowers/specs/2026-07-21-vault-git-sync-design.md`
 
+pub mod clipboard;
 pub mod error;
 pub mod git;
 pub mod hotword;

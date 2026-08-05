@@ -66,7 +66,7 @@ function ClipboardItemRow({
   const handleFavorite = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await invoke("toggle_clipboard_favorite", { id: item.id });
+      await invoke("toggle_clipboard_favorite", { historyId: item.id });
       onChanged();
     } catch (e) {
       console.error(e);

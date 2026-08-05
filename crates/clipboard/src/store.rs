@@ -5,7 +5,7 @@ use crate::model::*;
 
 // ── INSERT ──
 
-pub fn insert_clipboard_item(conn: &Connection, item: &NewClipboardItem) -> Result<i64> {
+pub fn insert_clipboard_item(conn: &Connection, item: &NewClipboardItem) -> Result<String> {
     let meta_json = item.meta_info.as_ref().map(|m| serde_json::to_string(m).unwrap_or_default());
     let (content, ref_data) = match &item.item_type {
         ItemType::Image => (String::new(), item.ref_data.clone()),
@@ -20,11 +20,11 @@ pub fn insert_clipboard_item(conn: &Connection, item: &NewClipboardItem) -> Resu
             item.is_rich, item.created_at, item.has_thumbnail.unwrap_or(0),
         ],
     )?;
-    Ok(item.id)
+    Ok(item.id.clone())
 }
 
 #[allow(dead_code)]
-pub(crate) fn insert_asr_item(conn: &Connection, text: &str, engine: &str, model: &str, segments: Option<&str>) -> Result<i64> {
+pub(crate) fn insert_asr_item(conn: &Connection, text: &str, engine: &str, model: &str, segments: Option<&str>) -> Result<String> {
     let meta = MetaInfo {
         engine: Some(engine.to_string()),
         model: Some(model.to_string()),
@@ -41,7 +41,7 @@ pub(crate) fn insert_asr_item(conn: &Connection, text: &str, engine: &str, model
     })
 }
 
-pub fn insert_ocr_item(conn: &Connection, text: &str, engine: &str, model: &str) -> Result<i64> {
+pub fn insert_ocr_item(conn: &Connection, text: &str, engine: &str, model: &str) -> Result<String> {
     let meta = MetaInfo {
         engine: Some(engine.to_string()),
         model: Some(model.to_string()),
@@ -60,27 +60,27 @@ pub fn insert_ocr_item(conn: &Connection, text: &str, engine: &str, model: &str)
 
 // ── DEDUP ──
 
-pub fn find_by_content_hash(conn: &Connection, hash: &str) -> Result<Option<i64>> {
+pub fn find_by_content_hash(conn: &Connection, hash: &str) -> Result<Option<String>> {
     let mut stmt = conn.prepare("SELECT id FROM clipboard_history WHERE ref_data = ? AND item_type = 'image' LIMIT 1")?;
-    match stmt.query_row(params![hash], |r| r.get::<_, i64>(0)) {
+    match stmt.query_row(params![hash], |r| r.get::<_, String>(0)) {
         Ok(id) => Ok(Some(id)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
 }
 
-pub fn find_by_text(conn: &Connection, text: &str, item_type: ItemType) -> Result<Option<i64>> {
+pub fn find_by_text(conn: &Connection, text: &str, item_type: ItemType) -> Result<Option<String>> {
     let mut stmt = conn.prepare(
         "SELECT id FROM clipboard_history WHERE content = ? AND item_type = ? LIMIT 1"
     )?;
-    match stmt.query_row(params![text, item_type.as_str()], |r| r.get::<_, i64>(0)) {
+    match stmt.query_row(params![text, item_type.as_str()], |r| r.get::<_, String>(0)) {
         Ok(id) => Ok(Some(id)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
 }
 
-pub fn touch_created_at(conn: &Connection, id: i64) -> Result<()> {
+pub fn touch_created_at(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("UPDATE clipboard_history SET created_at = ? WHERE id = ?", params![iso_now(), id])?;
     Ok(())
 }
@@ -110,7 +110,7 @@ pub fn query_history(conn: &Connection, filter: &QueryFilter) -> Result<Vec<Clip
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-pub fn get_item_by_id(conn: &Connection, id: i64) -> Result<Option<ClipboardItem>> {
+pub fn get_item_by_id(conn: &Connection, id: &str) -> Result<Option<ClipboardItem>> {
     let sql = format!("SELECT {} FROM clipboard_history WHERE id = ?", SELECT_COLS);
     let mut stmt = conn.prepare(&sql)?;
     match stmt.query_row(params![id], row_to_item) {
@@ -229,19 +229,19 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ClipboardItem> {
 
 // ── UPDATE ──
 
-pub fn toggle_favorite(conn: &Connection, id: i64) -> Result<()> {
+pub fn toggle_favorite(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("UPDATE clipboard_history SET is_favorite = CASE is_favorite WHEN 0 THEN 1 ELSE 0 END WHERE id = ?", params![id])?;
     Ok(())
 }
 
-pub fn update_content(conn: &Connection, id: i64, text: &str) -> Result<()> {
+pub fn update_content(conn: &Connection, id: &str, text: &str) -> Result<()> {
     conn.execute("UPDATE clipboard_history SET content = ? WHERE id = ?", params![text, id])?;
     Ok(())
 }
 
 /// 更新 voice 条目的 segments（润色/编辑后段模型更新）
 #[allow(dead_code)]
-pub(crate) fn update_segments(conn: &Connection, id: i64, segments: &str) -> Result<()> {
+pub(crate) fn update_segments(conn: &Connection, id: &str, segments: &str) -> Result<()> {
     conn.execute("UPDATE clipboard_history SET segments = ? WHERE id = ?", params![segments, id])?;
     Ok(())
 }
@@ -304,7 +304,7 @@ const VOICE_SOFT_DELETE_MIN_LEN: usize = 5;
 /// 判断 id 是否为 voice 且 content 足够长（值得软删保留作 bigram 语料）。
 /// voice 且 content 长度 >= VOICE_SOFT_DELETE_MIN_LEN → true（软删）；
 /// voice 但太短 / 非 voice / 查不到 → false（物理删）。
-fn is_voice_worth_keeping(conn: &Connection, id: i64) -> bool {
+fn is_voice_worth_keeping(conn: &Connection, id: &str) -> bool {
     conn.query_row(
         "SELECT item_type, length(content) FROM clipboard_history WHERE id = ?",
         params![id],
@@ -317,7 +317,7 @@ fn is_voice_worth_keeping(conn: &Connection, id: i64) -> bool {
 }
 
 /// 默认删除：voice 且够长→软删（进回收站 + enforce 上限）；voice 太短/其他→物理删。
-pub fn delete_item(conn: &Connection, id: i64) -> Result<()> {
+pub fn delete_item(conn: &Connection, id: &str) -> Result<()> {
     if is_voice_worth_keeping(conn, id) {
         soft_delete(conn, id)?;
         enforce_voice_trash_limit(conn, VOICE_TRASH_MAX)?;
@@ -329,11 +329,11 @@ pub fn delete_item(conn: &Connection, id: i64) -> Result<()> {
 
 /// 批量默认删除：voice 且够长→软删；voice 太短/其他→物理删。返回受影响行数。
 /// voice 批量软删后统一 enforce 一次上限（而非每条 enforce，减少 DB 往返）。
-pub fn delete_items(conn: &Connection, ids: &[i64]) -> Result<usize> {
+pub fn delete_items(conn: &Connection, ids: &[String]) -> Result<usize> {
     if ids.is_empty() { return Ok(0); }
     let mut affected = 0;
     let mut had_voice = false;
-    for &id in ids {
+    for id in ids {
         if is_voice_worth_keeping(conn, id) {
             affected += soft_delete(conn, id)? as usize;
             had_voice = true;
@@ -348,7 +348,7 @@ pub fn delete_items(conn: &Connection, ids: &[i64]) -> Result<usize> {
 }
 
 /// 软删单条：UPDATE is_deleted = 1（仅对未删的行生效）。
-pub fn soft_delete(conn: &Connection, id: i64) -> Result<usize> {
+pub fn soft_delete(conn: &Connection, id: &str) -> Result<usize> {
     let rows = conn.execute(
         "UPDATE clipboard_history SET is_deleted = 1 WHERE id = ? AND is_deleted = 0",
         params![id],
@@ -357,7 +357,7 @@ pub fn soft_delete(conn: &Connection, id: i64) -> Result<usize> {
 }
 
 /// 永久删单条：物理 DELETE + 图片 blob 清理。
-pub fn permanent_delete_item(conn: &Connection, id: i64) -> Result<usize> {
+pub fn permanent_delete_item(conn: &Connection, id: &str) -> Result<usize> {
     let ref_data: Option<String> = conn.query_row(
         "SELECT ref_data FROM clipboard_history WHERE id = ?", params![id],
         |r| r.get::<_, Option<String>>(0),
@@ -537,7 +537,7 @@ pub(crate) fn count_all(conn: &Connection) -> Result<i64> {
 // ── 构造新条目的辅助结构 ──
 
 pub struct NewClipboardItem {
-    pub id: i64,
+    pub id: String,
     pub item_type: ItemType,
     pub content: String,
     pub ref_data: Option<String>,
@@ -554,18 +554,15 @@ pub fn chrono_millis() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-fn insert_with_unique_id<F>(mut insert_fn: F) -> Result<i64>
-where F: FnMut(i64) -> rusqlite::Result<usize>,
+/// 生成唯一 UUID 主键并插入：主键冲突（极小概率）时换一个 UUID 重试。
+fn insert_with_unique_id<F>(mut insert_fn: F) -> Result<String>
+where F: FnMut(&str) -> rusqlite::Result<usize>,
 {
-    let base = chrono_millis();
-    let mut id = base;
     loop {
-        match insert_fn(id) {
+        let id = uuid::Uuid::new_v4().to_string();
+        match insert_fn(&id) {
             Ok(_) => return Ok(id),
-            Err(rusqlite::Error::SqliteFailure(err, _)) if err.code == rusqlite::ErrorCode::ConstraintViolation => {
-                id += 1;
-                if id > base + 1000 { anyhow::bail!("insert_with_unique_id: 主键冲突，1000 次自增重试仍失败"); }
-            }
+            Err(rusqlite::Error::SqliteFailure(err, _)) if err.code == rusqlite::ErrorCode::ConstraintViolation => continue,
             Err(e) => return Err(e.into()),
         }
     }
@@ -617,7 +614,7 @@ mod tests {
     fn test_insert_and_query_text() {
         let conn = open_test_db();
         insert_clipboard_item(&conn, &NewClipboardItem {
-            id: 1000, item_type: ItemType::Text, content: "hello world".into(),
+            id: "test-1000".into(), item_type: ItemType::Text, content: "hello world".into(),
             ref_data: None, meta_info: None, created_at: iso_now(),
             has_thumbnail: None, is_rich: false,
         }).unwrap();
@@ -642,9 +639,9 @@ mod tests {
     #[test]
     fn test_update_content() {
         let conn = open_test_db();
-        let id = 1700;
+        let id = "test-1700";
         insert_clipboard_item(&conn, &NewClipboardItem {
-            id, item_type: ItemType::Text, content: "原始".into(),
+            id: id.into(), item_type: ItemType::Text, content: "原始".into(),
             ref_data: None, meta_info: None, created_at: iso_now(),
             has_thumbnail: None, is_rich: false,
         }).unwrap();
@@ -657,7 +654,7 @@ mod tests {
     fn test_filter_by_type() {
         let conn = open_test_db();
         insert_clipboard_item(&conn, &NewClipboardItem {
-            id: 1, item_type: ItemType::Text, content: "text1".into(),
+            id: "test-1".into(), item_type: ItemType::Text, content: "text1".into(),
             ref_data: None, meta_info: None, created_at: iso_now(),
             has_thumbnail: None, is_rich: false,
         }).unwrap();
@@ -672,21 +669,21 @@ mod tests {
     fn clear_history_by_filter_all_keep_favorite() {
         let conn = open_test_db();
         // 插 3 条文本（NewClipboardItem 无 is_favorite 字段，默认非收藏）
-        for id in [1i64, 2, 3] {
+        for id in ["test-1", "test-2", "test-3"] {
             insert_clipboard_item(&conn, &NewClipboardItem {
-                id, item_type: ItemType::Text, content: format!("c{}", id),
+                id: id.into(), item_type: ItemType::Text, content: format!("c{}", id),
                 ref_data: None, meta_info: None, created_at: iso_now(),
                 has_thumbnail: None, is_rich: false,
             }).unwrap();
         }
-        toggle_favorite(&conn, 3).unwrap(); // id=3 设为收藏
+        toggle_favorite(&conn, "test-3").unwrap(); // id="test-3" 设为收藏
         let deleted = clear_history_by_filter(&conn, "all", true).unwrap();
         assert_eq!(deleted, 2);
         let remaining = query_history(&conn, &QueryFilter {
             filter: "all".into(), search: None, page: 1, size: 10,
         }).unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].id, 3);
+        assert_eq!(remaining[0].id, "test-3");
         assert!(remaining[0].is_favorite);
     }
 
@@ -694,12 +691,12 @@ mod tests {
     fn clear_history_by_filter_text_only() {
         let conn = open_test_db();
         insert_clipboard_item(&conn, &NewClipboardItem {
-            id: 1, item_type: ItemType::Text, content: "text".into(),
+            id: "test-1".into(), item_type: ItemType::Text, content: "text".into(),
             ref_data: None, meta_info: None, created_at: iso_now(),
             has_thumbnail: None, is_rich: false,
         }).unwrap();
         insert_clipboard_item(&conn, &NewClipboardItem {
-            id: 2, item_type: ItemType::Image, content: String::new(),
+            id: "test-2".into(), item_type: ItemType::Image, content: String::new(),
             ref_data: Some("hash2".into()), meta_info: None, created_at: iso_now(),
             has_thumbnail: Some(1), is_rich: false,
         }).unwrap();
@@ -716,9 +713,9 @@ mod tests {
     #[test]
     fn clear_history_by_filter_favorite_deletes_zero() {
         let conn = open_test_db();
-        for id in [1i64, 2] {
+        for id in ["test-1", "test-2"] {
             insert_clipboard_item(&conn, &NewClipboardItem {
-                id, item_type: ItemType::Text, content: format!("c{}", id),
+                id: id.into(), item_type: ItemType::Text, content: format!("c{}", id),
                 ref_data: None, meta_info: None, created_at: iso_now(),
                 has_thumbnail: None, is_rich: false,
             }).unwrap();
@@ -736,11 +733,11 @@ mod tests {
     fn clear_history_by_filter_keep_false_all() {
         let conn = open_test_db();
         insert_clipboard_item(&conn, &NewClipboardItem {
-            id: 1, item_type: ItemType::Text, content: "c1".into(),
+            id: "test-1".into(), item_type: ItemType::Text, content: "c1".into(),
             ref_data: None, meta_info: None, created_at: iso_now(),
             has_thumbnail: None, is_rich: false,
         }).unwrap();
-        toggle_favorite(&conn, 1).unwrap(); // 收藏条目 keep=false 时也应删
+        toggle_favorite(&conn, "test-1").unwrap(); // 收藏条目 keep=false 时也应删
         let deleted = clear_history_by_filter(&conn, "all", false).unwrap();
         assert_eq!(deleted, 1);
         let remaining = query_history(&conn, &QueryFilter {
@@ -753,7 +750,7 @@ mod tests {
     fn clear_history_by_filter_image_cleans_blob() {
         let conn = open_test_db();
         insert_clipboard_item(&conn, &NewClipboardItem {
-            id: 1, item_type: ItemType::Image, content: String::new(),
+            id: "test-1".into(), item_type: ItemType::Image, content: String::new(),
             ref_data: Some("hash1".into()), meta_info: None, created_at: iso_now(),
             has_thumbnail: Some(1), is_rich: false,
         }).unwrap();
@@ -771,7 +768,7 @@ mod tests {
 
     /// 插入一条 voice，返回其 id。created_at 用 epoch 控制时间顺序（老化测试用）。
     /// content 自动填充至 >= VOICE_SOFT_DELETE_MIN_LEN（测试软删逻辑时不受短语音物理删干扰）。
-    fn insert_voice_at(conn: &Connection, id: i64, text: &str, age_seconds: u64) {
+    fn insert_voice_at(conn: &Connection, id: &str, text: &str, age_seconds: u64) {
         use std::time::{SystemTime, UNIX_EPOCH};
         let secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -802,11 +799,11 @@ mod tests {
     #[test]
     fn delete_voice_soft_deletes() {
         let conn = open_test_db();
-        insert_voice_at(&conn, 100, "语音A", 0);
-        delete_item(&conn, 100).unwrap();
+        insert_voice_at(&conn, "test-100", "语音A", 0);
+        delete_item(&conn, "test-100").unwrap();
         // 行还在，is_deleted=1（软删进回收站）
         let deleted_flag: i64 = conn.query_row(
-            "SELECT is_deleted FROM clipboard_history WHERE id = 100", [], |r| r.get(0),
+            "SELECT is_deleted FROM clipboard_history WHERE id = 'test-100'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(deleted_flag, 1);
     }
@@ -818,13 +815,13 @@ mod tests {
         // 直接插入短 content（不经 insert_voice_at padding）
         conn.execute(
             "INSERT INTO clipboard_history (id, item_type, content, created_at, is_rich)
-             VALUES (300, 'voice', '嗯', '2026-01-01 00:00:00', 0)",
+             VALUES ('test-300', 'voice', '嗯', '2026-01-01 00:00:00', 0)",
             [],
         ).unwrap();
-        delete_item(&conn, 300).unwrap();
+        delete_item(&conn, "test-300").unwrap();
         // 物理删——行不存在（不是 is_deleted=1 软删）
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM clipboard_history WHERE id = 300", [], |r| r.get(0),
+            "SELECT COUNT(*) FROM clipboard_history WHERE id = 'test-300'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(count, 0, "短 voice 应物理删，不应软删保留");
     }
@@ -833,14 +830,14 @@ mod tests {
     fn delete_text_physical() {
         let conn = open_test_db();
         insert_clipboard_item(&conn, &NewClipboardItem {
-            id: 200, item_type: ItemType::Text, content: "文本".into(),
+            id: "test-200".into(), item_type: ItemType::Text, content: "文本".into(),
             ref_data: None, meta_info: None, created_at: iso_now(),
             has_thumbnail: None, is_rich: false,
         }).unwrap();
-        delete_item(&conn, 200).unwrap();
+        delete_item(&conn, "test-200").unwrap();
         // 物理删——行不存在
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM clipboard_history WHERE id = 200", [], |r| r.get(0),
+            "SELECT COUNT(*) FROM clipboard_history WHERE id = 'test-200'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(count, 0);
     }
@@ -849,15 +846,15 @@ mod tests {
     fn delete_image_physical_with_blob_cleanup() {
         let conn = open_test_db();
         insert_clipboard_item(&conn, &NewClipboardItem {
-            id: 300, item_type: ItemType::Image, content: String::new(),
+            id: "test-300".into(), item_type: ItemType::Image, content: String::new(),
             ref_data: Some("hash300".into()), meta_info: None, created_at: iso_now(),
             has_thumbnail: Some(1), is_rich: false,
         }).unwrap();
         insert_image_data(&conn, "hash300", &[1], &[2], 10, 10).unwrap();
-        delete_item(&conn, 300).unwrap();
+        delete_item(&conn, "test-300").unwrap();
         // 行删 + blob 清理（回归：image 仍物理删）
         let row_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM clipboard_history WHERE id = 300", [], |r| r.get(0),
+            "SELECT COUNT(*) FROM clipboard_history WHERE id = 'test-300'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(row_count, 0);
         let blob_count: i64 = conn.query_row(
@@ -873,26 +870,26 @@ mod tests {
         // 再软删 1 条 → 最老 1 条被物理删，回收站恰好 max 条。
         let conn = open_test_db();
         for i in 0..max {
-            insert_voice_at(&conn, 1000 + i, &format!("旧{}", i), (max - i) as u64);
+            insert_voice_at(&conn, &format!("test-1000-{}", i), &format!("旧{}", i), (max - i) as u64);
         }
         // 先把它们标为已软删（模拟回收站现状）
         conn.execute("UPDATE clipboard_history SET is_deleted = 1", []).unwrap();
         assert_eq!(voice_trash_count(&conn), max);
 
         // 插一条新 voice 并软删（触发 enforce）
-        insert_voice_at(&conn, 2000, "新删", 0);
-        delete_item(&conn, 2000).unwrap();
+        insert_voice_at(&conn, "test-2000", "新删", 0);
+        delete_item(&conn, "test-2000").unwrap();
 
         // INV-1：回收站恰好 max 条
         assert_eq!(voice_trash_count(&conn), max);
-        // 最老的（id=1000, age=100s）被物理删
+        // 最老的（id="test-1000-0", age=100s）被物理删
         let oldest: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM clipboard_history WHERE id = 1000", [], |r| r.get(0),
+            "SELECT COUNT(*) FROM clipboard_history WHERE id = 'test-1000-0'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(oldest, 0, "最老的 voice 应被物理删");
         // 新删的还在回收站
         let newest: i64 = conn.query_row(
-            "SELECT is_deleted FROM clipboard_history WHERE id = 2000", [], |r| r.get(0),
+            "SELECT is_deleted FROM clipboard_history WHERE id = 'test-2000'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(newest, 1);
     }
@@ -902,11 +899,11 @@ mod tests {
         // 回收站 < 100 条 → enforce 不删任何行
         let conn = open_test_db();
         for i in 0..50 {
-            insert_voice_at(&conn, 1000 + i, &format!("v{}", i), 50 - i as u64);
+            insert_voice_at(&conn, &format!("test-1000-{}", i), &format!("v{}", i), 50 - i as u64);
         }
         conn.execute("UPDATE clipboard_history SET is_deleted = 1", []).unwrap();
-        insert_voice_at(&conn, 2000, "触发", 0);
-        delete_item(&conn, 2000).unwrap();
+        insert_voice_at(&conn, "test-2000", "触发", 0);
+        delete_item(&conn, "test-2000").unwrap();
         // 51 条全在（50 旧 + 1 新），未被 enforce 删除
         assert_eq!(voice_trash_count(&conn), 51);
     }
@@ -916,32 +913,32 @@ mod tests {
         // 清空历史：voice 软删，text/image 物理删
         let conn = open_test_db();
         insert_clipboard_item(&conn, &NewClipboardItem {
-            id: 1, item_type: ItemType::Text, content: "t".into(),
+            id: "test-1".into(), item_type: ItemType::Text, content: "t".into(),
             ref_data: None, meta_info: None, created_at: iso_now(),
             has_thumbnail: None, is_rich: false,
         }).unwrap();
         insert_clipboard_item(&conn, &NewClipboardItem {
-            id: 2, item_type: ItemType::Image, content: String::new(),
+            id: "test-2".into(), item_type: ItemType::Image, content: String::new(),
             ref_data: Some("h2".into()), meta_info: None, created_at: iso_now(),
             has_thumbnail: Some(1), is_rich: false,
         }).unwrap();
         insert_image_data(&conn, "h2", &[1], &[2], 10, 10).unwrap();
-        insert_voice_at(&conn, 3, "语音", 0);
+        insert_voice_at(&conn, "test-3", "语音", 0);
 
         clear_history(&conn, false).unwrap();
 
         // text/image 物理删（行不在）
         let text_row: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM clipboard_history WHERE id = 1", [], |r| r.get(0),
+            "SELECT COUNT(*) FROM clipboard_history WHERE id = 'test-1'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(text_row, 0);
         let image_row: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM clipboard_history WHERE id = 2", [], |r| r.get(0),
+            "SELECT COUNT(*) FROM clipboard_history WHERE id = 'test-2'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(image_row, 0);
         // voice 软删（行在，is_deleted=1）
         let voice_flag: i64 = conn.query_row(
-            "SELECT is_deleted FROM clipboard_history WHERE id = 3", [], |r| r.get(0),
+            "SELECT is_deleted FROM clipboard_history WHERE id = 'test-3'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(voice_flag, 1);
     }
@@ -952,23 +949,24 @@ mod tests {
         let extra = 5; // 超 max 多少条
         // 清空历史时若 voice 进回收站后超 max → enforce 物理删最老至恰好 max
         let conn = open_test_db();
-        // max+extra 条 voice（id=1000 最新 age=0 ... 最老 age 最大）
+        // max+extra 条 voice（id=test-1000-0 最新 age=0 ... 最老 age 最大）
         for i in 0..max + extra {
-            insert_voice_at(&conn, 1000 + i, &format!("v{}", i), i as u64 * 2);
+            insert_voice_at(&conn, &format!("test-1000-{}", i), &format!("v{}", i), i as u64 * 2);
         }
         clear_history(&conn, false).unwrap();
         // 全部进回收站后 max+extra > max，enforce 删 extra 条最老的 → 恰好 max
         assert_eq!(voice_trash_count(&conn), max);
         // 最老 extra 条被物理删
-        for id in (1000 + max)..(1000 + max + extra) {
+        for i in max..(max + extra) {
+            let id = format!("test-1000-{}", i);
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM clipboard_history WHERE id = ?", params![id], |r| r.get(0),
             ).unwrap();
-            assert_eq!(count, 0, "id={} 应被 enforce 物理删", id);
+            assert_eq!(count, 0, "i={} 应被 enforce 物理删", i);
         }
-        // 第 extra+1 老（id=1000+max-1）保留在回收站
+        // 第 extra+1 老（test-1000-{max-1}）保留在回收站
         let kept: i64 = conn.query_row(
-            "SELECT is_deleted FROM clipboard_history WHERE id = ?", params![1000 + max - 1], |r| r.get(0),
+            "SELECT is_deleted FROM clipboard_history WHERE id = ?", params![format!("test-1000-{}", max - 1)], |r| r.get(0),
         ).unwrap();
         assert_eq!(kept, 1);
     }

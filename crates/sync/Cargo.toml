@@ -7,6 +7,16 @@ edition = "2021"
 # 项目内依赖
 octopus-infra = { path = "../infra" }
 
+# clipboard.key AES-256-GCM 加密——与 vault DerivedKey 同 v1: 格式（byte-compatible）。
+# sync 不能依赖 vault（vault 已依赖 sync，会形成循环），故在此 crate 内联对称加密原语。
+# 与 store::write_atomically 同模式（vault private 跨 crate 拿不到 → sync 内联）。
+aes-gcm = { version = "0.10", features = ["std"] }
+rand = "0.8"
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
+data-encoding = "2"
+# clipboard.key hex 编码（32B 随机 key 存文件）
+hex = "0.4"
+
 # hash 工具（不是安全用途——纯内容指纹 diff）
 sha2.workspace = true
 # md5 用于 sync 增量同步的内容指纹（不是安全用途——纯 diff 工具）
