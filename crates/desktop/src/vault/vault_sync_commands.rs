@@ -109,21 +109,40 @@ pub fn vault_sync_list_remotes() -> Result<Vec<(String, octopus_sync::error::Saf
 }
 
 /// 从指定 remote URL clone 仓库（B 机首次同步）。
+// 第十八轮 P1：改 async + spawn_blocking——clone 是 git 重操作（网络 + 文件系统，
+// 可能几秒到几十秒）。原同步命令占 Tauri IPC 线程池线程。对齐 vault_sync_now :60 范式。
 #[tauri::command]
-pub fn vault_sync_clone(remote_url: String) -> Result<(), String> {
-    vault_sync::clone_from(&remote_url).map_err(sync_err_to_string)
+pub async fn vault_sync_clone(remote_url: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        vault_sync::clone_from(&remote_url)
+    })
+    .await
+    .map_err(|e| format!("clone 线程异常: {}", e))?
+    .map_err(sync_err_to_string)
 }
 
 /// stamp 冲突解决：以远程为准（本地 meta 被污染时用）。
 /// 用户输入远程 vault 的主密码验证后，用远程 meta 覆盖本地。
+// 第十八轮 P1：同 vault_sync_clone，resolve 含 git merge + 解密重操作。
 #[tauri::command]
-pub fn vault_sync_resolve_remote(password: String) -> Result<(), String> {
-    vault_sync::resolve_with_remote(Zeroizing::new(password)).map_err(sync_err_to_string)
+pub async fn vault_sync_resolve_remote(password: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        vault_sync::resolve_with_remote(Zeroizing::new(password))
+    })
+    .await
+    .map_err(|e| format!("resolve 线程异常: {}", e))?
+    .map_err(sync_err_to_string)
 }
 
 /// stamp 冲突解决：以本地为准（远程 meta 被污染时用）。
 /// 用户输入本地 vault 的主密码验证后，把本地 meta push 覆盖远程。
+// 第十八轮 P1：同 resolve_remote，resolve 含 git push + 加密重操作。
 #[tauri::command]
-pub fn vault_sync_resolve_local(password: String) -> Result<(), String> {
-    vault_sync::resolve_with_local(Zeroizing::new(password)).map_err(sync_err_to_string)
+pub async fn vault_sync_resolve_local(password: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        vault_sync::resolve_with_local(Zeroizing::new(password))
+    })
+    .await
+    .map_err(|e| format!("resolve 线程异常: {}", e))?
+    .map_err(sync_err_to_string)
 }

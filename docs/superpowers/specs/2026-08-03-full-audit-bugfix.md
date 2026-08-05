@@ -404,6 +404,7 @@
 | 15 | （本轮，待 commit） | P3-8 漏修 Transducer + P2-A cloud translate spawn_blocking + P2-B 粘贴安全 + P3-D/E/F/G/H + 前端 9 处 cleanup |
 | 16 | `adf236ca` | P2-1 离线 zipformer chunk_shift .max(1) + P2-2 paraformer usize 下溢 + P3-5 注释微瑕 ×2 |
 | 17 | `e83928d4` | P1-1 FTS5 JOIN c.rowid + P1-2 tombstone pull 远程时间戳 + P2-2 paraformer enc_feat + P3-1/2 context_size + P3-9 注释 |
+| 18 | `8ef36db0` | P1 vault_sync_clone/resolve spawn_blocking + P2 import_hotwords BOM + P2 reindex_apps spawn_blocking |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -840,3 +841,35 @@ React 18+ 不再警告 setState-on-unmount，但不符合项目既有范式（Re
 
 - `cargo build` clipboard/asr-local/infra/sync —— 0 error 0 warning。
 - `cargo test`：clipboard 24（+1 P1-1）/ asr-local 170 / infra 183 / sync 145 全过。
+
+## 21. 第十八轮审查修复（2026-08-05，1 P1 + 2 P2）
+
+第十八轮审计。报告概要：P1 ×1（vault_sync_clone/resolve git 重操作漏 spawn_blocking）+ P2 ×3（import_hotwords BOM + autotype/reindex_apps 阻塞）+ P3 ×10。核实后修 P1 + 2 P2（import_hotwords BOM + reindex_apps），autotype 涉及焦点/keystroke 时序复杂留技术债。
+
+### P1. vault_sync_clone/resolve git 重操作漏 spawn_blocking 🔴
+
+**根因**：`vault_sync_commands.rs` 的 `vault_sync_clone`（:113）、`vault_sync_resolve_remote`（:120）、`vault_sync_resolve_local`（:140）都是同步 Tauri 命令，直接跑 git clone/merge/push（网络 + 文件系统重操作，几秒到几十秒），占 Tauri IPC 线程。对比同文件 `vault_sync_now`（:56）正确用 `async + spawn_blocking`。范式不一致。
+
+**修复**：3 个命令改 `async + spawn_blocking + await`（返回结果，非 fire-and-forget）。前端 invoke 自动适配（async 命令对前端透明——await 即可）。
+
+### P2. import_hotwords BOM 污染
+
+**根因**：`sync/hotword.rs:695 read_to_string` + `:697 serde_json::from_str`——外部编辑器（Windows Notepad）可能给 meta.json 加 UTF-8 BOM（`\u{FEFF}`），serde_json 不容忍 BOM 前缀 → 解析失败。export 路径不加 BOM，但用户手动编辑或 Windows 工具可能加。
+
+**修复**：`content.trim_start_matches('\u{FEFF}')` strip BOM。
+
+### P2. reindex_apps 阻塞
+
+**根因**：`search_commands.rs:93 reindex_apps` 同步命令，`refresh_app_index` 扫文件系统可能几秒，占 IPC 线程。
+
+**修复**：改 `async + spawn_blocking`。
+
+### 文档化不修
+
+- **autotype 阻塞**：涉及焦点/keystroke 时序（osascript + CGEvent + sleep），async 化会打乱时序。留技术债（当前占 IPC 线程但功能正常）。
+- **P3 ×10**：报告概要未给详细证据，多为形式问题（注释漂移 / 无背压 channel / 冗余 IO 等），留技术债。
+
+### 验证
+
+- `cargo build` desktop(cloud,vault) —— 0 error 0 warning。
+- `cargo test`：sync / desktop 520 全过。
