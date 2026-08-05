@@ -392,3 +392,38 @@ vault 和 clipboard 的 tombstone_retention_secs 从 0 改为建议值（如 30 
 5. vault is_deleted 统一为 i64（schema v60）
 6. vault/clipboard 获得 GC 能力（超期 tombstone 清理）
 7. 现有 .sync 文件兼容（旧 bool 格式可反序列化）
+
+---
+
+## 12. 实施记录（review plan 回写，2026-08-05）
+
+### 12.1 实际偏差
+
+| 偏差点 | spec 原设计 | 实际实现 | 原因 |
+|---|---|---|---|
+| tombstone read_file 容错 | `?` 冒泡 | `.unwrap_or(false)` 容错 | 对齐现有 hotword/clipboard 行为（读文件失败视为非 tombstone 继续判定），保持零行为变更 |
+| export_all 双层 noop | 各实体 export_all 调全量重建 | hotword set/word + vault folder/cipher 的 export_all 都 noop，外层统一调一次 | 双层 merge 不能在第一层末尾 export（会清掉第二层文件）。clipboard 单层不受影响 |
+| clipboard tombstone 超期语义 | 未提及超期 tombstone 的单向优先 | retention>0 时超期 tombstone（>30天）不再单向优先 pull | 与 hotword pipeline 语义一致，配合 GC 收敛。未超期 tombstone 行为与原实现完全一致 |
+| vault GC 分工 | 未明确 cipher/folder GC 分工 | VaultFolderEntity 的 purge 清 cipher+folder 两表，VaultCipherEntity noop | 避免重复清理（对称 hotword set GC 连带清 word） |
+| push_or_skip 辅助函数 | spec §4.1 隐含但未列出 | 实现为独立函数（返 bool 供 md5 冲突分支决定是否记 conflicts） | merge_three_way 内 3 处 push 调用共用 |
+| pull_favorite/push_favorite 签名 | 未提及签名变更 | 改用 thread-local key（不再接 `&ClipboardKey` 参数） | trait method 无法传 key 参数，thread-local 传递 |
+
+### 12.2 实际行数
+
+| 文件 | 变化 |
+|---|---|
+| `sync/src/pipeline.rs`（新建） | +375 行（trait + merge_three_way + pull_entity + 辅助） |
+| `sync/src/clipboard.rs` | +217 净行（impl + GC + merge 重写，原 110 行 merge 替换为 7 行） |
+| `sync/src/hotword.rs` | +365/-238（set+word impl + merge 重写） |
+| `vault/src/sync/engine.rs` | +435/-216（cipher/folder impl + merge_vault 重写） |
+| `infra/src/db/vault.rs` | +127（GC + is_deleted i64 + 迁移） |
+| `infra/src/db/clipboard_favorite.rs` | +127（GC） |
+
+### 12.3 验证结果（2026-08-05）
+
+- `cargo build --workspace`：✅ 0 error 0 warning
+- `cargo test --workspace`：✅ **1777 passed**, 0 failed
+- `npx tsc --noEmit`：✅ exit 0
+- 所有 vault merge 回归测试通过（pull/push/conflict/tombstone/stamp/复活/收敛）
+- 所有 hotword merge 回归测试通过（set+word 双层 + GC + 复活 + 软删传播）
+- 所有 clipboard merge 回归测试通过（tombstone 单向优先 + GC）
