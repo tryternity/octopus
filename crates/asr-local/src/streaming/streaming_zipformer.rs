@@ -530,7 +530,7 @@ impl StreamingZipformerTransducer {
 
         let metadata = encoder_session.metadata()?;
         // 第十五轮 P3-8 补漏：Transducer 的 chunk_len/shift 也需 .max(1)（对齐 CTC StreamingZipformer :57-66）。
-        // 该结构体 :273/:285 有 frame_idx += self.chunk_shift while 循环，metadata=0 时死循环。
+        // Transducer 的外层 chunk 推进循环 frame_idx += self.chunk_shift（:1009），metadata=0 时死循环。
         let chunk_len: usize = metadata
             .custom("T")
             .and_then(|s| s.parse::<usize>().ok())

@@ -402,6 +402,7 @@
 | 13 | `f9a25a20` | P2-1 open_settings 不 show + P3-1 SyncPanel resolve syncing 回滚 + P3-3 record serde 序列化失败 reset_to_idle + P3-2 文档化 |
 | 14 | `71e7e10f` | P1-1 Result setInterval ref + P1-2 invoke_handler cfg gate + P2-1 vault serde default + P2-2 merge 删除守卫 + P2-3 rename_folder + P2-4 fps/codec + P3-3/4/5/6/7/8/9 |
 | 15 | （本轮，待 commit） | P3-8 漏修 Transducer + P2-A cloud translate spawn_blocking + P2-B 粘贴安全 + P3-D/E/F/G/H + 前端 9 处 cleanup |
+| 16 | （本轮，待 commit） | P2-1 离线 zipformer chunk_shift .max(1) + P2-2 paraformer usize 下溢 + P3-5 注释微瑕 ×2 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -748,3 +749,46 @@ React 18+ 不再警告 setState-on-unmount，但不符合项目既有范式（Re
 - `cargo build` translation/desktop(cloud,vault)/asr-local/asr-cloud/dlp/infra/clipboard —— 0 error 0 warning。
 - `cargo test`：translation 20 / asr-cloud 58 / infra 183 / desktop 520 全过。
 - tsc exit 0。
+
+## 19. 第十六轮审查修复（2026-08-05，2 P2 + 2 注释微瑕）
+
+第十六轮 4 切面全新核查（错误处理 / unsafe·FFI / 前端 / 并发·async·锁）。报告 2 P2 + 5 P3 + 1 驳回。核实结论：2 P2 修（asr-local metadata 边界同型漏修尾巴）+ 2 注释微瑕修 + P3-1/2/3/4 文档化（形式问题当前不触发）+ 驳回正确（coordinator channel FIFO 串行）。
+
+### P2-1. 离线 Zipformer chunk_shift 缺 .max(1) → metadata=0 死循环 🟠
+
+**根因**：`engines/zipformer.rs` 离线 CTC（:475-482）+ Transducer（:762-769）的 `chunk_len`/`chunk_shift` `unwrap_or(77|64)` 无 `.max(1)`。异常模型（metadata decode_chunk_len="0"）parse 成功得 0，unwrap_or 不生效 → `frame_idx += 0`（CTC :635 / Transducer :1009）永不推进 → 死循环（CPU 100% 卡死，非 panic 非 Result，无法兜底）。
+
+**同型疏忽链**：第十四轮 P3-8 修流式 CTC → 第十五轮补流式 Transducer → 第十六轮发现**离线** CTC + Transducer 仍漏。三处同型（流式/离线 × CTC/Transducer）的 metadata=0 死循环修复至此全覆盖。
+
+**修复**：离线 CTC + Transducer 两处构造补 `.max(1)`，对齐流式 streaming_zipformer.rs 模式。
+
+### P2-2. streaming_paraformer cache_time usize 下溢 → 启动 panic 🟠
+
+**根因**：`streaming/streaming_paraformer.rs:102` `decoder_kernel_size_str.parse().unwrap_or(11)` —— 异常模型（decoder_kernel_size="0"）parse 成功得 0 → `:104 cache_time = 0 - 1` usize 下溢 panic。new() 时崩溃（模型加载即炸）。`:264` reset() 复算 `self.decoder_kernel_size - 1` 同样下溢。
+
+**修复**：构造端 `.max(1)` 保证 ≥1；reset 端 `saturating_sub(1)` 双保险。
+
+### P3-5. 注释微瑕 ×2
+
+- `streaming_zipformer.rs:534` 注释引用 `:273/:285`（CTC 的循环），Transducer 自己在 `:1009`。修正行号。
+- `db/mod.rs:81` 注释「直接标 v40」，代码实际用 `CURRENT_SCHEMA_VERSION`（第十五轮 P3-G 改）。修正。
+
+### 文档化不修（P3，形式问题当前不触发）
+
+- **P3-1** `shared.rs:19-24` NSScreen 裸指针无 autoreleasepool——主线程同步、primitive 返回、引用立即丢弃，不悬空泄漏。
+- **P3-2** `pin_window.rs:17-21` SendWindow unsafe Send/Sync 无运行时主线程守护——当前两访问点都在主线程（MainThreadMarker / cleanup selector），缺运行时断言，未来新增非主线程访问会 UB。
+- **P3-3** `context.rs:364-373` NSPasteboard worker 线程无 autoreleasepool——单例 + primitive 读，无泄漏。
+- **P3-4** `Screenshot scrollElapsed cleanup`——独立窗口 unmount=JS 引擎销毁，interval 自动清除，无害。
+
+### 驳回（报告正确驳回）
+
+- **polishNow / commit_edit fire-and-forget 竞态**：coordinator `loop { rx.recv() }`（:386-387）单线程串行消费，channel FIFO 保证 commit_edit 先落库再 polish_now，无竞态。
+
+### 并发切面结论（本轮补足）
+
+9 维度全量扫描（tokio 嵌套 panic / spawn 上下文 / 锁跨 await / 死锁 / channel / spawn_blocking / Send·Sync 主线程亲和 / reader task 生命周期 / Once·Lazy），置信度 ≥80 的并发 bug 为零。设计严谨（block_on 复用全局 runtime / spawn_blocking 全覆盖 / with_db ReentrantMutex + 回归测试）。
+
+### 验证
+
+- `cargo build` asr-local/infra —— 0 error 0 warning。
+- `cargo test`：asr-local 170 / infra 188 全过。
