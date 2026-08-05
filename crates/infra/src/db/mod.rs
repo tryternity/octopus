@@ -253,10 +253,10 @@ where
 /// schema 变更直接改 db.sql + 升 `user_version`，旧库一律清库重建（`rm ~/.octopus/octopus.db*`）。
 ///
 /// 分支：
-/// - `v == 0`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → v55
-/// - `v == 55`：最新，no-op
-/// - `v == 54`：数据迁移——asr_correct 强制翻 true（热词纠错开关，2026-08-01）
-/// - `v != 0 && v < 54`：旧版本库——不支持自动迁移，bail 提示清库
+/// - `v == 0`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → CURRENT_SCHEMA_VERSION
+/// - `v == CURRENT_SCHEMA_VERSION`：最新，no-op
+/// - `54 <= v < CURRENT`：数据迁移链（while 循环逐版本升级）
+/// - `v < 54`：旧版本库——不支持自动迁移，bail 提示清库
 ///
 /// schema 变更流程：改 db.sql + 升 `user_version`（init_schema 末尾 + db.sql 注释）。
 fn init_schema(conn: &Connection) -> Result<()> {

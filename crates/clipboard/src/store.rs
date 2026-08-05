@@ -135,7 +135,7 @@ fn query_with_search(conn: &Connection, search: &str, extra_where: &str, limit: 
     let phrase = format!("\"{}\"", search.replace('"', "\"\""));
     let sql = format!(
         "SELECT c.id, c.item_type, c.content, c.ref_data, c.meta_info, c.is_favorite, c.is_rich, c.created_at, c.has_thumbnail, c.segments, c.is_deleted
-         FROM clipboard_history_fts f JOIN clipboard_history c ON c.id = f.rowid
+         FROM clipboard_history_fts f JOIN clipboard_history c ON c.rowid = f.rowid
          WHERE f.content MATCH ?{} ORDER BY c.created_at DESC, c.id DESC LIMIT ? OFFSET ?",
         if extra_where.is_empty() { String::new() } else { format!(" AND {}", extra_where) }
     );
@@ -172,9 +172,9 @@ fn count_with_search(conn: &Connection, search: &str, extra_where: &str) -> Resu
     }
     let phrase = format!("\"{}\"", search.replace('"', "\"\""));
     let sql = if extra_where.is_empty() {
-        "SELECT COUNT(*) FROM clipboard_history_fts f JOIN clipboard_history c ON c.id = f.rowid WHERE f.content MATCH ?".to_string()
+        "SELECT COUNT(*) FROM clipboard_history_fts f JOIN clipboard_history c ON c.rowid = f.rowid WHERE f.content MATCH ?".to_string()
     } else {
-        format!("SELECT COUNT(*) FROM clipboard_history_fts f JOIN clipboard_history c ON c.id = f.rowid WHERE f.content MATCH ? AND {}", extra_where)
+        format!("SELECT COUNT(*) FROM clipboard_history_fts f JOIN clipboard_history c ON c.rowid = f.rowid WHERE f.content MATCH ? AND {}", extra_where)
     };
     Ok(conn.query_row(&sql, params![phrase], |r| r.get(0))?)
 }
@@ -969,5 +969,38 @@ mod tests {
             "SELECT is_deleted FROM clipboard_history WHERE id = ?", params![format!("test-1000-{}", max - 1)], |r| r.get(0),
         ).unwrap();
         assert_eq!(kept, 1);
+    }
+
+    /// 第十七轮 P1-1 回归：FTS5 JOIN 必须用 c.rowid = f.rowid（不是 c.id = f.rowid）。
+    /// schema v59 把 clipboard_history.id 从 INTEGER 改 TEXT(UUID)，FTS5 trigger 用隐式 rowid，
+    /// 旧 JOIN c.id = f.rowid 因 TEXT≠INTEGER 类型不匹配 → 搜索恒空。
+    #[test]
+    fn test_fts5_search_finds_inserted_content() {
+        let conn = open_test_db();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: "uuid-ftstest-001".into(), item_type: ItemType::Text,
+            content: "测试中文搜索功能".into(),
+            ref_data: None, meta_info: None, created_at: iso_now(),
+            has_thumbnail: None, is_rich: false,
+        }).unwrap();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: "uuid-ftstest-002".into(), item_type: ItemType::Text,
+            content: "另一个不相干的条目".into(),
+            ref_data: None, meta_info: None, created_at: iso_now(),
+            has_thumbnail: None, is_rich: false,
+        }).unwrap();
+
+        // ≥3 字符走 FTS5 MATCH 路径——修复前恒返回空，修复后应找到 1 条
+        let result = query_history(&conn, &QueryFilter {
+            filter: "all".into(), search: Some("中文搜索".into()), page: 1, size: 10,
+        }).unwrap();
+        assert_eq!(result.len(), 1, "P1-1: FTS5 搜索应找到「测试中文搜索功能」");
+        assert_eq!(result[0].content, "测试中文搜索功能");
+
+        // count 也走 FTS5 MATCH
+        let count = count_history(&conn, &QueryFilter {
+            filter: "all".into(), search: Some("中文搜索".into()), page: 1, size: 10,
+        }).unwrap();
+        assert_eq!(count, 1, "P1-1: FTS5 count 应为 1");
     }
 }

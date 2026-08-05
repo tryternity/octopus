@@ -184,7 +184,8 @@ impl crate::engine::OfflineAsrEngine for ParaformerEngine {
             anyhow::bail!("Unexpected encoder output rank: {:?}", enc_dim);
         }
         let enc_len_val = enc_dim[1];
-        let enc_feat = enc_dim[2];
+        // 第十七轮 P2-2：.max(1) 防 0/0 panic——异常模型 shape[2]=0 时 :236 除零。
+        let enc_feat = enc_dim[2].max(1);
 
         let enc_tensor =
             ndarray::Array3::from_shape_vec((1, enc_len_val, enc_feat), enc_data.to_vec())?;

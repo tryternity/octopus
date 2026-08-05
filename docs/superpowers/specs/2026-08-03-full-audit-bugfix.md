@@ -402,7 +402,8 @@
 | 13 | `f9a25a20` | P2-1 open_settings 不 show + P3-1 SyncPanel resolve syncing 回滚 + P3-3 record serde 序列化失败 reset_to_idle + P3-2 文档化 |
 | 14 | `71e7e10f` | P1-1 Result setInterval ref + P1-2 invoke_handler cfg gate + P2-1 vault serde default + P2-2 merge 删除守卫 + P2-3 rename_folder + P2-4 fps/codec + P3-3/4/5/6/7/8/9 |
 | 15 | （本轮，待 commit） | P3-8 漏修 Transducer + P2-A cloud translate spawn_blocking + P2-B 粘贴安全 + P3-D/E/F/G/H + 前端 9 处 cleanup |
-| 16 | （本轮，待 commit） | P2-1 离线 zipformer chunk_shift .max(1) + P2-2 paraformer usize 下溢 + P3-5 注释微瑕 ×2 |
+| 16 | `adf236ca` | P2-1 离线 zipformer chunk_shift .max(1) + P2-2 paraformer usize 下溢 + P3-5 注释微瑕 ×2 |
+| 17 | `e83928d4` | P1-1 FTS5 JOIN c.rowid + P1-2 tombstone pull 远程时间戳 + P2-2 paraformer enc_feat + P3-1/2 context_size + P3-9 注释 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -792,3 +793,50 @@ React 18+ 不再警告 setState-on-unmount，但不符合项目既有范式（Re
 
 - `cargo build` asr-local/infra —— 0 error 0 warning。
 - `cargo test`：asr-local 170 / infra 188 全过。
+
+## 20. 第十七轮审查修复（2026-08-05，2 P1 + 1 P2 + 3 P3）
+
+第十七轮 4 模块全新核查（剪贴板同步 / OCR·stitch / DB schema 迁移 / ASR·翻译引擎数值边界）。报告 2 P1 + 2 P2 + 11 P3。本轮修 2 P1 + 1 P2（P2-2）+ 3 P3（context_size/注释），P2-1（Transcript.id 迁移收尾）工作量大切技术债留后续，其余 P3 文档化。
+
+### P1-1. FTS5 搜索 JOIN 列写错 → ≥3 字符搜索彻底失效 🔴
+
+**根因**：schema v59 把 `clipboard_history.id` 从 INTEGER 改 TEXT(UUID)，FTS5 trigger 改用隐式 rowid（schema.sql:115-118）。但 `store.rs:138/175/177` 的 FTS5 JOIN 仍写 `c.id = f.rowid`——c.id 是 TEXT(UUID)，f.rowid 是 INTEGER，类型不匹配 → JOIN 永远不相等 → ≥3 字符 FTS5 搜索恒返回空。对比 `transcription.rs:227` 正确写 `c.rowid IN (SELECT rowid FROM ...)`。
+
+**修复**：3 处 `c.id = f.rowid` → `c.rowid = f.rowid`。回归测试 `test_fts5_search_finds_inserted_content`（插 2 条 + 搜索中文 4 字符，断言找到 1 条）。
+
+### P1-2. 剪贴板 tombstone pull 丢远程时间戳 → 多设备 ping-pong 🔴
+
+**根因**：`sync/clipboard.rs:630` tombstone「DB active → 软删」分支调 `soft_delete_favorite`（SQL 硬编 `datetime('now')` 本地时间），而 None(:639)/active(:662) 两分支用 `upsert_favorite_sync` 带 `file.updated_at.clone()`（远程时间）。pull 后 DB.updated_at = 本地 now → export 写回 outline → 多设备交替 sync 每台改 outline → git 永不收敛。vault 第十一轮 P1 同型重现。
+
+**修复**：tombstone 分支改用 `upsert_favorite_sync` 传 `file.updated_at.clone()`（与另两分支对称）。
+
+### P2-2. 离线 Paraformer enc_feat=0 触发 0/0 panic 🟠
+
+**根因**：`engines/paraformer.rs:187 let enc_feat = enc_dim[2]` 无 `.max(1)`。异常模型 shape[2]=0 → `:236 acoustic_embedding.len() / enc_feat` 除零 panic（num_tokens==0 守卫在除法后）。
+
+**修复**：`.max(1)`（对齐 chunk_len/shift/kernel_size 同型纪律）。
+
+### P3-1/P3-2. Zipformer Transducer context_size 缺 .max(1)
+
+离线 `engines/zipformer.rs:820` + 流式 `streaming_zipformer.rs:555` 的 `context_size unwrap_or(2)` 无 `.max(1)`。两处补 `.max(1)`（同型疏忽尾巴——chunk_len/shift 已修，context_size 漏）。
+
+### P3-9. init_schema 注释 v55 → CURRENT_SCHEMA_VERSION
+
+`db/mod.rs:255-259` 注释说「v==55 最新」，实际 `CURRENT_SCHEMA_VERSION=59`。修正。
+
+### 文档化不修 / 留后续
+
+- **P2-1** Transcript.id i64→String（schema v59 迁移收尾）：工作量大（Transcript + DbCommand + cancel_discard 反推时长），是迁移半完成技术债非紧急 bug。留后续。
+- **P3-3** capx finalize footer content_tail：需开发者核实产品意图（注释↔实现不符）。
+- **P3-4** streaming_paraformer decoder_num_blocks 越界：metadata 异常增大时 outputs 索引越界，建议 .get() Option 取出。
+- **P3-5** 离线 paraformer encoder_output_size：有空守卫早退不 panic。
+- **P3-6** history_row_md5 漏算 4 字段：仅这些字段变化不触发 sync。
+- **P3-7** push_favorite 冗余 IO：阶段 1/2 写入被阶段 3 export 覆盖。
+- **P3-8** pull_favorite 多 SQL 跨 with_db 无事务。
+- **P3-10** v57→v58 PRAGMA user_version 未入事务（迁移幂等可恢复）。
+- **P3-11** db_queue unbounded mpsc 无背压。
+
+### 验证
+
+- `cargo build` clipboard/asr-local/infra/sync —— 0 error 0 warning。
+- `cargo test`：clipboard 24（+1 P1-1）/ asr-local 170 / infra 183 / sync 145 全过。
