@@ -294,6 +294,10 @@ pub async fn import_hotwords(
         };
         let path = path.as_path().ok_or("无效路径")?;
         let content = std::fs::read_to_string(path).map_err(e2s)?;
+        // 第十九轮 BOM 补修：strip UTF-8 BOM（\u{FEFF}）——Windows 编辑器可能给 txt 加 BOM，
+        // split_whitespace 不把 BOM 当分隔符 → 首词含 BOM 永不进索引。
+        // （第十八轮修了 sync/hotword.rs meta.json 路径，本路径漏修——报告 BOM 错位纠正）
+        let content = content.trim_start_matches('\u{FEFF}');
         // 按空白分割后过滤纯数字 token（`词 DF值` 格式的 DF 列被丢弃，只留词语）。
         // 支持两种导入格式：纯词语（每行一个或多个）/ 词语+DF（第二列数字自动滤掉）。
         let words: Vec<String> = content

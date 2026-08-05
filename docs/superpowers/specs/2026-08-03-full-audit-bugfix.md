@@ -405,6 +405,7 @@
 | 16 | `adf236ca` | P2-1 离线 zipformer chunk_shift .max(1) + P2-2 paraformer usize 下溢 + P3-5 注释微瑕 ×2 |
 | 17 | `e83928d4` | P1-1 FTS5 JOIN c.rowid + P1-2 tombstone pull 远程时间戳 + P2-2 paraformer enc_feat + P3-1/2 context_size + P3-9 注释 |
 | 18 | `8ef36db0` | P1 vault_sync_clone/resolve spawn_blocking + P2 import_hotwords BOM + P2 reindex_apps spawn_blocking |
+| 19 | `d0378d46` | P2-1 itemId 崩溃 + P2-2 MarkdownPreview listener + BOM 错位补修 + config fail-soft |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -873,3 +874,42 @@ React 18+ 不再警告 setState-on-unmount，但不符合项目既有范式（Re
 
 - `cargo build` desktop(cloud,vault) —— 0 error 0 warning。
 - `cargo test`：sync / desktop 520 全过。
+
+## 22. 第十九轮审查修复（2026-08-05，4 P2 修 + capture P2 留后续）
+
+第十九轮全新核查（4 模块 + 2 自查模块）。报告 8 P2 + ~13 P3。本轮修 4 P2（CompactEditor 崩溃 + listener 失效 + BOM 错位补修 + config fail-soft），capture 4 P2 需更多核实留后续。
+
+### P2-1. prompt_files itemId i64→string（渲染崩溃）🟠
+
+**根因**：`prompt_files.rs:111 "itemId": item_id`（JSON number），`:122` pending 路径用 `item_id.to_string()`（string）。前端 `tab.itemId.slice(-5)` 对 number TypeError → React 子树崩溃 → CompactEditor 白屏。Tauri emit 绕过 TS 类型检查。
+
+**修复**：`:111` 改 `item_id.to_string()`（与 :122 对称）。
+
+### P2-2. MarkdownPreview 条件渲染切换致 click listener 失效 🟠
+
+**根因**：第十二轮 P1-2 修了「空内容 mount 时 articleRef=null」，但两分支条件渲染是不同 DOM 节点 → 分支切换（空→非空）时旧 div 卸载 listener 失效，新 div 无 listener（effect deps `[]` 不重跑）。
+
+**修复**：合并为单容器（始终渲染同一 div），空内容用条件子元素（CSS 切换 article / 提示 span），listener 始终绑同一个 div。
+
+### BOM 错位补修（第十八轮遗漏）
+
+**根因**：第十八轮报的 BOM 问题是 `hotword_commands.rs:296`（用户从 txt 导入，split_whitespace 首词污染），开发修了 `sync/hotword.rs:697`（meta.json 路径）——两个不同函数。`hotword_commands.rs:296` 未修。
+
+**修复**：`:296 read_to_string` 后 `trim_start_matches('\u{FEFF}')` strip BOM。
+
+### P2. config migrate_yaml_to_db fail-soft 🟠
+
+**根因**：`:546 serde_yaml::from_str(&text)?` + `:551 serde_yaml::from_value(value)?`——yaml 解析失败（BOM / 类型不匹配 / typo）→ `?` bail → init_schema 失败 → 应用启动卡死，yaml 不改名下次重复失败。用户按 rm DB 提示反把自己锁死（yaml 仍在）。
+
+**修复**：fail-soft——解析失败时 rename `.yaml.broken` + log warning，让 init_schema 继续走 seed 默认值。含 BOM strip。
+
+### 文档化不修 / 留后续
+
+- **capture P2 ×4**（area.rs monitor 匹配单位错位 / scroll.rs ? 降级 / clone×2 / 双份内存）：需更多核实 monitor_x 单位 + xcap 接口，留后续。
+- **P3 ×13**：跨 4 模块性能/边界/设计选择。
+
+### 验证
+
+- `cargo build` desktop(cloud,vault)/infra —— 0 error 0 warning。
+- `cargo test`：infra / desktop 520 全过。
+- tsc exit 0。

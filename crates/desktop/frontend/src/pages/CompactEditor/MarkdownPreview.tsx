@@ -36,7 +36,13 @@ export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
     articleRef.current.innerHTML = html;
   }, [html]);
 
-  // 全局事件委托：链接拦截 + 代码块复制（仅挂载一次，html 变化不重绑）
+  // 第十二轮 P1-2 + 第十九轮 P2-2：click listener 委托到单容器 div。
+  // 第十二轮修了「空内容 mount 时 articleRef=null listener 不注册」，但两分支条件渲染
+  // 是不同 DOM 节点 → 分支切换时旧 div 卸载 listener 失效，新 div 无 listener。
+  // 第十九轮：合并为单容器（始终渲染同一 div），空内容用 CSS 隐藏 article 显示提示。
+  const isEmpty = source.trim().length === 0;
+
+  // 全局事件委托：链接拦截 + 代码块复制（仅挂载一次——单容器保证 div 不变）
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -73,17 +79,17 @@ export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
     return () => container.removeEventListener("click", onClick);
   }, []);
 
-  if (source.trim().length === 0) {
-    return (
-      <div ref={containerRef} className="md-preview flex-1 flex items-center justify-center">
-        <span className="text-sm text-muted-foreground">{t("editor.previewEmpty")}</span>
-      </div>
-    );
-  }
-
+  // 单容器：空内容显示提示（CSS 隐藏 article），非空显示 article（CSS 隐藏提示）。
+  // div 始终同一个 → listener 不随内容变化失效。
   return (
     <div ref={containerRef} className="md-preview flex-1 overflow-auto p-5" style={{ userSelect: "text", fontSize: fontSize ? `${fontSize}px` : undefined }}>
-      <article ref={articleRef} className="md-prose" />
+      {isEmpty ? (
+        <div className="flex w-full h-full items-center justify-center">
+          <span className="text-sm text-muted-foreground">{t("editor.previewEmpty")}</span>
+        </div>
+      ) : (
+        <article ref={articleRef} className="md-prose" />
+      )}
     </div>
   );
 }
