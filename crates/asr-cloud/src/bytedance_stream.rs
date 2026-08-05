@@ -36,12 +36,10 @@ use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{
-    connect_async,
     tungstenite::client::IntoClientRequest,
     tungstenite::http::HeaderName,
     tungstenite::http::HeaderValue,
@@ -49,6 +47,7 @@ use tokio_tungstenite::{
 };
 
 use crate::cloud_types::{CloudStreamHandle, PcmFrame, StreamEvent};
+use crate::session_loop::{HandleOutcome, WsSessionHandler, run_ws_session_loop};
 
 /// 固定 endpoint（火山引擎大模型 ASR 双向流式优化版）。
 const ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
@@ -102,7 +101,7 @@ pub fn open(
 /// `endpoint` 参数化（P2-1 WS mock）：prod 调用传真 `const ENDPOINT`（`wss://...`），
 /// 测试用 in-process server 时传 `ws://127.0.0.1:{port}`（见 `test_ws_server`）。
 async fn run_bytedance_session(
-    mut pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
+    pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
     result_tx: mpsc::UnboundedSender<StreamEvent>,
     endpoint: &str,
     api_key: String,
@@ -110,220 +109,225 @@ async fn run_bytedance_session(
     language: String,
     pre_roll_samples: Vec<f32>,
 ) -> Result<()> {
-    // 1. 建连（带火山引擎特有的握手 headers）
-    let mut request = endpoint.into_client_request()
-        .context("bytedance WS 请求构造失败")?;
-    let headers = request.headers_mut();
-    headers.insert(
-        HeaderName::from_static("x-api-key"),
-        HeaderValue::from_str(&api_key).context("bytedance X-Api-Key 构造失败")?,
-    );
-    headers.insert(
-        HeaderName::from_static("x-api-resource-id"),
-        HeaderValue::from_str(&resource_id)
-            .context("bytedance X-Api-Resource-Id 构造失败")?,
-    );
-    let request_id = uuid::Uuid::new_v4().to_string();
-    headers.insert(
-        HeaderName::from_static("x-api-request-id"),
-        HeaderValue::from_str(&request_id)
-            .context("bytedance X-Api-Request-Id 构造失败")?,
-    );
-    headers.insert(
-        HeaderName::from_static("x-api-sequence"),
-        HeaderValue::from_static("-1"),
-    );
+    let handler = BytedanceHandler {
+        api_key,
+        resource_id,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        lang: map_language(&language),
+        last_text: None,
+    };
+    run_ws_session_loop(pcm_rx, result_tx, endpoint, &pre_roll_samples, handler).await
+}
 
-    let (mut ws, _resp) = tokio::time::timeout(
-        std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
-        connect_async(request),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("bytedance WS connect timeout"))?
-    .with_context(|| format!("bytedance WS 连接失败: {}", endpoint))?;
-
-    // 2. 发 FULL_CLIENT_REQUEST（初始 JSON config，gzip 压缩）
-    let lang = if language.is_empty() || language == "auto" || language == "zh" {
+/// bytedance 语言映射（`zh`/`auto`/空 → `zh-CN`、`en` → `en-US`、其余 `<lang>-CN`）。
+fn map_language(language: &str) -> String {
+    if language.is_empty() || language == "auto" || language == "zh" {
         "zh-CN".to_string()
     } else if language == "en" {
         "en-US".to_string()
     } else {
         format!("{}-CN", language)
-    };
-    let config = json!({
-        "user": { "uid": request_id },
-        "audio": {
-            "format": "pcm",
-            "codec": "raw",
-            "rate": 16000,
-            "bits": 16,
-            "channel": 1,
-            "language": lang,
-        },
-        "request": {
-            "model_name": "bigmodel",
-            "enable_itn": true,
-            "enable_punc": true,
-            "enable_ddc": false,
-            "show_utterances": true,
-        }
-    });
-    let init_frame = build_client_frame(
-        MSG_FULL_CLIENT_REQUEST,
-        FLAG_NO_SEQUENCE,
-        SER_JSON,
-        COMP_GZIP,
-        config.to_string().as_bytes(),
-    )?;
-    ws.send(Message::binary(init_frame))
-        .await
-        .context("bytedance WS 发送初始 config 失败")?;
+    }
+}
 
-    // 3. 推 pre-roll PCM
-    if !pre_roll_samples.is_empty() {
-        let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
+/// bytedance WS session 协议 hook 实现（见 [`crate::session_loop::run_ws_session_loop`]）。
+///
+/// 持有 bytedance 特定状态：鉴权参数（api_key/resource_id/request_id）、语言映射、
+/// 结果累积（last_text——每帧 result.text 直接发，Close 时用 best-effort 判定）。
+struct BytedanceHandler {
+    api_key: String,
+    resource_id: String,
+    request_id: String,
+    lang: String,
+    // bytedance 无累加器——每帧 result.text 直接发 Text 事件。Close 时若有 text 则当
+    // best-effort Finished，否则 Failed。仅非空 text 记入 last_text（G1/H1：空 text 不污染）。
+    last_text: Option<String>,
+}
+
+impl WsSessionHandler for BytedanceHandler {
+    const LABEL: &'static str = "bytedance";
+
+    fn build_connect_request(
+        &self,
+        endpoint: &str,
+    ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+        let mut request = endpoint.into_client_request()?;
+        let headers = request.headers_mut();
+        headers.insert(
+            HeaderName::from_static("x-api-key"),
+            HeaderValue::from_str(&self.api_key)
+                .context("bytedance X-Api-Key 构造失败")?,
+        );
+        headers.insert(
+            HeaderName::from_static("x-api-resource-id"),
+            HeaderValue::from_str(&self.resource_id)
+                .context("bytedance X-Api-Resource-Id 构造失败")?,
+        );
+        headers.insert(
+            HeaderName::from_static("x-api-request-id"),
+            HeaderValue::from_str(&self.request_id)
+                .context("bytedance X-Api-Request-Id 构造失败")?,
+        );
+        headers.insert(
+            HeaderName::from_static("x-api-sequence"),
+            HeaderValue::from_static("-1"),
+        );
+        Ok(request)
+    }
+
+    fn build_init_message(&self) -> Result<Option<Message>> {
+        // FULL_CLIENT_REQUEST（初始 JSON config，gzip 压缩）
+        let config = json!({
+            "user": { "uid": self.request_id },
+            "audio": {
+                "format": "pcm",
+                "codec": "raw",
+                "rate": 16000,
+                "bits": 16,
+                "channel": 1,
+                "language": self.lang,
+            },
+            "request": {
+                "model_name": "bigmodel",
+                "enable_itn": true,
+                "enable_punc": true,
+                "enable_ddc": false,
+                "show_utterances": true,
+            }
+        });
+        let init_frame = build_client_frame(
+            MSG_FULL_CLIENT_REQUEST,
+            FLAG_NO_SEQUENCE,
+            SER_JSON,
+            COMP_GZIP,
+            config.to_string().as_bytes(),
+        )?;
+        Ok(Some(Message::binary(init_frame)))
+    }
+
+    fn build_pcm_message(&self, pcm_s16le: &[u8]) -> Result<Message> {
         let audio_frame = build_client_frame(
             MSG_AUDIO_ONLY_REQUEST,
             FLAG_NO_SEQUENCE,
             SER_NONE,
             COMP_NONE,
-            &pcm,
+            pcm_s16le,
         )?;
-        ws.send(Message::binary(audio_frame))
-            .await
-            .context("bytedance WS 发送 pre-roll PCM 失败")?;
+        Ok(Message::binary(audio_frame))
     }
 
-    // 4. 双向循环
-    // bytedance 无累加器——每帧 result.text 直接发 Text 事件（且是该次识别的累积文本）。
-    // 为处理服务端主动 Close（#4），记录最后一次 text；Close 时若有 text 则当 best-effort
-    // Finished（用户至少拿到已识别内容），否则 Failed。注意：稳态确认仅末帧（flags==0x3）
-    // 才发，发了就 return，故 Close 路径下 flags==0x3 必然未到——Close 携带的 text 是
-    // 「未到末帧的最佳识别」，按异常但可用的结果处理。
-    let mut last_text: Option<String> = None;
-    loop {
-        tokio::select! {
-            // 收 PCM 指令
-            frame = pcm_rx.recv() => {
-                match frame {
-                    Some(PcmFrame::Samples(pcm)) => {
-                        let audio_frame = build_client_frame(
-                            MSG_AUDIO_ONLY_REQUEST,
-                            FLAG_NO_SEQUENCE,
-                            SER_NONE,
-                            COMP_NONE,
-                            &pcm,
-                        )?;
-                        ws.send(Message::binary(audio_frame))
-                            .await
-                            .context("bytedance WS 发送音频帧失败")?;
-                    }
-                    Some(PcmFrame::Finish) => {
-                        // 末帧（负包 = NEG_SEQUENCE）——告诉服务端音频结束
-                        let last_frame = build_client_frame(
-                            MSG_AUDIO_ONLY_REQUEST,
-                            FLAG_NEG_SEQUENCE,
-                            SER_NONE,
-                            COMP_NONE,
-                            &[],
-                        )?;
-                        ws.send(Message::binary(last_frame))
-                            .await
-                            .context("bytedance WS 发送末帧失败")?;
-                    }
-                    None => break,
+    fn build_finish_message(&self) -> Result<Message> {
+        // 末帧（负包 = NEG_SEQUENCE）——告诉服务端音频结束
+        let last_frame = build_client_frame(
+            MSG_AUDIO_ONLY_REQUEST,
+            FLAG_NEG_SEQUENCE,
+            SER_NONE,
+            COMP_NONE,
+            &[],
+        )?;
+        Ok(Message::binary(last_frame))
+    }
+
+    fn handle_message(
+        &mut self,
+        msg: Message,
+        result_tx: &mpsc::UnboundedSender<StreamEvent>,
+    ) -> HandleOutcome {
+        if let Message::Binary(data) = msg {
+            let parsed = match parse_server_frame(&data) {
+                Ok(p) => p,
+                Err(e) => {
+                    // 原实现 .context("bytedance WS 响应解析失败")? 向上传播。
+                    return HandleOutcome::TerminalFailed(format!(
+                        "bytedance WS 响应解析失败: {}",
+                        e
+                    ));
                 }
-            }
-            // 收 WS 响应（加读取超时）
-            msg = tokio::time::timeout(
-                std::time::Duration::from_secs(octopus_infra::net::WS_READ_TIMEOUT_SECS),
-                ws.next(),
-            ) => {
-                let msg = match msg {
-                    Err(_) => {
-                        let _ = result_tx.send(StreamEvent::Failed("bytedance WS read timeout".into()));
-                        return Ok(());
-                    }
-                    Ok(None) => break,
-                    Ok(Some(Err(e))) => {
-                        let _ = result_tx.send(StreamEvent::Failed(format!("bytedance WS 读错误: {}", e)));
-                        return Ok(());
-                    }
-                    Ok(Some(Ok(m))) => m,
-                };
-                if let Message::Binary(data) = msg {
-                    let parsed = parse_server_frame(&data)
-                        .context("bytedance WS 响应解析失败")?;
-                    match parsed.msg_type {
-                        MSG_FULL_SERVER_RESPONSE => {
-                            let json_str = decompress_or_raw(
-                                &parsed.payload,
-                                parsed.compression == COMP_GZIP,
-                            )?;
-                            let json_val: Value = serde_json::from_str(&json_str)
-                                .context("bytedance 响应 JSON 解析失败")?;
-                            if let Some(text) = json_val["result"]["text"].as_str() {
-                                // 仅非空 text 处理（G1/G2/H1：空 text 不应记入 last_text，
-                                // 也不应发 Text 事件——close_async 的 text = t 会用空串覆盖
-                                // 之前累积的非空文本，导致有效结果丢失。其他 3 家 provider
-                                // 都有 !display.is_empty() 保护，bytedance 对齐）。
-                                if !text.is_empty() {
-                                    last_text = Some(text.to_string());
-                                    let _ = result_tx.send(StreamEvent::Text(text.to_string()));
-                                }
-                            }
-                            if parsed.flags == 0x3 {
-                                // 末帧响应（NEG_WITH_SEQUENCE）——全部结束。
-                                // 稳态判据：有非空 last_text（收到过实质识别内容）才发 Finished，
-                                // 否则发 Failed 暴露异常（对齐其他 provider 的 !stable.is_empty() 判据，
-                                // 防空 text 当成功吞掉鉴权降级/空音频等异常）。
-                                if last_text.is_some() {
-                                    let _ = result_tx.send(StreamEvent::Finished);
-                                } else {
-                                    let _ = result_tx.send(StreamEvent::Failed(
-                                        "bytedance 末帧响应但无有效识别结果".into()
-                                    ));
-                                }
-                                return Ok(());
-                            }
-                        }
-                        MSG_ERROR_RESPONSE => {
-                            let error_code = parsed.sequence; // 错误帧的 sequence 位存 error code
-                            let error_msg = String::from_utf8_lossy(&parsed.payload);
-                            let _ = result_tx.send(StreamEvent::Failed(
-                                format!("bytedance 错误 {}: {}", error_code, error_msg)
+            };
+            match parsed.msg_type {
+                MSG_FULL_SERVER_RESPONSE => {
+                    let json_str = match decompress_or_raw(
+                        &parsed.payload,
+                        parsed.compression == COMP_GZIP,
+                    ) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return HandleOutcome::TerminalFailed(format!(
+                                "bytedance 响应解压失败: {}",
+                                e
                             ));
-                            return Ok(());
                         }
-                        _ => {
-                            log::debug!("bytedance: 未知消息类型 0x{:X}", parsed.msg_type);
+                    };
+                    let json_val: Value = match serde_json::from_str(&json_str) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return HandleOutcome::TerminalFailed(format!(
+                                "bytedance 响应 JSON 解析失败: {}",
+                                e
+                            ));
+                        }
+                    };
+                    if let Some(text) = json_val["result"]["text"].as_str() {
+                        // 仅非空 text 处理（G1/G2/H1：空 text 不应记入 last_text，
+                        // 也不应发 Text 事件——close_async 的 text = t 会用空串覆盖
+                        // 之前累积的非空文本，导致有效结果丢失。其他 3 家 provider
+                        // 都有 !display.is_empty() 保护，bytedance 对齐）。
+                        if !text.is_empty() {
+                            self.last_text = Some(text.to_string());
+                            let _ = result_tx.send(StreamEvent::Text(text.to_string()));
                         }
                     }
-                } else if let Message::Close(_) = msg {
-                    // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现注释「text/close/ping
-                    // 等忽略」未处理 Close → 随后 ws.next() 返 Ok(None) → break →
-                    // return Ok(()) 无终态事件，close_async 把 partial 当成功（#3）。
-                    // 现显式处理：有非空 last_text（best-effort，未到末帧但收到过实质内容）
-                    // 发 Finished 让用户拿到已识别内容；否则 Failed 暴露异常。
-                    // 注：last_text 仅在非空时存（见上面 MSG_FULL_SERVER_RESPONSE），
-                    // 故 Some 必非空，Close 不会发空 text。
-                    log::debug!("bytedance: WS 连接关闭");
-                    if let Some(t) = last_text.take() {
-                        let _ = result_tx.send(StreamEvent::Text(t));
-                        let _ = result_tx.send(StreamEvent::Finished);
+                    if parsed.flags == 0x3 {
+                        // 末帧响应（NEG_WITH_SEQUENCE）——全部结束。
+                        // 稳态判据：有非空 last_text（收到过实质识别内容）才发 Finished，
+                        // 否则发 Failed 暴露异常（对齐其他 provider 的 !stable.is_empty() 判据，
+                        // 防空 text 当成功吞掉鉴权降级/空音频等异常）。
+                        if self.last_text.is_some() {
+                            HandleOutcome::TerminalFinished
+                        } else {
+                            HandleOutcome::TerminalFailed(
+                                "bytedance 末帧响应但无有效识别结果".into(),
+                            )
+                        }
                     } else {
-                        let _ = result_tx.send(StreamEvent::Failed(
-                            "bytedance WS 连接关闭但未收到识别结果".into()
-                        ));
+                        HandleOutcome::Continue
                     }
-                    return Ok(());
                 }
-                // text/ping 等忽略
+                MSG_ERROR_RESPONSE => {
+                    let error_code = parsed.sequence; // 错误帧的 sequence 位存 error code
+                    let error_msg = String::from_utf8_lossy(&parsed.payload);
+                    HandleOutcome::TerminalFailed(format!(
+                        "bytedance 错误 {}: {}",
+                        error_code, error_msg
+                    ))
+                }
+                _ => {
+                    log::debug!("bytedance: 未知消息类型 0x{:X}", parsed.msg_type);
+                    HandleOutcome::Continue
+                }
             }
+        } else if let Message::Close(_) = msg {
+            // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现注释「text/close/ping
+            // 等忽略」未处理 Close → 随后 ws.next() 返 Ok(None) → break →
+            // return Ok(()) 无终态事件，close_async 把 partial 当成功（#3）。
+            // 现显式处理：有非空 last_text（best-effort，未到末帧但收到过实质内容）
+            // 发 Finished 让用户拿到已识别内容；否则 Failed 暴露异常。
+            // 注：last_text 仅在非空时存（见上面 MSG_FULL_SERVER_RESPONSE），
+            // 故 Some 必非空，Close 不会发空 text。
+            log::debug!("bytedance: WS 连接关闭");
+            if let Some(t) = self.last_text.take() {
+                let _ = result_tx.send(StreamEvent::Text(t));
+                HandleOutcome::TerminalFinished
+            } else {
+                HandleOutcome::TerminalFailed(
+                    "bytedance WS 连接关闭但未收到识别结果".into(),
+                )
+            }
+        } else {
+            // text/ping 等忽略
+            HandleOutcome::Continue
         }
     }
-
-    Ok(())
 }
 
 // ── 二进制帧构造/解析 ──
