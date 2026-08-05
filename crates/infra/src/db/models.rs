@@ -273,20 +273,7 @@ pub(crate) fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<Loca
          FROM models WHERE domain='asr' AND source_type IN (0,1)
          ORDER BY source_type ASC, category, model_name",
     )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(LocalAsrModelRow {
-            id: row.get(0)?,
-            category: row.get(1)?,
-            model_name: row.get(2)?,
-            source: row.get(3)?,
-            secret_key: row.get(4)?,
-            description: row.get(5)?,
-            is_enabled: row.get::<_, i32>(6)? != 0,
-            is_available: row.get::<_, i32>(7)? != 0,
-            is_streaming: row.get::<_, i32>(8)? != 0,
-            source_type: row.get(9)?,
-        })
-    })?;
+    let rows = stmt.query_map([], local_asr_model_row_mapper)?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
@@ -304,20 +291,7 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
              FROM models WHERE domain=?1 AND source_type IN (0,1)
              ORDER BY source_type ASC, category, model_name",
         )?;
-        let rows = stmt.query_map(params![domain], |row| {
-            Ok(LocalAsrModelRow {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                model_name: row.get(2)?,
-                source: row.get(3)?,
-                secret_key: row.get(4)?,
-                description: row.get(5)?,
-                is_enabled: row.get::<_, i32>(6)? != 0,
-                is_available: row.get::<_, i32>(7)? != 0,
-                is_streaming: row.get::<_, i32>(8)? != 0,
-                source_type: row.get(9)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![domain], local_asr_model_row_mapper)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -337,20 +311,7 @@ pub fn list_builtin_models() -> Result<Vec<LocalAsrModelRow>> {
             "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming, source_type
              FROM models WHERE source_type = 0",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(LocalAsrModelRow {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                model_name: row.get(2)?,
-                source: row.get(3)?,
-                secret_key: row.get(4)?,
-                description: row.get(5)?,
-                is_enabled: row.get::<_, i32>(6)? != 0,
-                is_available: row.get::<_, i32>(7)? != 0,
-                is_streaming: row.get::<_, i32>(8)? != 0,
-                source_type: row.get(9)?,
-            })
-        })?;
+        let rows = stmt.query_map([], local_asr_model_row_mapper)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -815,6 +776,41 @@ fn model_row_mapper(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelRow> {
     })
 }
 
+/// LocalAsrModelRow 行映射共享闭包（list_all_local_asr_models_at /
+/// list_local_models_by_domain / list_builtin_models 共用，10 列顺序一致）。
+/// 2026-08-05 抽取（问题 2）：消除 3 处生产 + 1 处测试的逐字重复。
+fn local_asr_model_row_mapper(r: &rusqlite::Row<'_>) -> rusqlite::Result<LocalAsrModelRow> {
+    Ok(LocalAsrModelRow {
+        id: r.get(0)?,
+        category: r.get(1)?,
+        model_name: r.get(2)?,
+        source: r.get(3)?,
+        secret_key: r.get(4)?,
+        description: r.get(5)?,
+        is_enabled: r.get::<_, i32>(6)? != 0,
+        is_available: r.get::<_, i32>(7)? != 0,
+        is_streaming: r.get::<_, i32>(8)? != 0,
+        source_type: r.get(9)?,
+    })
+}
+
+/// LlmModelInfo 行映射共享闭包（list_llm_models_at / list_cloud_models_by_domain_at 共用，
+/// 10 列顺序一致）。2026-08-05 抽取（问题 2）。
+fn llm_model_info_row_mapper(r: &rusqlite::Row<'_>) -> rusqlite::Result<LlmModelInfo> {
+    Ok(LlmModelInfo {
+        id: r.get::<_, i64>(0)?,
+        provider: r.get::<_, String>(1)?,
+        category: r.get::<_, String>(2)?,
+        model_name: r.get::<_, String>(3)?,
+        source_type: r.get::<_, i64>(4)?,
+        source: r.get::<_, String>(5)?,
+        secret_key: r.get::<_, String>(6)?,
+        is_streaming: r.get::<_, i32>(7)? != 0,
+        is_thinking: r.get::<_, i32>(8)? != 0,
+        is_enabled: r.get::<_, i32>(9)? != 0,
+    })
+}
+
 /// 切换激活模型——单语句全量刷新某域的 is_enabled（仅在可用模型中切换）。
 /// SQLite 用 IIF（不是 MySQL 的 IF）。每域记录不多（最多几十条），全量刷新无性能问题。
 pub fn switch_active_model(domain: &str, id: i64) -> Result<()> {
@@ -892,20 +888,7 @@ pub(crate) fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>>
          WHERE domain='llm' AND is_available = 1
          ORDER BY source_type ASC, category",
     )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(LlmModelInfo {
-            id: row.get::<_, i64>(0)?,
-            provider: row.get::<_, String>(1)?,
-            category: row.get::<_, String>(2)?,
-            model_name: row.get::<_, String>(3)?,
-            source_type: row.get::<_, i64>(4)?,
-            source: row.get::<_, String>(5)?,
-            secret_key: row.get::<_, String>(6)?,
-            is_streaming: row.get::<_, i32>(7)? != 0,
-            is_thinking: row.get::<_, i32>(8)? != 0,
-            is_enabled: row.get::<_, i32>(9)? != 0,
-        })
-    })?;
+    let rows = stmt.query_map([], llm_model_info_row_mapper)?;
     let mut list = Vec::new();
     for r in rows {
         list.push(r?);
@@ -932,20 +915,7 @@ pub(crate) fn list_cloud_models_by_domain_at(conn: &Connection, domain: &str) ->
          FROM models WHERE domain = ?1 AND source_type = 2
          ORDER BY category, model_name",
     )?;
-    let rows = stmt.query_map(params![domain], |row| {
-        Ok(LlmModelInfo {
-            id: row.get::<_, i64>(0)?,
-            provider: row.get::<_, String>(1)?,
-            category: row.get::<_, String>(2)?,
-            model_name: row.get::<_, String>(3)?,
-            source_type: row.get::<_, i64>(4)?,
-            source: row.get::<_, String>(5)?,
-            secret_key: row.get::<_, String>(6)?,
-            is_streaming: row.get::<_, i32>(7)? != 0,
-            is_thinking: row.get::<_, i32>(8)? != 0,
-            is_enabled: row.get::<_, i32>(9)? != 0,
-        })
-    })?;
+    let rows = stmt.query_map(params![domain], llm_model_info_row_mapper)?;
     let mut list = Vec::new();
     for r in rows {
         list.push(r?);
@@ -999,24 +969,8 @@ pub fn list_ocr_models() -> Result<Vec<OcrModelInfo>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{init_test_db, fill_manifests, INIT_SQL};
-    use rusqlite::Connection;
-    use std::sync::Once;
-
-    /// 在内存 DB 上执行 INIT_SQL，返回初始化好的连接。
-    fn open_init() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        conn
-    }
-
-    /// 全局测试 DB 初始化（进程级 Once）。
-    static TEST_DB_SETUP: Once = Once::new();
-    fn setup_test_db() {
-        TEST_DB_SETUP.call_once(|| {
-            init_test_db();
-        });
-    }
+    use crate::db::fill_manifests;
+    use crate::db::test_support::{open_init, setup_test_db};
 
     /// `get_model_by_id` 按 id 反查 models 行——translate_engine 配置链路核心。
     /// seed 后 opus-mt 是 translate domain 的本地模型，先取它的 DB id 再反查，
@@ -1638,20 +1592,7 @@ mod tests {
                      FROM models WHERE domain='translate' AND source_type IN (0,1)",
                 )
                 .unwrap();
-            let rows = stmt.query_map([], |row| {
-                Ok(LocalAsrModelRow {
-                    id: row.get(0)?,
-                    category: row.get(1)?,
-                    model_name: row.get(2)?,
-                    source: row.get(3)?,
-                    secret_key: row.get(4)?,
-                    description: row.get(5)?,
-                    is_enabled: row.get::<_, i32>(6)? != 0,
-                    is_available: row.get::<_, i32>(7)? != 0,
-                    is_streaming: row.get::<_, i32>(8)? != 0,
-                source_type: row.get(9)?,
-                })
-            }).unwrap();
+            let rows = stmt.query_map([], local_asr_model_row_mapper).unwrap();
             rows.filter_map(|r| r.ok()).collect()
         };
         assert_eq!(translate_rows.len(), 2, "应有 2 个翻译模型");
