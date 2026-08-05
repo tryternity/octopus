@@ -29,11 +29,15 @@ use octopus_infra::db::{self, VaultMeta, VaultMetaInput};
 // 通用 sync 基础设施（2026-07-22 抽离到 octopus_sync）
 use octopus_sync::error::SyncError;
 use octopus_sync::git;
+use octopus_sync::outline::OutlineEntry;
+use octopus_sync::pipeline::{merge_three_way, MergeReport, SyncEntity};
 use octopus_sync::privacy::{self, PrivacyVerdict};
+use octopus_sync::store::{iso_to_unix_ms, now_secs};
 use zeroize::Zeroizing;
 
-use crate::sync::store;
 use crate::crypto::kdf::Argon2Params;
+use crate::sync::fingerprint;
+use crate::sync::store;
 
 // === T4.1: SyncState 进程内锁 ===
 
@@ -1003,6 +1007,254 @@ fn push_to_files() -> Result<usize, SyncError> {
     Ok(changed)
 }
 
+// === SyncEntity impl（2026-08-05，trait 统一 merge 骨架）===
+//
+// vault folder + cipher 的 [`SyncEntity`] impl。`merge_three_way::<VaultFolderEntity>`
+// / `merge_three_way::<VaultCipherEntity>` 在 [`merge_vault`] 内驱动 folder/cipher 的
+// 3-way merge，各 method 委托到本模块现有函数（`read_folder_file` / `read_cipher_file`
+// / `upsert_folder_from_file` / `upsert_cipher_from_file` / `push_folder_to_files`
+// / `push_cipher_to_files` / `store::read_outline_file`）。
+//
+// 对称 `octopus_sync::hotword::HotwordSetEntity` / `octopus_sync::clipboard::ClipboardFavoriteEntity`。
+//
+// - `Row` = `VaultFolder` / `VaultCipher`（infra DB 行）——`list_db_rows` / `file_to_row`
+//   / `write_file` / `upsert_db_from_file` 共用此类型。
+// - `File` = `store::FolderFile` / `store::CipherFile`（磁盘序列化格式）。
+// - `export_all` 故意 noop——vault export 是 cipher+folder 全量重建（`export_all_to_files`
+//   会清空目录重写），folder 末尾 export 会清掉尚未 merge 的 cipher 文件。故两个
+//   trait 的 `export_all` 都 noop，[`merge_vault`] 在 folder+cipher merge 都跑完后
+//   统一调一次 `export_all_to_files`（阶段 E，对称 hotword 两层 merge 后统一 export）。
+
+/// `SyncError` → `anyhow::Error` 转换（trait method 返 anyhow::Result，
+/// 但 vault 内部 helper 返 `Result<_, SyncError>`）。`SyncError` 未 impl
+/// `std::error::Error`（见 error.rs:10），无法直接 `?` / `Into::into`。
+fn sync_err_to_anyhow(e: SyncError) -> anyhow::Error {
+    anyhow::Error::msg(e)
+}
+
+/// vault folder 的 [`SyncEntity`] 标记类型——零大小，仅承载 trait impl。
+pub struct VaultFolderEntity;
+
+impl SyncEntity for VaultFolderEntity {
+    type Row = octopus_infra::db::VaultFolder;
+    type File = store::FolderFile;
+
+    const LABEL: &'static str = "vault_folder";
+
+    /// 30 天（`VAULT_TOMBSTONE_RETENTION_SECS`）——超期 folder tombstone 被 GC 硬删
+    /// + 不进 outline（对称 clipboard 30 天，比 hotword 10 天长）。
+    fn tombstone_retention_secs() -> i64 {
+        octopus_infra::db::VAULT_TOMBSTONE_RETENTION_SECS
+    }
+
+    // ── DB 操作 ──
+
+    fn list_db_rows() -> Result<Vec<Self::Row>> {
+        db::list_vault_folders()
+    }
+
+    fn sync_key(row: &Self::Row) -> &str {
+        &row.id
+    }
+
+    fn updated_ms(row: &Self::Row) -> i64 {
+        iso_to_unix_ms(&row.updated_at)
+    }
+
+    fn is_tombstone(row: &Self::Row) -> bool {
+        row.is_deleted > 0
+    }
+
+    fn md5_of(row: &Self::Row) -> String {
+        row.sync_md5
+            .clone()
+            .unwrap_or_else(|| fingerprint::folder_md5(row))
+    }
+
+    // ── 文件操作 ──
+
+    fn read_file(key: &str) -> Result<Self::File> {
+        store::read_folder_file(key)
+    }
+
+    /// 文件 → DB 行（`to_vault_folder`，sync_md5 由 upsert_db_from_file 回填——
+    /// 与 hotword set 的「file_to_row 不填 md5」对称）。
+    fn file_to_row(file: &Self::File) -> Self::Row {
+        let mut row = file.to_vault_folder();
+        row.sync_md5 = Some(fingerprint::folder_md5(&row));
+        row
+    }
+
+    fn file_is_tombstone(file: &Self::File) -> bool {
+        file.is_deleted > 0
+    }
+
+    fn file_tombstone_timestamp(file: &Self::File) -> i64 {
+        file.is_deleted
+    }
+
+    fn write_file(row: &Self::Row) -> Result<()> {
+        push_folder_to_files(row).map_err(sync_err_to_anyhow)
+    }
+
+    // ── merge 操作 ──
+
+    /// 文件行 → upsert DB。返 `Ok(false)` 表示拒绝复活（本地已软删 + 远程 active）。
+    /// 保留原 merge_vault 阶段 B 的「拒绝复活守卫」（第十四轮 P2-2，对齐 hotword）。
+    fn upsert_db_from_file(row: &Self::Row) -> Result<bool> {
+        if row.is_deleted == 0 {
+            // 远程 active——查 DB 是否已软删（tombstone）。若 DB 已软删，拒绝 pull（防复活）。
+            if let Some(db_f) = db::load_vault_folder(&row.id)? {
+                if db_f.is_deleted > 0 {
+                    log::info!(
+                        "[sync] merge: folder {} 本地已软删，远程 active，拒绝复活",
+                        row.id
+                    );
+                    return Ok(false);
+                }
+            }
+        }
+        upsert_folder_from_file(row).map_err(sync_err_to_anyhow)?;
+        Ok(true)
+    }
+
+    // ── GC ──
+
+    /// vault GC 同时清 cipher + folder tombstone（infra 的 `purge_expired_vault_tombstones`
+    /// 一次删两表）。folder 实体调一次即可，cipher 实体的 GC noop 避免重复清理。
+    fn purge_expired_tombstones(now: i64) -> Result<usize> {
+        let purged = octopus_infra::db::purge_expired_vault_tombstones(now)?;
+        if purged > 0 {
+            log::info!("[sync] vault_folder GC: 清理 {} 条超期 vault tombstone（cipher+folder）", purged);
+        }
+        Ok(purged)
+    }
+
+    // ── 导出 ──
+
+    /// **故意 noop**——vault export 是 cipher+folder 全量重建（`export_all_to_files`
+    /// 会清空目录重写），folder merge 末尾 export 会清掉尚未 merge 的 cipher 文件。
+    /// 故 [`merge_vault`] 在 folder+cipher merge 都跑完后统一调一次 `export_all_to_files`。
+    fn export_all() -> Result<()> {
+        Ok(())
+    }
+
+    // ── outline（folder 层 = vault outline 的 folders）──
+
+    fn read_outline_entries() -> Result<Vec<(String, OutlineEntry)>> {
+        Ok(store::read_outline_file()?.folders.into_iter().collect())
+    }
+}
+
+/// vault cipher 的 [`SyncEntity`] 标记类型——零大小，仅承载 trait impl。
+///
+/// GC noop——cipher 的 GC 由 [`VaultFolderEntity::purge_expired_tombstones`] 统一清理
+/// （`purge_expired_vault_tombstones` 一次删 cipher + folder 两表，对称 hotword 的
+/// set GC 连带清 word）。
+pub struct VaultCipherEntity;
+
+impl SyncEntity for VaultCipherEntity {
+    type Row = octopus_infra::db::VaultCipher;
+    type File = store::CipherFile;
+
+    const LABEL: &'static str = "vault_cipher";
+
+    fn tombstone_retention_secs() -> i64 {
+        octopus_infra::db::VAULT_TOMBSTONE_RETENTION_SECS
+    }
+
+    // ── DB 操作 ──
+
+    fn list_db_rows() -> Result<Vec<Self::Row>> {
+        db::list_vault_ciphers()
+    }
+
+    fn sync_key(row: &Self::Row) -> &str {
+        &row.id
+    }
+
+    fn updated_ms(row: &Self::Row) -> i64 {
+        iso_to_unix_ms(&row.updated_at)
+    }
+
+    fn is_tombstone(row: &Self::Row) -> bool {
+        row.is_deleted > 0
+    }
+
+    fn md5_of(row: &Self::Row) -> String {
+        row.sync_md5
+            .clone()
+            .unwrap_or_else(|| fingerprint::cipher_md5(row))
+    }
+
+    // ── 文件操作 ──
+
+    fn read_file(key: &str) -> Result<Self::File> {
+        store::read_cipher_file(key)
+    }
+
+    fn file_to_row(file: &Self::File) -> Self::Row {
+        let mut row = file.to_vault_cipher();
+        row.sync_md5 = Some(fingerprint::cipher_md5(&row));
+        row
+    }
+
+    fn file_is_tombstone(file: &Self::File) -> bool {
+        file.plaintext_meta.is_deleted > 0
+    }
+
+    fn file_tombstone_timestamp(file: &Self::File) -> i64 {
+        file.plaintext_meta.is_deleted
+    }
+
+    fn write_file(row: &Self::Row) -> Result<()> {
+        push_cipher_to_files(row).map_err(sync_err_to_anyhow)
+    }
+
+    // ── merge 操作 ──
+
+    /// 文件行 → upsert DB。返 `Ok(false)` 表示拒绝复活（本地已软删 + 远程 active）。
+    /// 保留原 merge_vault 阶段 C 的「拒绝复活守卫」（第十四轮 P2-2）。
+    fn upsert_db_from_file(row: &Self::Row) -> Result<bool> {
+        if row.is_deleted == 0 {
+            if let Some(db_c) = db::load_vault_cipher(&row.id)? {
+                if db_c.is_deleted > 0 {
+                    log::info!(
+                        "[sync] merge: cipher {} 本地已软删，远程 active，拒绝复活",
+                        row.id
+                    );
+                    return Ok(false);
+                }
+            }
+        }
+        upsert_cipher_from_file(row).map_err(sync_err_to_anyhow)?;
+        Ok(true)
+    }
+
+    // ── GC ──
+
+    /// noop——cipher GC 由 [`VaultFolderEntity::purge_expired_tombstones`] 统一清理
+    /// （`purge_expired_vault_tombstones` 一次删 cipher + folder 两表）。
+    fn purge_expired_tombstones(_now: i64) -> Result<usize> {
+        Ok(0)
+    }
+
+    // ── 导出 ──
+
+    /// **故意 noop**——对称 [`VaultFolderEntity::export_all`]：vault export 是
+    /// cipher+folder 全量重建，必须等 folder+cipher merge 都跑完后由 [`merge_vault`]
+    /// 统一调一次。cipher merge 末尾 export 会清空目录（含尚未 merge 的 folder）。
+    fn export_all() -> Result<()> {
+        Ok(())
+    }
+
+    // ── outline（cipher 层 = vault outline 的 ciphers）──
+
+    fn read_outline_entries() -> Result<Vec<(String, OutlineEntry)>> {
+        Ok(store::read_outline_file()?.ciphers.into_iter().collect())
+    }
+}
+
 // === merge_vault（spec §3.1，2026-07-27）===
 //
 // 双向 merge：DB ↔ .sync 文件系统，按 updated_at 最新赢。
@@ -1013,37 +1265,36 @@ fn push_to_files() -> Result<usize, SyncError> {
 // 真相源 = updated_at 最新赢；冲突（相同时间戳）→ DB 赢（当前机器优先）。
 // 「删除」是普通字段变更（is_deleted=1 + updated_at 更新），走标准 merge 路径——
 // 不再硬删文件 / DB 行。
-
-/// merge_vault 返回值——供 SyncReport 上报「拉了 X / 推了 Y / 冲突 Z」。
-#[derive(Debug, Clone, Default)]
-pub struct MergeReport {
-    /// 从 .sync 拉到 DB 的条目数（folder + cipher）。
-    pub pulled: usize,
-    /// 从 DB 推到 .sync 的条目数（folder + cipher）。
-    pub pushed: usize,
-    /// 冲突数（updated_at 相同 + md5 不同 → DB 赢）。pushed 已含这部分，本字段单独统计便于诊断。
-    pub conflicts: usize,
-    /// 因文件读取失败被跳过的条目数（容错语义（文件读取失败跳过计 skipped））。
-    pub skipped: usize,
-}
+//
+// 2026-08-05 重构：merge 返回值复用 `octopus_sync::pipeline::MergeReport`（4 字段
+// pulled/pushed/conflicts/skipped 与原 vault 本地 `MergeReport` 完全一致）——本文件
+// 不再定义本地 `MergeReport`。`merge_three_way` 直接累加此通用 report。
 
 /// 双向 merge——按 updated_at 最新赢。
 ///
 /// 流程：
 /// 1. 读 outline（远程视角）+ DB ciphers/folders（本地视角）+ vault_meta
-/// 2. stamp 校验（前置 stamp 校验——校验失败不触碰 DB）
-/// 3. merge folder（先，FK 被引用方）—— 按条目比对 updated_ms
-/// 4. merge cipher（后，FK 引用方）
-/// 5. merge meta（app_key_sync_enc 一致性——前置 meta upsert）
-/// 6. 写 outline（从 DB 最新状态重建——merge 完后 DB 即单一真相源）
+/// 2. **阶段 A**：stamp 校验（前置——校验失败不触碰 DB）+ meta.json 缺失处理
+/// 3. **阶段 B+C**：`merge_three_way::<VaultFolderEntity>` + `merge_three_way::<VaultCipherEntity>`
+///    ——folder 先 cipher 后（FK 约束）。各实体的 pull/push/conflict/skip 判定由
+///    [`octopus_sync::pipeline::merge_three_way`] 泛型骨架驱动，具体逻辑（文件格式 / md5 /
+///    tombstone 字段 / 拒绝复活守卫）由 [`VaultFolderEntity`] / [`VaultCipherEntity`] 提供。
+/// 4. **阶段 D**：merge meta（app_key_sync_enc 一致性——前置 meta upsert + local_enc 清空）
+/// 5. **阶段 E**：写 outline + meta（从 DB 最新状态重建——merge 完后 DB 即单一真相源）
 ///
-/// 判定规则（每条 folder/cipher）：
+/// 判定规则（每条 folder/cipher，详见 `merge_three_way`）：
 /// - outline 有 + DB 无 → pull（.sync → DB）
 /// - DB 有 + outline 无 → push（DB → .sync）
 /// - 都有 → 比 updated_ms（outline 的远程时间戳 vs DB 的本地时间戳转 ms）
 ///   - remote > local → pull 覆盖 DB
 ///   - local > remote → push 覆盖 .sync
 ///   - 相等 → md5 比对；md5 不同 → DB 赢（conflict）；md5 相同 → 跳过
+///
+/// tombstone 单向优先（2026-08-05 fix）：远程未超期 tombstone 无论本地时间戳多新都 pull，
+/// 防 active 写回文件覆盖远程 tombstone 导致跨设备复活。
+///
+/// **阶段 A/D 是 vault 特有**（stamp 校验 + meta upsert），完全保留不变。阶段 B/C 委托到
+/// 泛型 `merge_three_way`，与 hotword/clipboard 的 merge 主循环同构（2026-08-05 重构）。
 pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
     let remote_outline = store::read_outline_file()?;
     let db_ciphers = db::list_vault_ciphers().map_err(SyncError::Other)?;
@@ -1103,203 +1354,20 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
 
     let mut report = MergeReport::default();
 
-    // === 阶段 B：merge folder（先，FK 被引用方）===
+    // === 阶段 B+C：folder 先 cipher 后（FK 约束），委托到泛型 merge_three_way ===
     //
-    // ⚠️ 顺序固定（folder 先 cipher 后——FK constraint）（2026-07-27 FK constraint 修复）——folder 先，
-    // 避免 cipher.folder_id 引用尚未插入的 folder。
-    let db_folder_by_id: std::collections::HashMap<&str, &octopus_infra::db::VaultFolder> =
-        db_folders.iter().map(|f| (f.id.as_str(), f)).collect();
-
-    // folder：outline 有 + DB 无 → pull
-    for (uuid, entry) in &remote_outline.folders {
-        let remote_updated = entry.updated_ms;
-        match db_folder_by_id.get(uuid.as_str()) {
-            None => {
-                // DB 无 → pull
-                match store::read_folder_file(uuid) {
-                    Ok(folder_file) => {
-                        // 第十一轮 P1：sync-only upsert 保留远程时间戳（#6 sort_order + P0 is_deleted + P1 时间戳都在 row 里）
-                        let mut row = folder_file.to_vault_folder();
-                        row.sync_md5 = Some(crate::sync::fingerprint::folder_md5(&row));
-                        upsert_folder_from_file(&row)?;
-                        report.pulled += 1;
-                    }
-                    Err(e) => {
-                        log::warn!("[sync] merge: folder {} 文件读取失败，已跳过：{}", uuid, e);
-                        report.skipped += 1;
-                    }
-                }
-            }
-            Some(db_f) => {
-                let local_updated = octopus_sync::store::iso_to_unix_ms(&db_f.updated_at);
-                // 🔴 tombstone 单向优先（2026-08-05 fix 052c67cc/7da97a01 重新应用）：
-                // 远程 folder 已 tombstone 时，无论本地时间戳多新都 pull，不 push active 覆盖。
-                let remote_folder_is_tombstone = store::read_folder_file(uuid)
-                    .map(|f| f.is_deleted > 0)
-                    .unwrap_or(false);
-                if remote_folder_is_tombstone {
-                    match store::read_folder_file(uuid) {
-                        Ok(folder_file) => {
-                            let mut row = folder_file.to_vault_folder();
-                            row.sync_md5 = Some(crate::sync::fingerprint::folder_md5(&row));
-                            upsert_folder_from_file(&row)?;
-                            report.pulled += 1;
-                        }
-                        Err(e) => {
-                            log::warn!("[sync] merge: folder {} tombstone pull 跳过：{}", uuid, e);
-                            report.skipped += 1;
-                        }
-                    }
-                } else if remote_updated > local_updated {
-                    // .sync 更新 → pull 覆盖 DB
-                    match store::read_folder_file(uuid) {
-                        Ok(folder_file) => {
-                            // 第十一轮 P1：sync-only upsert 保留远程时间戳（同上）
-                            let mut row = folder_file.to_vault_folder();
-                            row.sync_md5 = Some(crate::sync::fingerprint::folder_md5(&row));
-                            // 第十四轮 P2-2：删除单向传播守卫（同 cipher :1196，对齐 hotword）
-                            if row.is_deleted == 0 && db_f.is_deleted > 0 {
-                                log::info!(
-                                    "[sync] merge: folder {} 本地已软删，远程 active，拒绝复活",
-                                    uuid
-                                );
-                                report.skipped += 1;
-                            } else {
-                                upsert_folder_from_file(&row)?;
-                                report.pulled += 1;
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("[sync] merge: folder {} 文件读取失败，已跳过：{}", uuid, e);
-                            report.skipped += 1;
-                        }
-                    }
-                } else if local_updated > remote_updated {
-                    // DB 更新 → push 覆盖 .sync
-                    push_folder_to_files(db_f)?;
-                    report.pushed += 1;
-                } else {
-                    // updated_at 相等 → md5 比对
-                    let db_md5 = db_f
-                        .sync_md5
-                        .clone()
-                        .unwrap_or_else(|| crate::sync::fingerprint::folder_md5(db_f));
-                    if db_md5 != entry.md5 {
-                        // 冲突 → DB 赢
-                        push_folder_to_files(db_f)?;
-                        report.pushed += 1;
-                        report.conflicts += 1;
-                    }
-                    // md5 相同 → 跳过
-                }
-            }
-        }
-    }
-    // folder：DB 有 + outline 无 → push（不再硬删文件）
-    for db_f in &db_folders {
-        if !remote_outline.folders.contains_key(&db_f.id) {
-            push_folder_to_files(db_f)?;
-            report.pushed += 1;
-        }
-    }
-
-    // === 阶段 C：merge cipher（后，FK 引用方）===
-    let db_cipher_by_id: std::collections::HashMap<&str, &octopus_infra::db::VaultCipher> =
-        db_ciphers.iter().map(|c| (c.id.as_str(), c)).collect();
-
-    // cipher：outline 有 + DB 无 / 或 .sync 更新 → pull
-    for (uuid, entry) in &remote_outline.ciphers {
-        let remote_updated = entry.updated_ms;
-        match db_cipher_by_id.get(uuid.as_str()) {
-            None => {
-                // DB 无 → pull
-                match store::read_cipher_file(uuid) {
-                    Ok(cipher_file) => {
-                        // 第十一轮 P1：sync-only upsert 保留远程时间戳（业务 upsert 写 now → ping-pong）
-                        let mut row = cipher_file.to_vault_cipher();
-                        row.sync_md5 = Some(crate::sync::fingerprint::cipher_md5(&row));
-                        upsert_cipher_from_file(&row)?;
-                        report.pulled += 1;
-                    }
-                    Err(e) => {
-                        log::warn!("[sync] merge: cipher {} 文件读取失败，已跳过：{}", uuid, e);
-                        report.skipped += 1;
-                    }
-                }
-            }
-            Some(db_c) => {
-                let local_updated = octopus_sync::store::iso_to_unix_ms(&db_c.updated_at);
-                // 🔴 tombstone 单向优先（2026-08-05 fix 052c67cc/7da97a01 重新应用）：
-                // 远程 cipher 已 tombstone 时，无论本地时间戳多新都 pull，不 push active 覆盖。
-                let remote_cipher_is_tombstone = store::read_cipher_file(uuid)
-                    .map(|f| f.to_vault_cipher().is_deleted > 0)
-                    .unwrap_or(false);
-                if remote_cipher_is_tombstone {
-                    match store::read_cipher_file(uuid) {
-                        Ok(cipher_file) => {
-                            let row = cipher_file.to_vault_cipher();
-                            upsert_cipher_from_file(&row)?;
-                            report.pulled += 1;
-                        }
-                        Err(e) => {
-                            log::warn!("[sync] merge: cipher {} tombstone pull 跳过：{}", uuid, e);
-                            report.skipped += 1;
-                        }
-                    }
-                } else if remote_updated > local_updated {
-                    // .sync 更新 → pull 覆盖 DB
-                    match store::read_cipher_file(uuid) {
-                        Ok(cipher_file) => {
-                            // 第十一轮 P1：sync-only upsert 保留远程时间戳（同上）
-                            let mut row = cipher_file.to_vault_cipher();
-                            row.sync_md5 = Some(crate::sync::fingerprint::cipher_md5(&row));
-                            // 第十四轮 P2-2：删除单向传播守卫（对齐 hotword :965-979）——
-                            // 远程 active + 本地已软删（tombstone）时拒绝 pull，防跨设备时钟偏差
-                            // + 删除竞争致删除被复活。反向（DB active + 远程 tombstone）允许——
-                            // 远程删除正常传播。可自愈（用户重删，下次 sync 推删除），非数据丢失。
-                            if row.is_deleted == 0 && db_c.is_deleted > 0 {
-                                log::info!(
-                                    "[sync] merge: cipher {} 本地已软删，远程 active，拒绝复活",
-                                    uuid
-                                );
-                                report.skipped += 1;
-                            } else {
-                                upsert_cipher_from_file(&row)?;
-                                report.pulled += 1;
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("[sync] merge: cipher {} 文件读取失败，已跳过：{}", uuid, e);
-                            report.skipped += 1;
-                        }
-                    }
-                } else if local_updated > remote_updated {
-                    // DB 更新 → push 覆盖 .sync
-                    push_cipher_to_files(db_c)?;
-                    report.pushed += 1;
-                } else {
-                    // updated_at 相等 → md5 比对
-                    let db_md5 = db_c
-                        .sync_md5
-                        .clone()
-                        .unwrap_or_else(|| crate::sync::fingerprint::cipher_md5(db_c));
-                    if db_md5 != entry.md5 {
-                        // 冲突 → DB 赢
-                        push_cipher_to_files(db_c)?;
-                        report.pushed += 1;
-                        report.conflicts += 1;
-                    }
-                }
-            }
-        }
-    }
-    // cipher：DB 有 + outline 无 → push
-    for db_c in &db_ciphers {
-        if !remote_outline.ciphers.contains_key(&db_c.id) {
-            push_cipher_to_files(db_c)?;
-            report.pushed += 1;
-        }
-    }
+    // 2026-08-05 重构：原阶段 B（folder 内联 merge）+ 阶段 C（cipher 内联 merge）共 ~200 行
+    // 与 hotword/clipboard 的 merge 主循环逐行同构（pull/push/conflict/skip 4 分支），抽到
+    // `octopus_sync::pipeline::merge_three_way::<E>`。各实体的具体逻辑（文件格式 / md5 分隔 /
+    // tombstone 字段）由 [`VaultFolderEntity`] / [`VaultCipherEntity`] 的 trait impl 提供。
+    //
+    // ⚠️ 顺序固定（folder 先 cipher 后——FK constraint）（2026-07-27 FK constraint 修复）——
+    // folder 先，避免 cipher.folder_id 引用尚未插入的 folder。trait 的 export_all 都 noop
+    // （export_all_to_files 是 cipher+folder 全量重建，folder 末尾 export 会清掉尚未 merge
+    // 的 cipher 文件）——本函数末尾阶段 E 统一调一次 export_all_to_files（对称 hotword merge）。
+    let now = now_secs();
+    merge_three_way::<VaultFolderEntity>(&mut report, now)?;
+    merge_three_way::<VaultCipherEntity>(&mut report, now)?;
 
     // === 阶段 D：merge meta（meta upsert + app_key local_enc 清空）===
     if let Some(mf) = meta_file {

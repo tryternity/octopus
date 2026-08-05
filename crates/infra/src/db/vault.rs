@@ -463,6 +463,68 @@ pub(crate) fn permanent_delete_vault_cipher_at(conn: &Connection, id: &str) -> R
     Ok(())
 }
 
+// ── tombstone GC（2026-08-05，对称 hotword/clipboard GC）──软删 cipher/folder 超期后硬删 ──
+
+/// vault tombstone 保留期：30 天（对称 `CLIPBOARD_TOMBSTONE_RETENTION_SECS`）。
+///
+/// 超期 cipher/folder tombstone 被 GC 硬删 + sync merge 拒绝复活（pull 拒绝超期
+/// tombstone，跨设备自洽——对端旧 outline 有也 skip）。详见 pipeline.rs 的
+/// `is_tombstone_expired` 与 spec §7.2。
+pub const VAULT_TOMBSTONE_RETENTION_SECS: i64 = 30 * 86400;
+
+/// 硬删超期 vault tombstone——`is_deleted > 0` 且 `now - is_deleted > RETENTION`。
+///
+/// GC 范围：`vault_ciphers` + `vault_folders` 的超期 tombstone 行（活跃行不动）。
+/// 返回硬删的总行数（cipher + folder）。`now_secs` 是当前 epoch 秒。
+///
+/// 对应 `.sync` 文件清理由调用方（`SyncEntity::purge_expired_tombstones`）负责——
+/// 本函数只管 DB，保持与 hotword `purge_expired_hotword_tombstones_at` /
+/// clipboard `purge_expired_clipboard_favorites_at` 的职责对称（DB GC，文件 GC
+/// 由 export 重建完成）。
+///
+/// 跨设备自洽：sync merge 按年龄过滤（pull 拒绝复活超期 tombstone），GC 后 export
+/// 不含超期 tombstone → 对端 pull 时即使旧 outline 有也 skip → 收敛。
+///
+/// **FK 约束**：cipher.folder_id 引用 folder.id——若 folder 被硬删但 cipher 仍在
+/// 引用，cipher 的 folder_id 变悬空引用（FK 是 non-deferring，但本表 schema 实际
+/// 未声明 FK，仅逻辑约束——见 `vault_ciphers` CREATE TABLE）。删除顺序上先 cipher
+/// 后 folder 不影响正确性（cipher 删完后再删 folder，无引用残留），但即使有残留
+/// cipher 也无 FK 报错。返回值含两侧硬删总数。
+pub fn purge_expired_vault_tombstones(now_secs: i64) -> Result<usize> {
+    ensure_db()?;
+    with_db(|conn| purge_expired_vault_tombstones_at(conn, now_secs))
+}
+
+/// 裸连接版（供测试直接调）。
+pub(crate) fn purge_expired_vault_tombstones_at(
+    conn: &Connection,
+    now_secs: i64,
+) -> Result<usize> {
+    let cutoff = now_secs - VAULT_TOMBSTONE_RETENTION_SECS;
+    // 先 cipher 后 folder（逻辑 FK 顺序——cipher 是 folder 的引用方，
+    // 删 cipher tombstone 不影响 folder；反之 folder tombstone 删掉后 cipher 引用
+    // 悬空也无害——schema 无 FK 约束）。
+    let n_ciphers = conn.execute(
+        "DELETE FROM vault_ciphers WHERE is_deleted > 0 AND is_deleted < ?1",
+        params![cutoff],
+    )?;
+    let n_folders = conn.execute(
+        "DELETE FROM vault_folders WHERE is_deleted > 0 AND is_deleted < ?1",
+        params![cutoff],
+    )?;
+    let n = n_ciphers + n_folders;
+    if n > 0 {
+        log::info!(
+            "[vault-gc] purged {} tombstones ({} ciphers + {} folders, cutoff={})",
+            n,
+            n_ciphers,
+            n_folders,
+            cutoff
+        );
+    }
+    Ok(n)
+}
+
 // ── vault_folders CRUD ──
 
 pub fn list_vault_folders() -> Result<Vec<VaultFolder>> {
@@ -871,5 +933,94 @@ mod tests {
             [],
         );
         assert!(result.is_err(), "CHECK(id=1) 应阻止 id=2 的插入");
+    }
+
+    // ── purge_expired_vault_tombstones 测试（2026-08-05，对称 hotword/clipboard GC）──
+
+    /// 辅助：插一个 cipher（可指定 is_deleted）。sync_at 路径保留远程时间戳 + is_deleted。
+    fn insert_cipher_with_deletion(conn: &Connection, id: &str, is_deleted: i64) {
+        let row = VaultCipher {
+            id: id.to_string(),
+            folder_id: None,
+            favorite: false,
+            atype: 1,
+            name: "v1:n".into(),
+            notes: None,
+            data: "v1:d".into(),
+            fields: None,
+            password_history: None,
+            reprompt: 0,
+            is_deleted,
+            sync_md5: None,
+            created_at: "2026-08-05 00:00:00".into(),
+            updated_at: "2026-08-05 00:00:00".into(),
+        };
+        insert_vault_cipher_sync_at(conn, &row).unwrap();
+    }
+
+    /// 辅助：插一个 folder（可指定 is_deleted）。
+    fn insert_folder_with_deletion(conn: &Connection, id: &str, is_deleted: i64) {
+        let row = VaultFolder {
+            id: id.to_string(),
+            name: "v1:n".into(),
+            sort_order: 0,
+            is_deleted,
+            sync_md5: None,
+            created_at: "2026-08-05 00:00:00".into(),
+            updated_at: "2026-08-05 00:00:00".into(),
+        };
+        insert_vault_folder_sync_at(conn, &row).unwrap();
+    }
+
+    /// purge_expired_vault_tombstones：超期 cipher+folder tombstone 硬删，active + 近期 tombstone 不动。
+    #[test]
+    fn purge_expired_vault_tombstones_deletes_only_expired() {
+        let conn = test_db();
+        let now = 1_700_000_000;
+        // active（不应删）
+        insert_cipher_with_deletion(&conn, "c-active", 0);
+        insert_folder_with_deletion(&conn, "f-active", 0);
+        // 近期 tombstone（未超期，不应删）
+        insert_cipher_with_deletion(&conn, "c-recent", now);
+        insert_folder_with_deletion(&conn, "f-recent", now);
+        // 超期 tombstone（应删）——删除时刻比 now 早 31 天（> 30 天 retention）
+        insert_cipher_with_deletion(&conn, "c-old", now - 31 * 86400);
+        insert_folder_with_deletion(&conn, "f-old", now - 31 * 86400);
+
+        let purged = purge_expired_vault_tombstones_at(&conn, now).unwrap();
+        assert_eq!(purged, 2, "应硬删 2 条超期 tombstone（1 cipher + 1 folder）");
+
+        // active + 近期 tombstone 仍在
+        assert!(load_vault_cipher_at(&conn, "c-active").unwrap().is_some());
+        assert!(load_vault_cipher_at(&conn, "c-recent").unwrap().is_some());
+        assert!(load_vault_folder_at(&conn, "f-active").unwrap().is_some());
+        assert!(load_vault_folder_at(&conn, "f-recent").unwrap().is_some());
+        // 超期 tombstone 已删
+        assert!(load_vault_cipher_at(&conn, "c-old").unwrap().is_none());
+        assert!(load_vault_folder_at(&conn, "f-old").unwrap().is_none());
+    }
+
+    /// 恰好等于 retention 不应删（严格 `>` 判定）。
+    #[test]
+    fn purge_expired_vault_tombstones_boundary_not_expired() {
+        let conn = test_db();
+        let now = 1_700_000_000;
+        insert_cipher_with_deletion(&conn, "c-bound", now - VAULT_TOMBSTONE_RETENTION_SECS);
+        insert_folder_with_deletion(&conn, "f-bound", now - VAULT_TOMBSTONE_RETENTION_SECS);
+
+        let purged = purge_expired_vault_tombstones_at(&conn, now).unwrap();
+        assert_eq!(purged, 0, "恰好等于 retention 不应删（严格 >）");
+        assert!(load_vault_cipher_at(&conn, "c-bound").unwrap().is_some());
+        assert!(load_vault_folder_at(&conn, "f-bound").unwrap().is_some());
+    }
+
+    /// 无 tombstone（全 active）→ purge 不报错，返 0。
+    #[test]
+    fn purge_expired_vault_tombstones_no_active_deleted() {
+        let conn = test_db();
+        insert_cipher_with_deletion(&conn, "c-active-only", 0);
+        insert_folder_with_deletion(&conn, "f-active-only", 0);
+        let purged = purge_expired_vault_tombstones_at(&conn, 1_700_000_000).unwrap();
+        assert_eq!(purged, 0);
     }
 }
