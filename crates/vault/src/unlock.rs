@@ -334,18 +334,11 @@ pub fn change_master_password(
     let new_stamp = Uuid::new_v4().to_string();
 
     let input = VaultMetaInput {
-        kdf_type: meta.kdf_type,
-        kdf_salt: meta.kdf_salt.clone(),
-        kdf_iterations: meta.kdf_iterations,
-        kdf_memory_kib: meta.kdf_memory_kib,
-        kdf_parallelism: meta.kdf_parallelism,
         protected_user_vault_key: new_protected_user_vault_key,
         app_key_local_enc: new_app_key_local_enc,
         app_key_sync_enc: new_app_key_sync_enc,
         security_stamp: new_stamp,
-        equivalent_domains: meta.equivalent_domains,
-        public_key: meta.public_key,
-        protected_private_key: meta.protected_private_key,
+        ..VaultMetaInput::from(&meta)
     };
     meta::save_vault_meta(&input)?;
 
@@ -407,18 +400,8 @@ fn refresh_app_key_local_enc(app_key: &DerivedKey) -> Result<()> {
 
     let new_local_enc = k_machine_derived.encrypt(app_key.as_bytes())?;
     let input = VaultMetaInput {
-        kdf_type: meta.kdf_type,
-        kdf_salt: meta.kdf_salt.clone(),
-        kdf_iterations: meta.kdf_iterations,
-        kdf_memory_kib: meta.kdf_memory_kib,
-        kdf_parallelism: meta.kdf_parallelism,
-        protected_user_vault_key: meta.protected_user_vault_key,
         app_key_local_enc: new_local_enc,
-        app_key_sync_enc: meta.app_key_sync_enc,
-        security_stamp: meta.security_stamp,
-        equivalent_domains: meta.equivalent_domains,
-        public_key: meta.public_key,
-        protected_private_key: meta.protected_private_key,
+        ..VaultMetaInput::from(&meta)
     };
     meta::save_vault_meta(&input)?;
     Ok(())

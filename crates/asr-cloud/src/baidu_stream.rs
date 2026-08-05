@@ -274,15 +274,7 @@ impl WsSessionHandler for BaiduHandler {
 fn accumulate_display(fin_texts: &[String], current_partial: &str, language: &str) -> String {
     let sep = sentence_separator(language);
     let stable: String = fin_texts.join(sep);
-    if current_partial.is_empty() {
-        stable
-    } else if stable.is_empty() {
-        // 首句 partial（无稳态句）——直接用 partial，不加前导 sep
-        current_partial.to_string()
-    } else {
-        // 有稳态句 + partial ——stable 与 partial 间插 sep（句间分隔）
-        format!("{}{}{}", stable, sep, current_partial)
-    }
+    crate::cloud_types::combine_stable_partial(&stable, current_partial, sep)
 }
 
 #[cfg(test)]

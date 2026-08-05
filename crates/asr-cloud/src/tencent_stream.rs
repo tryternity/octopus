@@ -212,15 +212,11 @@ impl WsSessionHandler for TencentHandler {
                         .cloned()
                         .collect::<Vec<_>>()
                         .join(sep);
-                    let display = if self.current_partial.is_empty() {
-                        stable
-                    } else if stable.is_empty() {
-                        // 首句 partial（无稳态句）——直接 partial，不加前导 sep
-                        self.current_partial.clone()
-                    } else {
-                        // 有稳态句 + partial——stable 与 partial 间插 sep（句间分隔）
-                        format!("{}{}{}", stable, sep, self.current_partial)
-                    };
+                    let display = crate::cloud_types::combine_stable_partial(
+                        &stable,
+                        &self.current_partial,
+                        sep,
+                    );
                     if !display.is_empty() {
                         let _ = result_tx.send(StreamEvent::Text(display));
                     }
