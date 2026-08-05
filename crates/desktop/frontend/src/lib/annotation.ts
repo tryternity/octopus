@@ -19,6 +19,7 @@ export interface Annotation {
   circleSize?: number;
   textWidth?: number; // 文本最大宽度（自然像素），不折行时省略
   filled?: boolean; // rect/oval/diamond 是否实心填充
+  blurMode?: "pixelate" | "gaussian" | "redact"; // 仅 type="blur" 时有意义，默认 "pixelate"（老数据兼容）
 }
 
 const HIT_DIST = 8;
@@ -350,6 +351,53 @@ export function drawMosaic(ctx: CanvasRenderingContext2D, ann: Annotation, scale
     }
   }
   ctx.globalAlpha = 1;
+}
+
+/**
+ * 高斯模糊（WKWebView ctx.filter='blur(Npx)'）。radius 由 lineWidth 控制。
+ * e2e 验证性能：若拖拽卡顿或效果异常，fallback stackblur（TODO 注释标记）。
+ */
+export function drawGaussian(ctx: CanvasRenderingContext2D, ann: Annotation, scale: number = 1) {
+  const bx = Math.round(Math.min(ann.x1, ann.x2) * scale);
+  const by = Math.round(Math.min(ann.y1, ann.y2) * scale);
+  const bw = Math.round(Math.abs(ann.x2 - ann.x1) * scale);
+  const bh = Math.round(Math.abs(ann.y2 - ann.y1) * scale);
+  if (bw < 2 || bh < 2) return;
+  const radius = Math.max(4, (ann.lineWidth || 3) * 3);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(bx, by, bw, bh);
+  ctx.clip();
+  ctx.filter = `blur(${radius}px)`;
+  ctx.drawImage(ctx.canvas, bx, by, bw, bh, bx, by, bw, bh);
+  ctx.filter = "none";
+  ctx.restore();
+}
+
+/**
+ * 纯黑遮挡（Redact）——正式文档完全遮挡敏感信息。
+ */
+export function drawRedact(ctx: CanvasRenderingContext2D, ann: Annotation, scale: number = 1) {
+  const bx = Math.round(Math.min(ann.x1, ann.x2) * scale);
+  const by = Math.round(Math.min(ann.y1, ann.y2) * scale);
+  const bw = Math.round(Math.abs(ann.x2 - ann.x1) * scale);
+  const bh = Math.round(Math.abs(ann.y2 - ann.y1) * scale);
+  if (bw < 2 || bh < 2) return;
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(bx, by, bw, bh);
+}
+
+/**
+ * blur 标注分发器——根据 ann.blurMode 调对应函数。
+ * 调用方（composeAndCropBytes / ImagePreview / RecordAnnotation）统一用此入口，
+ * 替换原直接调 drawMosaic 的 3 处调用点。
+ */
+export function drawBlur(ctx: CanvasRenderingContext2D, ann: Annotation, scale: number = 1) {
+  switch (ann.blurMode ?? "pixelate") {
+    case "gaussian": drawGaussian(ctx, ann, scale); break;
+    case "redact":   drawRedact(ctx, ann, scale);   break;
+    default:         drawMosaic(ctx, ann, scale);   break;
+  }
 }
 
 export function annBounds(ann: Annotation): { x: number; y: number; w: number; h: number } {
