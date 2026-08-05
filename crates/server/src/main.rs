@@ -215,32 +215,25 @@ async fn handle_ws(
 ) {
     use futures_util::StreamExt;
 
-    // Validate engine
-    if octopus_asr_local::config::resolve_engine_category_any(&engine).is_none() {
+    /// 发 WS 错误响应（TranscriptEvent::Error）后返回。3 处错误分支共用（2026-08-05 抽取）。
+    async fn send_ws_error(socket: &mut axum::extract::ws::WebSocket, msg: impl Into<String>) {
         let _ = socket
             .send(Message::Text(
-                event_to_json(&TranscriptEvent::Error(format!(
-                    "Unknown engine '{}'",
-                    engine
-                )))
-                .into(),
+                event_to_json(&TranscriptEvent::Error(msg.into())).into(),
             ))
             .await;
+    }
+
+    // Validate engine
+    if octopus_asr_local::config::resolve_engine_category_any(&engine).is_none() {
+        send_ws_error(&mut socket, format!("Unknown engine '{}'", engine)).await;
         return;
     }
 
     let session = match octopus_asr_local::streaming_engine::StreamingSession::new(&engine, &language) {
         Ok(s) => s,
         Err(e) => {
-            let _ = socket
-                .send(Message::Text(
-                    event_to_json(&TranscriptEvent::Error(format!(
-                        "Failed to create streaming session: {}",
-                        e
-                    )))
-                    .into(),
-                ))
-                .await;
+            send_ws_error(&mut socket, format!("Failed to create streaming session: {}", e)).await;
             return;
         }
     };
@@ -250,15 +243,7 @@ async fn handle_ws(
     let mut stream = match WsStreamSession::new(Arc::new(session), correct) {
         Ok(s) => s,
         Err(e) => {
-            let _ = socket
-                .send(Message::Text(
-                    event_to_json(&TranscriptEvent::Error(format!(
-                        "VAD init: {}",
-                        e
-                    )))
-                    .into(),
-                ))
-                .await;
+            send_ws_error(&mut socket, format!("VAD init: {}", e)).await;
             return;
         }
     };

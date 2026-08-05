@@ -99,7 +99,7 @@ pub struct PtySession {
 impl PtySession {
     /// 写入 PTY stdin（用户输入）。
     pub fn write(&self, data: &[u8]) -> std::io::Result<()> {
-        self.writer.lock().unwrap().write_all(data)
+        self.writer.lock().unwrap_or_else(|e| e.into_inner()).write_all(data)
     }
 
     /// 调整 PTY 尺寸。
@@ -240,7 +240,7 @@ where
                     Ok(n) => {
                         agent_detect.process(&buf[..n], |t| on_signal_reader(t));
                         let (lock, cv) = &*pending_r;
-                        let mut g = lock.lock().unwrap();
+                        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
                         if g.len() + n > MAX_PENDING {
                             dropped_bytes += g.len() as u64;
                             g.clear();
@@ -277,7 +277,7 @@ where
             let (lock, cv) = &*pending_f;
             loop {
                 {
-                    let mut g = lock.lock().unwrap();
+                    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
                     while g.is_empty() {
                         if done_f.load(Ordering::Acquire) {
                             return;
@@ -288,7 +288,7 @@ where
                 }
                 // 合并短窗口，让突发输入作为一个 chunk 发出。
                 thread::sleep(FLUSH_COALESCE);
-                let chunk = std::mem::take(&mut *lock.lock().unwrap());
+                let chunk = std::mem::take(&mut *lock.lock().unwrap_or_else(|e| e.into_inner()));
                 if chunk.is_empty() {
                     continue;
                 }
@@ -330,7 +330,7 @@ where
                 log::error!("pty reader thread panicked: {e:?}");
             }
             let (lock, cv) = &*pending_e;
-            let tail = std::mem::take(&mut *lock.lock().unwrap());
+            let tail = std::mem::take(&mut *lock.lock().unwrap_or_else(|e| e.into_inner()));
             if !tail.is_empty() {
                 on_data_exit(tail);
             }
@@ -385,7 +385,7 @@ mod tests {
             cwd,
             cmd_str,
             move |chunk: Vec<u8>| {
-                out_clone.lock().unwrap().extend(chunk);
+                out_clone.lock().unwrap_or_else(|e| e.into_inner()).extend(chunk);
             },
             move |code: i32| {
                 exit_clone.store(code, Ordering::SeqCst);
@@ -400,7 +400,7 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         let code = exit_code.load(Ordering::SeqCst);
-        let data = out.lock().unwrap().clone();
+        let data = out.lock().unwrap_or_else(|e| e.into_inner()).clone();
         (code, data)
         // _session 在此 drop，命令已退出，kill 是 no-op。
     }
@@ -474,7 +474,7 @@ mod tests {
                         Ok(n) => {
                             agent_detect.process(&buf[..n], |t| on_signal_reader(t));
                             let (lock, cv) = &*pending_r;
-                            let mut g = lock.lock().unwrap();
+                            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
                             g.extend_from_slice(&buf[..n]);
                             cv.notify_one();
                         }
@@ -494,7 +494,7 @@ mod tests {
                 let (lock, cv) = &*pending_f;
                 loop {
                     {
-                        let mut g = lock.lock().unwrap();
+                        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
                         while g.is_empty() {
                             if done_f.load(Ordering::Acquire) {
                                 return;
@@ -504,7 +504,7 @@ mod tests {
                         }
                     }
                     thread::sleep(FLUSH_COALESCE);
-                    let chunk = std::mem::take(&mut *lock.lock().unwrap());
+                    let chunk = std::mem::take(&mut *lock.lock().unwrap_or_else(|e| e.into_inner()));
                     if chunk.is_empty() {
                         continue;
                     }
@@ -526,7 +526,7 @@ mod tests {
                 exited_w.store(true, Ordering::Release);
                 let _ = join_reader_with_timeout(reader_thread, "reader-test", READER_JOIN_TIMEOUT);
                 let (lock, cv) = &*pending_e;
-                let tail = std::mem::take(&mut *lock.lock().unwrap());
+                let tail = std::mem::take(&mut *lock.lock().unwrap_or_else(|e| e.into_inner()));
                 if !tail.is_empty() {
                     on_data_exit(tail);
                 }

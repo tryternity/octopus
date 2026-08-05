@@ -295,7 +295,10 @@ fn parse_srt_impl(text: &str) -> Vec<SubtitleCue> {
                                 lines_iter.next();
                                 break;
                             }
-                            text_lines.push(lines_iter.next().unwrap().trim());
+                            // peek 已确认非空，next 必返 Some；用 if let 防御未来不变量破坏
+                            if let Some(line) = lines_iter.next() {
+                                text_lines.push(line.trim());
+                            }
                         }
                         if !text_lines.is_empty() {
                             cues.push(SubtitleCue {
