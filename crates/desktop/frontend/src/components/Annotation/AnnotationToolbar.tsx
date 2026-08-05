@@ -15,11 +15,15 @@
 //   - 不同工具：切换 + 弹出 popover + 记录按钮中心 x（popover 跟随）
 //   - 末尾调 onToolChange(t) 让业务侧做透传
 
+import { useState, useEffect, useRef } from "react";
 import type { ReactNode, MutableRefObject } from "react";
 import type { Tool } from "@/lib/annotation";
 import { ToolPropsPopover } from "@/pages/Screenshot/ToolPropsPopover";
 import { useT } from "@/lib/i18n";
 import type { AnnotationState } from "./useAnnotationState";
+
+// blur 渲染模式三选项（与 useAnnotationState.blurMode 联动）
+const BLUR_MODES = ["pixelate", "gaussian", "redact"] as const;
 
 export interface AnnotationToolbarProps {
   /** 注入 useAnnotationState 返回的 state/actions */
@@ -136,6 +140,25 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     showHighlight = true,
   } = props;
 
+  // ── blur 按钮 popover 子菜单状态 ──
+  // 点 blur 按钮弹出（含 3 个 blurMode 选项），选中后 setBlurMode + setTool("blur") + 关闭。
+  // 关闭时机：选中某个选项 / 点击 popover 外部（document mousedown listener）。
+  const [showBlurPopover, setShowBlurPopover] = useState(false);
+  const blurPopoverRef = useRef<HTMLDivElement | null>(null);
+  const blurBtnRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!showBlurPopover) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (blurPopoverRef.current?.contains(target)) return;
+      if (blurBtnRef.current?.contains(target)) return;
+      setShowBlurPopover(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showBlurPopover]);
+
   if (!visible) return null;
 
   // ── 工具按钮点击：toggle popover + 切换工具 ──
@@ -179,8 +202,9 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     ...(showHighlight ? [{ key: "highlight" as Tool, src: "icons/highlighter.svg", label: t("screenshot.tool.highlight") }] : []),
     { key: "text", src: "icons/text.svg", label: t("screenshot.tool.text") },
     { key: "number", src: "icons/sequence-note.svg", label: t("screenshot.tool.number") },
-    { key: "blur", src: "icons/mosaic.svg", label: t("screenshot.tool.mosaic") },
   ];
+  // blur 单独渲染：带 popover 子菜单（切换 blurMode），不复用 onToolSelect 的 popover 逻辑。
+  const blurTool = { src: "icons/mosaic.svg", label: t("screenshot.tool.mosaic") };
 
   return (
     <>
@@ -227,6 +251,75 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
             icon={<ToolIcon src={it.src} alt={it.label} active={state.tool === it.key} />}
           />
         ))}
+
+        {/* blur 按钮：点击弹 popover 子菜单切换 blurMode（pixelate/gaussian/redact）。
+            popover 关闭：选中选项后 / 点外部（useEffect 内 document mousedown listener）。 */}
+        <div style={{ position: "relative" }}>
+          <div ref={blurBtnRef}>
+            <ToolButton
+              active={state.tool === "blur"}
+              onClick={(e) => {
+                e.stopPropagation();
+                // 仍记录按钮中心 x，供 ToolPropsPopover 跟随
+                const rect = e.currentTarget.getBoundingClientRect();
+                state.setPopoverX(rect.left + rect.width / 2);
+                setShowBlurPopover((v) => !v);
+              }}
+              label={blurTool.label}
+              icon={<ToolIcon src={blurTool.src} alt={blurTool.label} active={state.tool === "blur"} />}
+            />
+          </div>
+          {showBlurPopover && (
+            <div
+              ref={blurPopoverRef}
+              style={{
+                position: "absolute",
+                top: "100%",
+                left: "50%",
+                transform: "translateX(-50%)",
+                marginTop: 4,
+                padding: 4,
+                background: "var(--color-surface)",
+                color: "var(--color-foreground)",
+                borderRadius: 8,
+                boxShadow: "0 8px 24px -4px rgba(0,0,0,0.2), 0 2px 8px -2px rgba(0,0,0,0.1)",
+                zIndex: 102,
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+                minWidth: 96,
+              }}
+            >
+              {BLUR_MODES.map((m) => (
+                <button
+                  key={m}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    state.setBlurMode(m);
+                    state.setTool("blur");
+                    state.setShowPopover(false);
+                    onToolChange?.("blur");
+                    setShowBlurPopover(false);
+                  }}
+                  title={t(`screenshot.tool.blur_${m}`)}
+                  style={{
+                    padding: "5px 8px",
+                    border: "none",
+                    borderRadius: 5,
+                    background: state.blurMode === m ? "var(--color-voice)" : "transparent",
+                    color: state.blurMode === m ? "#fff" : "var(--color-foreground)",
+                    cursor: "pointer",
+                    fontSize: 11,
+                    whiteSpace: "nowrap",
+                    textAlign: "left",
+                  }}
+                >
+                  {t(`screenshot.tool.blur_${m}`)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* 橡皮擦：不弹 popover，直接切工具 */}
         <ToolButton

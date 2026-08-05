@@ -1027,6 +1027,9 @@ screenshot:
     text: 文字
     number: 序号
     mosaic: 马赛克
+    blur_pixelate: 像素化
+    blur_gaussian: 高斯模糊
+    blur_redact: 黑条遮挡
     eraser: 橡皮擦
     undo: 撤销
     redo: 重做

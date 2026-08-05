@@ -1018,6 +1018,9 @@ screenshot:
     text: Text
     number: Number
     mosaic: Mosaic
+    blur_pixelate: Pixelate
+    blur_gaussian: Gaussian
+    blur_redact: Redact
     eraser: Eraser
     undo: Undo
     redo: Redo
