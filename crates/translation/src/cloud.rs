@@ -43,8 +43,9 @@ impl TranslationEngine for CloudLlmEngine {
     async fn translate(&self, text: &str, source_lang: &str, target_lang: &str) -> Result<String> {
         let prompt = build_translate_prompt(source_lang, target_lang);
         // 复用 octopus-llm::client（reqwest::blocking）。
-        // 在 async fn 里直接调 blocking——由调用方 spawn_blocking 隔离
-        // （与现有 do_translate_streaming 在 worker 线程执行同模式）。
+        // translation crate 是纯推理库（无 tokio 运行时依赖，tokio 仅 dev-dep），
+        // 不能在此 crate 内 spawn_blocking。调用方（desktop translate.rs）负责隔离
+        //（第十五轮 P2-A：CloudModel 分支已加 spawn_blocking，对齐 FallbackLlm）。
         octopus_llm::chat_text_with_prompt(&prompt, text, &self.config, None)
             .map_err(|e| anyhow::anyhow!("云端翻译失败: {}", e))
     }

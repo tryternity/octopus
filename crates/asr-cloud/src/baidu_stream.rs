@@ -215,7 +215,11 @@ async fn run_baidu_session(
                                     .as_str()
                                     .unwrap_or("")
                                     .to_string();
-                                fin_texts.push(result);
+                                // 第十五轮 P3-D：过滤空 result——FIN_TEXT 协议异常发空时，
+                                // push 空串会导致 accumulate_display 的 join(sep) 产生多余分隔符（你好，，世界）。
+                                if !result.is_empty() {
+                                    fin_texts.push(result);
+                                }
                                 current_partial.clear();
                                 let display = accumulate_display(&fin_texts, &current_partial, &language);
                                 if !display.is_empty() {

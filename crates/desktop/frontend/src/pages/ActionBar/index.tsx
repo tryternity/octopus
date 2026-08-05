@@ -109,6 +109,10 @@ export default function ActionBar() {
     setToast(msg);
     toastTimerRef.current = setTimeout(() => setToast(""), 2000);
   };
+  // 第十五轮 P3-组4 #1：toast timer unmount cleanup（防 toast setTimeout 在组件卸载后仍触发 setToast）。
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
   useEffect(() => { focusLayerRef.current = focusLayer; }, [focusLayer]);
   useEffect(() => { contextRef.current = context; }, [context]);
 

@@ -47,6 +47,9 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [page, setPage] = useState(1);
   const [noMore, setNoMore] = useState(false);
+  // 第十五轮 P3-组4 #5：confirmDelete timer 用 ref 管理（原裸 setTimeout 无 ref）。
+  // 对齐同文件 ClipboardRow deleteTimer 模式：clearTimeout 旧 timer 防 stacking + unmount cleanup。
+  const confirmDeleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const debouncedSearch = useDebouncedValue(search, 300);
 
@@ -77,6 +80,10 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
 
   useEffect(() => { fetchData(true); }, [filter, debouncedSearch]);
   useTauriEvent("clipboard://changed", () => fetchData(true));
+  // 第十五轮 P3-组4 #5：confirmDelete timer unmount cleanup（与上方 ref 配套）。
+  useEffect(() => () => {
+    if (confirmDeleteTimerRef.current) clearTimeout(confirmDeleteTimerRef.current);
+  }, []);
 
   const toggleSelect = (id: number) => {
     setSelectedIds((prev) => {
@@ -96,10 +103,12 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
     if (selectedIds.size === 0) return;
     if (!confirmDelete) {
       setConfirmDelete(true);
-      setTimeout(() => setConfirmDelete(false), 3000);
+      if (confirmDeleteTimerRef.current) clearTimeout(confirmDeleteTimerRef.current);
+      confirmDeleteTimerRef.current = setTimeout(() => setConfirmDelete(false), 3000);
       return;
     }
     try {
+      if (confirmDeleteTimerRef.current) { clearTimeout(confirmDeleteTimerRef.current); confirmDeleteTimerRef.current = null; }
       await invoke("delete_clipboard_items", { ids: Array.from(selectedIds) });
       showToast(t("settings.clipboardPanel.deletedN", { n: selectedIds.size }));
       setSelectedIds(new Set());

@@ -7,8 +7,6 @@
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
 use crate::core::error_util::{e2s, e2s_ctx};
-// TranslationEngine trait 需在作用域内才能调 `engine.translate(...).await`（本地 + 云端引擎）。
-use octopus_translation::TranslationEngine;
 
 /// 按 CJK 检测方向，返回翻译 system prompt。
 pub(crate) fn auto_translate_prompt(text: &str) -> &'static str {
@@ -92,8 +90,7 @@ pub(crate) async fn do_translate(text: &str, config: &octopus_infra::config::App
                 .map_err(e2s)
         }
         TranslateStrategy::CloudModel { resolved } => {
-            // 云端引擎（OpenAI 兼容）——内部 reqwest::blocking，由外层 block_on 隔离
-            //
+            // 云端引擎（OpenAI 兼容）——内部 reqwest::blocking。
             // follow-up #7：secret_key 可能是 v1: 加密格式（vault 启用后 Task 20 迁移过），
             // 透明解密得到明文 API Key。本地 / 未迁移明文 → no-op 返回原值。
             // 安全修复 #5：vault 启用但解密失败 → Err，不把密文当 bearer 发到云端。
@@ -101,10 +98,26 @@ pub(crate) async fn do_translate(text: &str, config: &octopus_infra::config::App
                 &resolved.entry.secret_key,
             )
             .map_err(|_| "云端翻译失败：保险库未解锁或密文损坏，请先解锁保险库".to_string())?;
-            let engine = octopus_translation::CloudLlmEngine::new(
-                &resolved.provider, &resolved.name, &resolved.entry.source, &secret_key_plain, resolved.is_thinking,
-            );
-            engine.translate(text, source_lang, target_lang).await
+            // 第十五轮 P2-A：reqwest::blocking 检测 tokio runtime context，block_on 进入
+            // runtime 后 future 在 worker poll → reqwest::blocking panic
+            // "Cannot start a runtime from within a runtime"。translation crate 是纯推理库
+            //（无 tokio dep），不能在 CloudLlmEngine::translate 内 spawn_blocking，故在此
+            //（desktop，有 tokio）用 spawn_blocking 隔离，对齐 FallbackLlm :117 模式。
+            let config = octopus_llm::CompatibleLlmConfig {
+                provider: resolved.provider.clone(),
+                model: resolved.name.clone(),
+                base_url: resolved.entry.source.clone(),
+                secret_key: secret_key_plain,
+                is_thinking: resolved.is_thinking,
+                source_type: 2,
+                is_enabled: true,
+            };
+            let prompt = octopus_translation::cloud::build_translate_prompt(source_lang, target_lang);
+            let text_owned = text.to_string();
+            tokio::task::spawn_blocking(move || {
+                octopus_llm::chat_text_with_prompt(&prompt, &text_owned, &config, None)
+            }).await
+                .map_err(|e| e2s_ctx("云端翻译线程异常: {}", e))?
                 .map_err(e2s)
         }
         TranslateStrategy::FallbackLlm => {

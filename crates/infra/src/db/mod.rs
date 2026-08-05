@@ -82,8 +82,13 @@ pub fn set_test_db(conn: Connection) {
     )
     .expect("set_test_db: set PRAGMA");
     conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
-    conn.execute("PRAGMA user_version = 46", [])
-        .expect("set_test_db: set user_version");
+    // 第十五轮 P3-G：改用 CURRENT_SCHEMA_VERSION（原硬编 46 与实际 v58 不符，
+    // 裸 conn 调 init_schema 会从 v46 走迁移 → bail）。test helper 应反映当前 schema。
+    conn.execute(
+        &format!("PRAGMA user_version = {}", CURRENT_SCHEMA_VERSION),
+        [],
+    )
+    .expect("set_test_db: set user_version");
     TEST_DB_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
     });

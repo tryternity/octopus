@@ -401,6 +401,7 @@
 | 12 | `67ce6dc4` | P1-1 dock FLOAT_DEPTH 泄漏 + P1-2 MarkdownPreview 链接拦截 + P2-1 record stop 卡 Stopping + P2-2 OCR 编号不重置 + P2-3/4 坐标混算 + P3-1/2/3/4 + doc |
 | 13 | `f9a25a20` | P2-1 open_settings 不 show + P3-1 SyncPanel resolve syncing 回滚 + P3-3 record serde 序列化失败 reset_to_idle + P3-2 文档化 |
 | 14 | `71e7e10f` | P1-1 Result setInterval ref + P1-2 invoke_handler cfg gate + P2-1 vault serde default + P2-2 merge 删除守卫 + P2-3 rename_folder + P2-4 fps/codec + P3-3/4/5/6/7/8/9 |
+| 15 | （本轮，待 commit） | P3-8 漏修 Transducer + P2-A cloud translate spawn_blocking + P2-B 粘贴安全 + P3-D/E/F/G/H + 前端 9 处 cleanup |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -676,4 +677,74 @@ tx.commit()?;
 
 - `cargo build` vault/record/desktop(cloud,vault)/dlp/ocr/asr-local —— 0 error 0 warning。
 - `cargo test`：vault 262 / record 50 / ocr 35 / desktop 520 全过。
+- tsc exit 0。
+
+## 18. 第十五轮审查修复（2026-08-05，跨轮漏修 + 2 P2 + P3 批量）
+
+第十五轮全新核查（5 模块域并行代理 + 亲自 Read 核实）。报告含 1 跨轮漏修（P3-8 Transducer）+ 2 P2 + 多组 P3。核实结论：P3-C（tencent final=1 stable 空）为设计取舍（全静音发 Finished 比 Failed 更合理），不修；P3-E（engine_dispatch is_cloud 不对称）文档化（streaming 路径不走 dispatch，实际不触发）。其余全修。
+
+### 跨轮漏修：P3-8 StreamingZipformerTransducer chunk_len/shift .max(1)
+
+**根因**：第十四轮 P3-8 只修了 `StreamingZipformer`（CTC，:57-66），漏修 `StreamingZipformerTransducer`（:532-539）——两者同文件、同模式、同死循环风险（Transducer :273/:285 `frame_idx += self.chunk_shift` while 循环，metadata=0 时原地踏步）。spec §17 也只记一处，双向疏忽。
+
+**修复**：Transducer :532-539 补 `.max(1)`（对齐 CTC）。spec §17 补记 Transducer 漏修。
+
+### P2-A. cloud translate 缺 spawn_blocking（panic/死锁）🟠
+
+**根因**：`translation/src/cloud.rs:43-50` `CloudLlmEngine::translate`（async fn）内部直接调 `octopus_llm::chat_text_with_prompt`（reqwest::blocking）。调用方 `do_translate`（translate.rs:94-108 CloudModel 分支）经 `tauri::async_runtime::block_on` 进入 tokio runtime → future 在 worker 线程 poll → reqwest::blocking 检测 runtime context → panic "Cannot start a runtime from within a runtime"。对比同文件 FallbackLlm 分支（:110-122）正确用 spawn_blocking。
+
+**触发**：用户配云端翻译模型（deepseek/openai/智谱等）并执行翻译时必现 panic。worker 路径无 catch_unwind → 杀线程；coordinator 路径有 catch_unwind → 翻译功能失效。
+
+**修复方式决策**：translation crate 是纯推理库（tokio 仅 dev-dep），不能在 CloudLlmEngine::translate 内 spawn_blocking。改在调用方（desktop translate.rs CloudModel 分支）用 spawn_blocking 包裹 `chat_text_with_prompt`，对齐 FallbackLlm 模式。删 `TranslationEngine` trait import（CloudModel 分支不再经 trait，LocalModel 的 `Box<dyn TranslationEngine>` 不需 trait in scope）。
+
+### P2-B. 粘贴安全（write 失败仍 paste）🟠
+
+**根因**：`clipboard_commands.rs:220` `let _ = write_item_to_clipboard(&handle, &item)` 吞错，`:226 focus.simulate_paste()` 无论写成功与否都粘贴。写失败时粘贴的是剪贴板残留的上一条内容（可能是密码/token）。
+
+**修复**：write 失败时不 paste + log warn（防误粘贴敏感残留内容）。
+
+### P3-D. baidu FIN_TEXT 空过滤
+
+`baidu_stream.rs:218` `fin_texts.push(result)` 的 result 来自 `unwrap_or("")`，空时不过滤 → `accumulate_display` 的 `join(sep)` 产生多余分隔符（你好，，世界）。push 前补 `if !result.is_empty()`。
+
+### P3-E. engine_dispatch is_cloud 不对称（文档化，不修）
+
+`engine_dispatch.rs:40` is_cloud 仅判 Aliyun（DispatchEngine 只持 AliyunEngine 实例）。ByteDance/Tencent/Baidu 落 embedded.transcribe（会失败）。但实际 cloud ASR 走 streaming pipeline 不走 dispatch.transcribe → 几乎不触发。修复需给 DispatchEngine 加各 cloud engine 实例（大改），不值得。
+
+### P3-F. dlp :285/:292 exit(1) 改 bail!
+
+`main.rs:285/:292` 两处 `std::process::exit(1)` 在 `_cleanup_guard`（:297）创建前。改 `anyhow::bail!`（走正常返回路径）。
+
+### P3-G. set_test_db user_version=46 改 CURRENT_SCHEMA_VERSION
+
+`infra/src/db/mod.rs:85` 硬编 `PRAGMA user_version = 46`（既非注释说的 v40 也非 CURRENT=58）。改 `CURRENT_SCHEMA_VERSION`。
+
+### P3-H. 注释 jpeg:100/q85 陈旧
+
+`consts.rs:38-40` 注释说「q100」，实际 :42 是 `jpeg:92`。`clipboard/image.rs:1` 说「JPEG q85」。修正为当前 q92。
+
+### P3 组4. 前端 setTimeout/timer cleanup（9 处）
+
+React 18+ 不再警告 setState-on-unmount，但不符合项目既有范式（Result/CompactEditor 已正确做）。批量修复：
+
+| # | 文件 | 修复 |
+|---|---|---|
+| 1 | ActionBar/index.tsx | toastTimerRef 补 unmount cleanup |
+| 2 | Settings/index.tsx | toastTimerRef 补 unmount cleanup |
+| 3 | VaultPicker/index.tsx | searchTimerRef 补 unmount cleanup（防 debounce 期关闭仍 invoke） |
+| 4 | HistoryPanel.tsx | confirmDelete 裸 setTimeout → ref + cleanup（对齐 HistoryRow.deleteTimer） |
+| 5 | ClipboardPanel.tsx | 同 #4 |
+| 6 | Screenshot/index.tsx | ocrWarn setTimeout → ref + cleanup |
+| 7 | useOcr.ts | 三处裸 setTimeout → 3 个 ref + 统一 cleanup |
+| 8 | PasswordGenerator.tsx | handleCopy setTimeout → ref + cleanup |
+| 9 | Download/index.tsx | async listen setup 缺 cancelled 哨兵 → 真实 listener 泄漏（非 setState） |
+
+### 文档化不修
+
+- **P3-C tencent final=1 stable 空**：全静音/全噪声时腾讯返回 final=1 但无文本，发 Finished（识别完成无内容）vs Failed（识别失败）。Finished 更合理（其他 provider 对全静音也返空文本），设计取舍非 bug。
+
+### 验证
+
+- `cargo build` translation/desktop(cloud,vault)/asr-local/asr-cloud/dlp/infra/clipboard —— 0 error 0 warning。
+- `cargo test`：translation 20 / asr-cloud 58 / infra 183 / desktop 520 全过。
 - tsc exit 0。

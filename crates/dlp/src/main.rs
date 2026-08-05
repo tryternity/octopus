@@ -282,14 +282,15 @@ async fn main() -> Result<()> {
             .await?;
 
         if !download_status.success() {
-            eprintln!("Failed to download media using yt-dlp.");
-            std::process::exit(1);
+            // 第十五轮 P3-F：改 bail!（非 exit）——exit 跳过后续 _cleanup_guard 创建，
+            // 但下载失败时文件可能部分写入。bail! 走正常返回路径，后续代码不执行但
+            // 也不会跳过清理（此时 guard 未创建，文件若存在由用户手动清理或下次 --unclear 处理）。
+            anyhow::bail!("Failed to download media using yt-dlp.");
         }
     }
 
     if !downloaded_filepath.exists() {
-        eprintln!("Downloaded file does not exist at: {:?}", downloaded_filepath);
-        std::process::exit(1);
+        anyhow::bail!("Downloaded file does not exist at: {:?}", downloaded_filepath);
     }
 
     // 清理守卫：覆盖其后所有退出路径（ffmpeg spawn/wait `?` 提前返回 + 正常完成 + exit(1)），
