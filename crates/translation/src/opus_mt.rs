@@ -193,8 +193,31 @@ impl OpusMTEngine {
                 continue;
             }
             log::info!("opus-mt 翻译段 {}/{}", i + 1, sentences.len());
-            let translated = self.translate_chunk(sent)?;
-            results.push(translated);
+            // 第二十轮 P2-4：超长单句（无标点 1000+ 汉字）字符级硬切——
+            // translate_chunk 内部 truncate 静默丢后半段。按 200 字符/chunk 硬切
+            // （对齐 m2m100 split_into_chunks :166 策略），尽量在边界切。
+            let sent_tokens = self.tokenizer.encode(sent.as_str(), true)
+                .map(|enc| enc.len())
+                .unwrap_or(MAX_ENCODER_TOKENS + 1);
+            if sent_tokens > MAX_ENCODER_TOKENS {
+                log::warn!("opus-mt 单句 {} tokens 超限，字符级硬切", sent_tokens);
+                let chars: Vec<char> = sent.chars().collect();
+                let mut start = 0;
+                while start < chars.len() {
+                    let mut end = (start + 200).min(chars.len());
+                    // 尽量在标点或空格处切
+                    while end > start + 100 && !crate::text_split::is_sentence_end(chars[end - 1]) && chars[end - 1] != ' ' {
+                        end -= 1;
+                    }
+                    let sub: String = chars[start..end].iter().collect();
+                    let translated = self.translate_chunk(&sub)?;
+                    results.push(translated);
+                    start = end;
+                }
+            } else {
+                let translated = self.translate_chunk(sent)?;
+                results.push(translated);
+            }
         }
 
         // 用空字符串拼接（保持段内连续），与 m2m100 一致

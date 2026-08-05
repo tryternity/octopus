@@ -893,6 +893,14 @@ fn meta_file_not_found(e: &anyhow::Error) -> bool {
 pub fn resolve_with_remote(password: Zeroizing<String>) -> Result<(), SyncError> {
     use crate::crypto::kdf::{derive_master_root_key, Argon2Params};
 
+    // 第二十一轮 P2-v1：补暴力破解防护（对齐 unlock 路径）——resolve 验证主密码但
+    // 原无 attempt_guard，DevTools 反复 invoke 无指数退避。
+    if let Some(wait) = crate::attempt_guard::guard().remaining_wait() {
+        return Err(SyncError::Other(anyhow::anyhow!(
+            "操作过于频繁，请等待 {} 秒后重试", wait.as_secs()
+        )));
+    }
+
     // #7 修复：resolve 会 git add/commit，与 sync_now 并发会留残留
     let _guard = try_sync_lock()?;
 
@@ -911,8 +919,12 @@ pub fn resolve_with_remote(password: Zeroizing<String>) -> Result<(), SyncError>
         .map_err(|e| SyncError::Other(e.context("KDF 派生失败")))?;
     // 验证密码：解 protected_user_vault_key，失败即密码错
     let _uvk_bytes = master.decrypt(&f.protected_user_vault_key).map_err(|_| {
+        // P2-v1：密码错误记退避（对齐 unlock :226 record_failure）
+        crate::attempt_guard::guard().record_failure();
         SyncError::Other(anyhow::anyhow!("密码错误——无法解远程 protected_user_vault_key"))
     })?;
+    // 密码正确 → 重置退避（对齐 unlock :237 reset）
+    crate::attempt_guard::guard().reset();
 
     // 3. 密码正确 → 用远程 9 个同步字段覆盖本地 vault_meta
     let local_meta = db::load_vault_meta().map_err(SyncError::Other)?;
@@ -953,6 +965,13 @@ pub fn resolve_with_remote(password: Zeroizing<String>) -> Result<(), SyncError>
 pub fn resolve_with_local(password: Zeroizing<String>) -> Result<(), SyncError> {
     use crate::crypto::kdf::{derive_master_root_key, Argon2Params};
 
+    // 第二十一轮 P2-v1：补暴力破解防护（同 resolve_with_remote）
+    if let Some(wait) = crate::attempt_guard::guard().remaining_wait() {
+        return Err(SyncError::Other(anyhow::anyhow!(
+            "操作过于频繁，请等待 {} 秒后重试", wait.as_secs()
+        )));
+    }
+
     // #7 修复：resolve 会 git add/commit，与 sync_now 并发会留残留
     let _guard = try_sync_lock()?;
 
@@ -971,8 +990,12 @@ pub fn resolve_with_local(password: Zeroizing<String>) -> Result<(), SyncError> 
         .map_err(|e| SyncError::Other(e.context("KDF 派生失败")))?;
     // 验证密码
     let _uvk_bytes = master.decrypt(&local_meta.protected_user_vault_key).map_err(|_| {
+        // P2-v1：密码错误记退避
+        crate::attempt_guard::guard().record_failure();
         SyncError::Other(anyhow::anyhow!("密码错误——无法解本地 protected_user_vault_key"))
     })?;
+    // 密码正确 → 重置退避
+    crate::attempt_guard::guard().reset();
 
     // 2. 密码正确 → 重新 export 本地 meta 到文件系统覆盖远程的脏 meta
     let root = octopus_sync::store::sync_root();

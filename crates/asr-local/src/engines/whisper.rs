@@ -338,6 +338,11 @@ impl WhisperEngine {
 
 impl crate::engine::OfflineAsrEngine for WhisperEngine {
     fn transcribe(&self, audio: &[f32], language: &str) -> Result<String> {
+        // 第二十一轮 P2-a3：空音频守卫——compute_mel 对空 slice 产生 NaN（fold 空 +
+        // len=0 除零），传播到 ONNX 推理输出乱码或下游 panic。对齐 qwen3_asr.rs:165。
+        if audio.is_empty() {
+            return Ok(String::new());
+        }
         // Mel spectrogram
         let mel = compute_mel(audio)?;
         log::debug!("[whisper] mel shape: {:?}", mel.shape());

@@ -35,9 +35,15 @@ pub fn cached_engine(engine_spec: &str) -> Result<Option<Arc<dyn TranslationEngi
         // cached_engine 无方向参数，对 opus-mt 返回 None。
         // 实际加载由 do_translate → load_opus_mt(source, target) 处理。
         return Ok(None);
-    } else {
-        // 默认：m2m100
+    } else if engine_name.starts_with("m2m100") {
         Arc::new(crate::m2m100::M2M100Engine::load()?)
+    } else {
+        // 第二十轮 P2-5：未知引擎名显式报错（原静默回退 m2m100——用户配错引擎名
+        // 以为用 A 实际跑 B，无任何提示）。
+        anyhow::bail!(
+            "未知本地翻译引擎 '{}'（支持：opus-mt-* / m2m100*）",
+            engine_name
+        );
     };
 
     let mut guard = cache.lock();
