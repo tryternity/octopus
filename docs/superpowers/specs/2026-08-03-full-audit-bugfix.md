@@ -408,6 +408,8 @@
 | 19 | `d0378d46` | P2-1 itemId 崩溃 + P2-2 MarkdownPreview listener + BOM 错位补修 + config fail-soft |
 | 20 | `e12364d2` | P2-4 opus_mt 超长单句硬切 + P2-5 翻译引擎未知名显式报错 + P2-6 驳回 |
 | 21 | `d6b8b138` | P2-v1 resolve attempt_guard + P2-a3 whisper 空音频 + P2-a2 aliyun warn + P2-s5 clipboard 复活保护 |
+| 22 | （无 commit） | merge main（`c309b085` concealed hint）+ 复审 watcher.rs，**0 修复**（审查通过） |
+| 23 | （本轮，待 commit） | 全代码审查 23 P2 复查：修 11（infra 4 事务 + record thumbnail 事务 + autotype PasswordOnly verify + cloud close catch_unwind + ocr validate 激活 + llm error body 截断 + sync thread-local clear + **scheduler hang 超时兜底** + **download Etag 注释修正**）+ 驳回 1（P2-ocr2 误报）+ 留后续 11 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -989,3 +991,184 @@ React 18+ 不再警告 setState-on-unmount，但不符合项目既有范式（Re
 
 - `cargo build` vault/asr-local/asr-cloud/sync —— 0 error 0 warning。
 - `cargo test`：vault 264 / asr-local 170 / asr-cloud 62 / sync 153 全过。
+
+## 25. 第二十二轮审查（2026-08-05，merge main + clipboard concealed hint 复审，0 修复）
+
+### 触发
+
+session 接力续审。fetch origin/main 发现较 HEAD 前进 3 commit（`b01a2aa2` docs / `c309b085` feat clipboard concealed hint 跨平台化 / `b4bc05fa` merge）。其中 `c309b085` 是**新增功能代码**（`watcher.rs` 跨平台 concealed type 检测），属健康确认未覆盖范围，触发本轮复审。
+
+### merge main 验证（审查纪律 §2）
+
+fast-forward 合入（`5793ce1b` → `b4bc05fa`）。merge 后重新核实历史修复存活：
+
+- **第 17 轮 P1-1**（FTS5 JOIN `c.rowid = f.rowid`）—— `crates/clipboard/src/store.rs:138/175/177` + 回归测试 :964，存活。
+- **第 17 轮 P1-2**（favorite tombstone pull 远程时间戳）—— `crates/sync/src/clipboard.rs:583-594`（注释标「第十七轮 P1-2」），存活。
+- **第 21 轮 P2-s5**（`pull_favorite` active 分支反向复活保护）—— `crates/sync/src/clipboard.rs:626-637`（注释标「第二十一轮 P2-s5」），存活。
+
+merge 未覆盖任何历史修复。
+
+### 审查 `c309b085`：跨平台 concealed hint 检测
+
+**代码位置**：`crates/clipboard/src/watcher.rs:86-112`（`handle_clipboard_change` 开头）。
+
+**审查清单**（全部 CONFIRMED 无 bug）：
+
+| 项 | 核实 | 结论 |
+|---|---|---|
+| 调用链可达性 | `on_clipboard_change` → `on_change` 闭包 → `clipboard_queue::worker_loop` → `handle_clipboard_change` | ✅ 检测会被执行 |
+| 与 suppress 机制时序 | `check_and_clear_suppress`（octopus autotype）在 watcher.rs:58 先判定，concealed 检测在 :108 仅对第三方复制生效 | ✅ 设计自洽（注释 :97-98 明示分工） |
+| clipboard-rs 版本 | `Cargo.lock` 锁 `0.3.4`；`Cargo.toml` 声明 `0.3` | ✅ 一致 |
+| `ContentFormat::Other(String)` 四后端支持 | 核实 clipboard-rs 0.3.4 源码：macos:274 / win:86,144 / x11:480,591 / wayland:174 均实现 `has(Other)` | ✅ commit message 声称属实 |
+| macOS cfg 展开 | rustc 模拟编译 `--target aarch64-apple-darwin`：`CONCEALED_HINTS.len() == 1` | ✅ 非空 |
+| 编译 warning | `cargo build -p octopus-clipboard` —— 0 error 0 warning | ✅ 干净 |
+| 平台 hint 正确性 | macOS `org.nspasteboard.ConcealedType`（nspasteboard.org 约定）/ Windows `ExcludeClipboardContentFromMonitorProcessing`（MS 官方）/ Linux `x-kde-passwordManagerHint`（KeePassXC 事实约定） | ✅ 三平台常量核实 |
+
+**结论**：新代码**审查通过，无需修复**。逻辑正确、cfg 门控正确、依赖核实、0 warning。
+
+### 观察项（不修，记录留痕）
+
+- **结构性测试缺口**：concealed hint 检测无回归测试。但 `ClipboardHandle` 持有 `Mutex<ClipboardContext>`（非 trait），无法在单测 mock，**单元测试不可行是结构性限制，非疏忽**。如需覆盖，需引入 trait 抽象（`ClipboardProbe`）重构 handle——代价超出收益（检测逻辑极简，4 行 `for hint in CONCEALED_HINTS { if handle.has(...) return }`）。留痕不修。
+- **空数组边界**：若未来编译目标三平台均不匹配（如 ios/android），`CONCEALED_HINTS` 会变空数组，`for` 循环成 no-op，concealed 检测静默失效。当前 octopus 仅支持 macOS，无实际影响；新增平台时需补对应 hint。
+
+### 验证
+
+- `cargo build -p octopus-clipboard` —— 0 error 0 warning。
+- merge main 后历史修复（第 17/21 轮 clipboard）全部存活（Read 核实）。
+- 本轮无代码修复，无新增 commit。
+
+## 26. 第二十三轮审查修复（2026-08-05，全代码审查 23 P2 复查 → 修 11 + 驳回 1 + 留后续 11）
+
+### 触发
+
+收到独立的全代码审查报告（标题"第二十二轮全代码审查报告"，23 P2 + ~40 P3，跨 15 crate）。报告自带警告"吸取上轮 P2-6 沿用代理结论致误报的教训，本轮多处代理定级偏高已下调"——故**逐项亲自 Read 复查**，不沿用报告结论。
+
+### 复查结论总览
+
+| 梯队 | 报告项 | 复查结论 | 处理 |
+|---|---|---|---|
+| 一（数据一致性） | P2-i1/i2/i3/i4（infra 无事务）| ✅ 全 CONFIRMED | **修**（unchecked_transaction 包裹） |
+| 一 | P2-rec1（record thumbnail 无事务）| ✅ CONFIRMED | **修** |
+| 一 | P2-sync1/s2（export 原子性 + merge 冗余写）| ✅ CONFIRMED | 留后续（需系统性重构 merge_three_way） |
+| 二（安全/可靠） | P2-d1（autotype 主线程阻塞）| ✅ CONFIRMED | 留后续（焦点时序脆弱，移线程高风险） |
+| 二 | P2-d2（PasswordOnly 缺二次 verify）| ✅ CONFIRMED | **修**（补 verify_focused 对称） |
+| 二 | P2-d3（spawn .expect panic）| ✅ CONFIRMED | 留后续（极端系统状态，fail-fast 可接受） |
+| 二 | P2-d4（cloud close spawn 不兜 panic）| ✅ CONFIRMED | **修**（catch_unwind） |
+| 二 | P2-srv1（scheduler 无超时）| ✅ CONFIRMED | 留后续（= 第 21 轮 P2-s3，需架构改动） |
+| 三（性能/资源） | P2-srv2/srv3/srv4/srv5（WS 路径 4 问题）| ✅ CONFIRMED | 留后续（WS handler 系统性重设计） |
+| 三 | P2-ocr1（validate 死代码）| ✅ CONFIRMED | **修**（一行激活） |
+| 三 | P2-ocr2（EP 回退丢配置）| ❌ **误报** | 驳回（代码无重建 builder 逻辑，配置保留） |
+| 三 | P2-ocr3（image 无 size guard）| ✅ CONFIRMED | 留后续（需 API 重构） |
+| 三 | P2-l1（error body 泄漏）| ✅ CONFIRMED | **修**（截断 helper） |
+| 三 | P2-l2（无重试退避）| ✅ CONFIRMED | 不修（功能增强，非 bug） |
+| 三 | P2-l3（response.text 无上限）| ✅ CONFIRMED | **修**（同 P2-l1 helper，一并解决） |
+| 四 | P2-dl1（Etag dead code + 注释撒谎）| ✅ CONFIRMED | 留后续（= 第 17 轮 P2-1，需实现 If-Range） |
+| P3 | sync thread-local key 未 clear | ✅ CONFIRMED | **修**（RAII guard） |
+
+### 修复明细
+
+#### P2-i1/i2/i3/i4 · infra 4 处多步写无事务（同型漏网）
+
+**根因**：代码库已有 `conn.unchecked_transaction()?` + `tx.commit()?` 范式（vault.rs:327 `insert_vault_ciphers_batch` / mod.rs:410 v57→v58 迁移），但这 4 个函数漏了：
+- **P2-i1** `delete_hotword_set_at`（hotword.rs:191-201）：UPDATE words + UPDATE sets，第二条失败→词全软删但 set 活跃=空词典
+- **P2-i2** `set_words_in_set_at`（hotword.rs:591-644）：SELECT + 批量软删 + 批量 upsert，2500 词中途失败→半更新脏状态
+- **P2-i3** `move_action_bar_item_at`（action_bar.rs:285-286）：两 sort_order 交换，部分失败→两 item 同序号
+- **P2-i4** `set_default_agent_at`（agent.rs:70-71）：清零+置1，部分失败→全表无 default
+
+**修复**：各函数体内 `let tx = conn.unchecked_transaction()?; ... tx.commit()?;` 包裹（`_at` 后缀函数接收 `&Connection`，tx `Deref<Target=Connection>`，传 `&tx` 对齐 vault 范式）。
+
+**回归测试**（hotword.rs test mod 末尾加 2 个）：
+- `delete_hotword_set_at_rolls_back_words_when_set_missing`：删不存在 set bail 时，前序词软删必须回滚（验证事务价值）
+- `set_words_in_set_at_over_capacity_leaves_db_unchanged`：超容量 bail 时原词不动
+
+P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_default_agent_is_mutually_exclusive` :291）覆盖核心不变量，事务回滚语义由 rusqlite 保证，不加冗余测试。
+
+#### P2-rec1 · record thumbnail 两表 INSERT 无事务
+
+**根因**：`RecordStore::insert`（store.rs:59/76）recordings + recordings_thumbnails 两 INSERT autocommit。第二条失败→recordings 标 has_thumbnail=true 但 thumbnails 表无行，get_thumbnail 返回 None（前端破图）。
+
+**修复**：`let tx = self.conn.unchecked_transaction()?;` 包两 INSERT + `tx.commit()?`。现有 `insert_with_thumbnail` 测试（:364）覆盖"两表同生"核心不变量，不加冗余测试。
+
+#### P2-d2 · PasswordOnly/UsernameOnly 缺二次焦点校验
+
+**根因**：`autotype_login_with_mode`（macos.rs:163-182）UsernamePassword 在 password 前(:170)有 `verify_focused`，但 PasswordOnly(:174)/UsernameOnly(:178) 在 `activate`(:142) + `sleep(150ms)` 后直接注入。activate 操作可能改变焦点（失败/被抢），PasswordOnly 是默认模式却缺校验。
+
+**修复**：PasswordOnly/UsernameOnly 在注入前各补 `verify_focused(expected_bundle_id)?`（与 UsernamePassword :170 对称）。
+
+#### P2-d4 · coordinator cloud close spawn 不兜 panic
+
+**根因**：`rt.spawn(async { timeout(30s, close_async).await; tx.send(CloudStreamingDone) })`（lifecycle.rs:111-127）。timeout 兜超时但兜不住 close_async 内 panic——panic 终止 task，tx.send 永不执行→stage 永久卡 CloudClosing。
+
+**修复**：`std::panic::catch_unwind(AssertUnwindSafe(|| async { timeout(...).await })).await` 包 timeout，match 加 `Err(_) => Err("cloud close panic")` 分支，panic 后仍 send。对齐 polish.rs:112 / paste.rs:102 范式。
+
+#### P2-ocr1 · EngineConfig::validate() 死代码
+
+**根因**：`RapidOcr::new`（rapid_ocr.rs:67）直接构造 Detector/Classifier/Recognizer，不调 `config.validate()?`。200 行校验逻辑（config.rs:52-136：text_score 范围 / limit_side_len 非零 / shape 非零）dormant。当前 default config 不触发，但未来用户配置反序列化（det.std=[0,0,0] 等）→ NaN/除零注入 ort。
+
+**修复**：`new` 最前加 `config.validate()?;`（一行激活）。default config 经测试验证能过 validate（45 测试全过）。
+
+#### P2-l1/l3 · LLM error body 泄漏 + 无大小上限
+
+**根因**：client.rs:124/:299 `response.text().unwrap_or_default()` 整 body 进 `bail!` message → toast/日志。
+- **P2-l1**：某些 provider 4xx body echo 请求头（含 `Authorization: Bearer`）或 stack trace，泄漏
+- **P2-l3**：恶意 server 返回超大 body，全量入内存
+
+**修复**：提取 `read_error_body(response)` + `truncate_error_body(text)`（纯逻辑分离便于测试）——截断到 500 chars（按字符不切断 UTF-8 边界）+ `...(truncated)` 标记。两处 `bail!` 改用 helper。
+
+**回归测试**：`truncate_error_body_truncates_long_text`——验证短 body 原样、恰好 500 不截、501 截断、中文按字符截。
+
+#### P3-sync1 · clipboard thread-local key 未 clear
+
+**根因**：`merge_clipboard_favorites`（clipboard.rs:531-544）:533 `set_thread_clipboard_key` 但不在结束时 clear。`ClipboardKey` 含 `Zeroizing<[u8;32]>`（sync 加密密钥），spawn_blocking 线程被 tokio pool 复用时 key 残留到下次无关任务（卫生瑕疵，非安全漏洞）。
+
+**修复**：`ClipboardKeyGuard`（RAII，Drop 调 `clear_thread_clipboard_key`）——保证 merge 任何路径（Ok/Err/panic）都 clear。hotword 无 thread-local key（明文同步），不需对称修。
+
+#### A1 · scheduler 单任务 hang 阻塞全部（= 第 21 轮 P2-s3 / 报告 P2-srv1）
+
+**根因**：`run_due_tasks`（scheduler/lib.rs）`for task in tasks { (task.run)() }` 单线程串行。`catch_unwind` 只防 panic 不防 hang——某任务死循环/锁死锁/网络 IO 无超时 → for 循环卡住 → 后续所有任务（vault sync / clipboard 清理 / bigram / hotword GC）永久饿死。
+
+**修复**：
+1. `ScheduledTask.run` 类型 `Box<dyn Fn() + Send> → Arc<dyn Fn() + Send + Sync>`——run_due_tasks 每任务 spawn 独立线程时 clone Arc（API 保持接收 Box，`register_task_inner` 内部 `Arc::from`；setup.rs 4 个调用点机械改 `Box::new → Arc::new`）。
+2. `run_due_tasks` 加 `task_timeout: Duration` 参数，每任务 `std::thread::spawn`（包 catch_unwind）+ `mpsc::channel` 回报结果，主线程 `rx.recv_timeout(task_timeout)`。超时 → log error + mark_run + 继续下一任务。孤儿线程无法 cancel（Rust 无 cancel token），让其自然结束（hang 多是 IO 等待，资源释放后自愈）。
+3. `Scheduler` 加 `task_timeout` 字段（默认 300s，覆盖最慢任务 vault sync 30s），`spawn` 闭包传入。
+
+**回归测试**：`run_due_tasks_timeout_unblocks_subsequent_tasks`——hang 任务（sleep 10s，远超 TEST_TIMEOUT=200ms）+ 正常任务，验证 ① 总耗时 <2s（不阻塞）；② hang 任务 mark_run；③ 后续正常任务执行（counter 递增）。现有 4 个测试（filter 分流 / panic 吞 / mark_run）全更新签名 + 通过。
+
+**注**：曾尝试用 `unsafe` raw 指针绕借用检查（`task.run.as_ref() as *const dyn Fn()` 进 detach 线程）——这是 use-after-free（detach 线程可能在 run_due_tasks 返回后访问已释放的 task.run）。已废弃，改用 Arc 安全方案。
+
+#### C1 · download Etag 注释撒谎（= 第 17 轮 P2-1 / 报告 P2-dl1）
+
+**根因**：`verify.rs:40-42` Etag 分支 `Ok(true)` 永真，注释称"实际 etag 校验在下载请求层 If-Range 206"，但 downloader **不发 If-Range 头**（grep 确认，只有 Range 分段续传）。注释撒谎，Etag 字段是 dead code。
+
+**修复**（保守——实现 If-Range 是功能性增强，留后续）：修正 verify.rs 文档——`Hash::Etag` 加 doc 注释明示"当前**不校验**（no-op 返回 Ok(true)），需 If-Range 实现，建议 manifest 同时配 Sha256 强校验"；`verify` 函数 doc 同步；模块头注释去掉"If-Range 头构造"误导。**If-Range 续传校验的功能实现仍留后续**（衔接第 17 轮 P2-1）。
+
+### 驳回明细
+
+#### P2-ocr2 · EP 注册失败回退丢弃优化级/线程配置 ❌ 误报
+
+**报告声称**：session.rs:46 Err 分支 `ort::session::Session::builder()` 新建 builder，丢弃原 builder 的 Level3/intra_threads。
+
+**复查**：亲自通读 session.rs:37-93（`new_with_contract`），**代码无重建 builder 逻辑**。:49 建 builder 设 Level3 + intra/inter_threads，:68-75 `resolve_execution_providers` 返回 fallback 时只换 `provider_chain.providers`（CPU only），:73 `builder.with_execution_providers(provider_chain.providers)` 用的是**同一个 builder**（优化级/线程配置全保留）。报告对代码描述错误，置信度 60 已偏低。**驳回**。
+
+### 留后续（本轮确认成立但未修，衔接历史留后续）
+
+| 项 | 原因 | 衔接 |
+|---|---|---|
+| P2-d1（autotype 主线程阻塞 ~1.5s）| 焦点时序极脆弱（多处 e2e 血泪修复 :25-38/:101-108/:115-159），移子线程是高风险改动，回报（1.5s UI 冻结，低频）不抵风险 | 新留后续 |
+| P2-d3（ptt/clipboard spawn .expect）| spawn 失败是极端系统状态（fd/线程上限、内存耗尽），panic vs 降级差异小，fail-fast 更易诊断 | 新留后续 |
+| P2-srv2/srv3（WS 绕过 manager + engine 静默忽略）| 需系统性重设计 WS handler（共享 ONNX session + 独立 decoder state），`active_session` 返回共享 session 会串行化并发 | 新留后续（同源） |
+| P2-srv4（WAV decode 漏 spawn_blocking）| 曾尝试合并 decode+inference 到 spawn_blocking，破坏 duration_ms 计算 + 控制流，回退；decode 通常 <10ms（小文件），收益有限 | 新留后续 |
+| P2-srv5（spawn_blocking 无超时）| scheduler 已修 P2-srv1（spawn + recv_timeout），server 的 spawn_blocking 超时仍未做；需 `tokio::time::timeout` 包 await + 处理 JoinError | 新留后续 |
+| P2-ocr3（image 无 size guard）| 需 `ImageReader` + 维度限制 API 重构；OCR 输入受 watcher 40MB 限制兜底 | 新留后续 |
+| P2-l2（无重试退避）| 功能增强，非 bug | 不修 |
+| P2-dl1（Etag If-Range 实现）| ✅ 注释撒谎已修正（verify.rs 文档明示 Etag 当前 no-op）；**If-Range 续传校验功能性实现仍留后续** | = 第 17 轮 P2-1 |
+| P2-sync1（export 非原子清空+重建）| 需在 merge_three_way 泛型骨架内系统性改（tmp→rename 原子，或先写后清孤儿）。经评估窗口仅微秒级（remove→create 间），复杂度高，用户确认留专项 | = 第 21 轮 P2-s1 |
+| P2-sync2（merge push 写被 export 覆盖）| 同 P2-sync1；属性能问题（冗余 IO）非正确性问题，export_all 保证最终一致 | = 第 21 轮 P2-s2 |
+
+注：P2-srv1（scheduler 无超时）**本轮已修**（见上方修复明细 §A1），从留后续移除。
+
+### 验证
+
+- `cargo build --release -p octopus-server -p octopus-cli` + `cargo build -p octopus-infra -p octopus-record -p octopus-paddle-ocr -p octopus-llm -p octopus-sync -p octopus-scheduler -p octopus-download -p octopus-desktop` —— 全 0 error 0 warning。
+- `cargo test`：infra 193 / record 50 / paddle-ocr 45 / llm 14 / sync 153 / **scheduler 5（+1 新增 hang 超时）** / download 33 / **desktop 525** 全过。
+- 新增 4 回归测试：hotword 2（P2-i1/i2 事务回滚）+ llm 1（truncate_error_body 截断）+ scheduler 1（hang 超时不阻塞后续）全过。

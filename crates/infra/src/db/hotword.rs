@@ -185,16 +185,20 @@ pub(crate) fn delete_hotword_set_at(conn: &Connection, id: &str) -> Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    // 第二十二轮 P2-i1：两步 UPDATE 包 unchecked_transaction。原先 autocommit 下第一条
+    // （词软删）成功、第二条（set 软删）失败 → 词全软删但 set 仍活跃 = 空词典（sync 推送
+    // 出去对端拿到矛盾状态）。对齐 insert_vault_ciphers_batch 范式（vault.rs:327）。
+    let tx = conn.unchecked_transaction()?;
     // 级联软删词记录（保持原硬删行为：删词典=清空其词）。词级 tombstone 也参与 sync 传播。
     // is_deleted 用 now_secs（与 set 一致：删除时刻 epoch 秒）——非字面量 1（1=1970-01-01，
     // GC 当日硬删 + sync 过滤→词 tombstone 不传播→对端复活词）。R4-2。
-    conn.execute(
+    tx.execute(
         "UPDATE hotword_words SET is_deleted=?2, updated_at=datetime('now')
          WHERE set_id=?1 AND is_deleted=0",
         params![id, now_secs],
     )?;
     // 软删词典：is_deleted=删除时刻 epoch 秒，updated_at 刷新（merge 方向判定用）
-    let n = conn.execute(
+    let n = tx.execute(
         "UPDATE hotword_sets SET is_deleted=?2, updated_at=datetime('now')
          WHERE id=?1 AND is_deleted=0",
         params![id, now_secs],
@@ -202,6 +206,7 @@ pub(crate) fn delete_hotword_set_at(conn: &Connection, id: &str) -> Result<()> {
     if n == 0 {
         anyhow::bail!("热词版本不存在");
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -596,7 +601,7 @@ pub(crate) fn set_words_in_set_at(
     let unique: std::collections::HashSet<&str> = words.iter().map(|s| s.as_str()).collect();
     // 覆盖语义容量校验（2026-08-03 fix）：最终活跃词数 = unique.len()
     // （不在新列表的旧词会被软删）。旧实现误用 `ensure_within_capacity`（追加语义，
-    // 叠加 cur）—— 2000 词覆盖导入 2500（最终 2500 < 3000 合法）会被误拒。
+    // 叠加 cur）—— 2000 词词典覆盖导入 2500（最终 2500 < 3000 合法）会被误拒。
     // 覆盖语义下旧词会被软删，cur 不参与最终计数，直接判 unique.len() 是否超上限。
     if unique.len() > HOTWORD_SET_MAX_WORDS {
         anyhow::bail!(
@@ -609,10 +614,14 @@ pub(crate) fn set_words_in_set_at(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    // 第二十二轮 P2-i2：SELECT + 批量软删 + 批量 upsert 包 unchecked_transaction。原先
+    // autocommit 下 2500 词中途失败 → 半更新脏状态（部分词软删、部分新词未导入）。
+    // 对齐 P2-i1 + insert_vault_ciphers_batch 范式。
+    let tx = conn.unchecked_transaction()?;
     // 软删不在新列表的活跃词——逐词算 is_deleted=now_secs 的 md5（需读 pinyin）
     let to_remove: Vec<(String, String)> = {
         let json_list = serde_json::to_string(&unique.iter().collect::<Vec<_>>())?;
-        let mut stmt = conn.prepare(
+        let mut stmt = tx.prepare(
             "SELECT word, pinyin FROM hotword_words
              WHERE set_id=?1 AND is_deleted=0 AND word NOT IN (SELECT value FROM json_each(?2))",
         )?;
@@ -622,7 +631,7 @@ pub(crate) fn set_words_in_set_at(
         rows.filter_map(|r| r.ok()).collect()
     };
     for (word, _pinyin) in &to_remove {
-        conn.execute(
+        tx.execute(
             "UPDATE hotword_words SET is_deleted=?3, updated_at=datetime('now')
              WHERE set_id=?1 AND word=?2 AND is_deleted=0",
             params![set_id, word, now_secs],
@@ -632,7 +641,7 @@ pub(crate) fn set_words_in_set_at(
     for word in &unique {
         let id = crate::hotword_text::hotword_word_uuid(set_id, word);
         let pinyin = crate::hotword_text::word_plain_pinyins(word).join(" ");
-        conn.execute(
+        tx.execute(
             "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted)
              VALUES (?1, ?2, ?3, ?4, 0)
              ON CONFLICT(set_id, word) DO UPDATE SET
@@ -640,6 +649,7 @@ pub(crate) fn set_words_in_set_at(
             params![id, set_id, word, pinyin],
         )?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -1463,5 +1473,78 @@ mod tests {
         // 「苹果」在 set-B 仍活跃 → hits 保留，hit_count 不变
         let hits = list_hotword_hits_at(&conn).unwrap();
         assert_eq!(hits.get("苹果"), Some(&2i64), "跨 set 同词在任一活跃 set 存在 → 命中保留");
+    }
+
+    /// 第二十二轮 P2-i1 回归：delete_hotword_set_at 在 set 不存在（bail）时，
+    /// 前序 UPDATE（词软删）必须被事务回滚——不能留下「词全软删但 set 仍活跃」的空词典。
+    #[test]
+    fn delete_hotword_set_at_rolls_back_words_when_set_missing() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+
+        let id = "test-uuid-rollback-set";
+        insert_hotword_set_at(&conn, id, "回滚测试").unwrap();
+        add_word_to_set_at(&conn, id, "苹果").unwrap();
+        add_word_to_set_at(&conn, id, "香蕉").unwrap();
+        // 再造一个「幽灵 set id」——DB 无此 set，但词挂在它名下（模拟 set 已被外部删、词残留）
+        let ghost = "test-uuid-ghost-set";
+        conn.execute(
+            "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted)
+             VALUES ('w-ghost-1', ?1, '幽灵词', 'you ling ci', 0)",
+            params![ghost],
+        ).unwrap();
+
+        // delete 不存在的 set → bail（n==0）。事务回滚：幽灵词不应被软删。
+        let err = delete_hotword_set_at(&conn, ghost);
+        assert!(err.is_err(), "删除不存在的 set 应 bail");
+
+        // 幽灵词必须仍活跃（事务回滚保护）
+        let ghost_word = conn.query_row(
+            "SELECT is_deleted FROM hotword_words WHERE id='w-ghost-1'",
+            [],
+            |r| r.get::<_, i64>(0),
+        ).unwrap();
+        assert_eq!(ghost_word, 0, "事务回滚：bail 前的词软删必须被撤销，词仍活跃");
+
+        // 对照组：删存在的 set → 词 + set 都软删（成功路径）
+        delete_hotword_set_at(&conn, id).unwrap();
+        let set_row = conn.query_row(
+            "SELECT is_deleted FROM hotword_sets WHERE id=?1",
+            params![id],
+            |r| r.get::<_, i64>(0),
+        ).unwrap();
+        assert!(set_row > 0, "成功路径：set 被软删");
+        let apple = get_hotword_word_at(&conn, id, "苹果").unwrap().unwrap();
+        assert!(apple.is_deleted > 0, "成功路径：词被级联软删");
+    }
+
+    /// 第二十二轮 P2-i2 回归：set_words_in_set_at 覆盖导入失败（超容量）时，
+    /// 不应留下半更新状态——bail 发生在事务开启前，DB 不变。
+    /// （注：真正的"中途 SQL 失败回滚"由 rusqlite 事务语义保证，此处覆盖 bail 路径 +
+    /// 成功路径状态一致性。）
+    #[test]
+    fn set_words_in_set_at_over_capacity_leaves_db_unchanged() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+
+        let id = "test-uuid-cap-set";
+        insert_hotword_set_at(&conn, id, "容量测试").unwrap();
+        add_word_to_set_at(&conn, id, "原词1").unwrap();
+        add_word_to_set_at(&conn, id, "原词2").unwrap();
+
+        // 超容量 bail（HOTWORD_SET_MAX_WORDS + 1 个词）
+        let too_many: Vec<String> = (0..=HOTWORD_SET_MAX_WORDS)
+            .map(|i| format!("词{}", i))
+            .collect();
+        let err = set_words_in_set_at(&conn, id, &too_many);
+        assert!(err.is_err(), "超容量应 bail");
+
+        // bail 后原词必须仍活跃（事务保证：bail 在 tx 开启前，DB 完全不变）
+        let words = list_words_in_set_at(&conn, id).unwrap();
+        assert_eq!(words.len(), 2, "超容量 bail 后原词不动");
+        assert!(words.iter().any(|w| w.word == "原词1"));
+        assert!(words.iter().any(|w| w.word == "原词2"));
     }
 }

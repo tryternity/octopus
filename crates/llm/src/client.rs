@@ -14,6 +14,27 @@ static HTTP_CLIENT: Lazy<reqwest::blocking::Client> = Lazy::new(|| {
         .expect("failed to build LLM HTTP client")
 });
 
+/// 第二十二轮 P2-l1/P2-l3：读取错误响应 body 并截断——
+/// - **P2-l1（信息泄漏）**：某些 provider 4xx body 会 echo 请求头（含 `Authorization: Bearer ...`）
+///   或 stack trace，整 body 进 bail message → toast/日志泄漏。截断到 500 字符（足够诊断
+///   HTTP 错误，不会完整暴露 echo 的敏感头）。
+/// - **P2-l3（OOM）**：恶意/异常 server 返回超大 body，截断避免全量入内存。
+///   LLM provider 响应体通常 <100KB（错误信息），500 字符覆盖典型 JSON error。
+const ERROR_BODY_MAX_CHARS: usize = 500;
+fn read_error_body(response: reqwest::blocking::Response) -> String {
+    let text = response.text().unwrap_or_default();
+    truncate_error_body(&text)
+}
+
+/// 截断逻辑分离（便于单元测试，无需 HTTP）。
+fn truncate_error_body(text: &str) -> String {
+    if text.chars().count() <= ERROR_BODY_MAX_CHARS {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(ERROR_BODY_MAX_CHARS).collect();
+    format!("{}...(truncated)", truncated)
+}
+
 /// DeepSeek 专有：关闭思考模式的参数体。
 #[derive(Serialize)]
 struct Thinking {
@@ -121,7 +142,7 @@ fn chat_text(
 
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().unwrap_or_default();
+        let body = read_error_body(response);
         anyhow::bail!("LLM API 返回错误 {}: {}", status, body);
     }
 
@@ -296,7 +317,7 @@ pub fn test_connection(config: &CompatibleLlmConfig) -> Result<()> {
 
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().unwrap_or_default();
+        let body = read_error_body(response);
         anyhow::bail!("LLM API 返回错误 {}: {}", status, body);
     }
 
@@ -325,5 +346,30 @@ mod tests {
         assert_eq!(strip_edited_markers("config={key:value}"), "config=key:value");
         // 嵌套（edited 区含字面括号）——外层泄漏，已知限制
         assert_eq!(strip_edited_markers("{config={key:value}}"), "{config=key:value}");
+    }
+
+    /// 第二十二轮 P2-l1/P2-l3：truncate_error_body 必须截断超长 body（防泄漏 + 防 OOM）。
+    #[test]
+    fn truncate_error_body_truncates_long_text() {
+        // 短 body 原样返回
+        assert_eq!(truncate_error_body("短错误"), "短错误");
+        assert_eq!(truncate_error_body(""), "");
+        // 恰好 500 字符——不截断
+        let exactly_max: String = "x".repeat(ERROR_BODY_MAX_CHARS);
+        assert_eq!(truncate_error_body(&exactly_max), exactly_max);
+
+        // 501 字符——截断 + 标记
+        let over: String = "y".repeat(600);
+        let truncated = truncate_error_body(&over);
+        assert!(truncated.ends_with("...(truncated)"), "超长 body 必须截断标记");
+        // 截断后 = 500 chars + "...(truncated)"(14 chars) = 514
+        assert_eq!(truncated.chars().count(), ERROR_BODY_MAX_CHARS + "...(truncated)".len());
+
+        // 多字节 UTF-8（中文）按字符截断，不切断字符边界
+        let chinese_over: String = "中".repeat(600);
+        let cn_truncated = truncate_error_body(&chinese_over);
+        assert!(cn_truncated.ends_with("...(truncated)"));
+        // 500 个"中" + 标记，每个"中"是 1 char
+        assert_eq!(cn_truncated.chars().filter(|&c| c == '中').count(), ERROR_BODY_MAX_CHARS);
     }
 }

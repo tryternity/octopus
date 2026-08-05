@@ -161,7 +161,7 @@ impl<'a> AppSetup<'a> {
         //   已在 delete_item / clear_history 等入口实时 enforce（2026-07-29），无需后台任务。
         {
             let mut scheduler = octopus_scheduler::Scheduler::new();
-            scheduler.register_task("clipboard_cleanup", 600, Box::new(|| {
+            scheduler.register_task("clipboard_cleanup", 600, std::sync::Arc::new(|| {
                 let cfg = octopus_infra::config::load_config().unwrap_or_default();
                 let max_age = cfg.clipboard_max_age_days as u32;
                 let max_items = cfg.clipboard_max_items as u32;
@@ -177,7 +177,7 @@ impl<'a> AppSetup<'a> {
             // sync_now 是阻塞操作（10-30s），起子线程避免阻塞 scheduler tick。
             // 结果存 last_auto_sync.json，SyncPanel 展示，不弹 toast。
             #[cfg(feature = "vault")]
-            scheduler.register_task("vault_sync", 3600, Box::new(|| {
+            scheduler.register_task("vault_sync", 3600, std::sync::Arc::new(|| {
                 std::thread::spawn(|| {
                     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
                     match octopus_vault::sync::sync_now() {
@@ -206,13 +206,13 @@ impl<'a> AppSetup<'a> {
             }));
             // bigram 上下文索引：扫历史 voice 文本建字级 bigram 频次表，
             // 供 corrector 多命中排序的上下文打分。轻量任务（几十 ms），不受 CPU 空闲检查。
-            scheduler.register_task_skip_idle("bigram_index", 600, Box::new(|| {
+            scheduler.register_task_skip_idle("bigram_index", 600, std::sync::Arc::new(|| {
                 octopus_asr_local::corrector::reload_bigrams();
             }));
             // 热词 tombstone GC（2026-08-02）：每日硬删超期（>10 天）软删 set/词 +
             // export 重建清 .sync。跨设备自洽——merge 按年龄过滤防复活。详见
             // docs/superpowers/specs/2026-08-02-hotword-tombstone-gc.md。
-            scheduler.register_task("hotword_tombstone_gc", 86400, Box::new(|| {
+            scheduler.register_task("hotword_tombstone_gc", 86400, std::sync::Arc::new(|| {
                 std::thread::spawn(|| {
                     let now_secs = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)

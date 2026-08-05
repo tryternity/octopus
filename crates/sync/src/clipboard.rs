@@ -223,6 +223,22 @@ fn set_thread_clipboard_key(key: ClipboardKey) {
     THREAD_KEY.with(|k| *k.borrow_mut() = Some(key));
 }
 
+/// 第二十二轮 P3-sync1：merge 结束清 thread-local key——ClipboardKey 含 Zeroizing<[u8;32]>
+/// （剪贴板 sync 加密密钥）。原 merge 不 clear，spawn_blocking 线程被 tokio pool 复用时
+/// key 残留到下次无关任务（卫生瑕疵，非安全漏洞——同进程内 key 已在 DB，残留不新增暴露面）。
+/// clear 独立函数便于 RAII guard 调用。
+fn clear_thread_clipboard_key() {
+    THREAD_KEY.with(|k| *k.borrow_mut() = None);
+}
+
+/// RAII guard：drop 时清 thread-local key，保证 merge 任何路径（含 `?` 早返回 / panic）都 clear。
+struct ClipboardKeyGuard;
+impl Drop for ClipboardKeyGuard {
+    fn drop(&mut self) {
+        clear_thread_clipboard_key();
+    }
+}
+
 /// 取 thread-local key——trait method（`write_file` / `upsert_db_from_file`）解密用。
 ///
 /// 未 set 时 panic（`merge_clipboard_favorites` 必然先 set，调用方契约）。
@@ -531,6 +547,8 @@ pub struct ClipboardMergeReport {
 pub fn merge_clipboard_favorites() -> Result<ClipboardMergeReport> {
     let key = load_or_create_clipboard_key()?;
     set_thread_clipboard_key(key);
+    // 第二十二轮 P3-sync1：guard 确保 merge 任何路径（Ok/Err/panic）都清 thread-local key。
+    let _key_guard = ClipboardKeyGuard;
     let mut report = MergeReport::default();
     let now = now_secs();
     merge_three_way::<ClipboardFavoriteEntity>(&mut report, now)?;

@@ -1,4 +1,7 @@
-//! 完整性校验：SHA256 流式 hash（spawn_blocking）+ If-Range 头构造。
+//! 完整性校验：SHA256 流式 hash（spawn_blocking）。
+//!
+//! 注：Etag 变体保留用于未来 If-Range 续传校验（衔接第 17/23 轮留后续 P2-dl1），
+//! 当前 downloader 不发 If-Range 头，Etag 校验实际为 no-op（见 [`Hash::Etag`] 文档）。
 
 use std::path::Path;
 use std::io::Read;
@@ -9,6 +12,10 @@ use tokio::task;
 #[derive(Debug, Clone)]
 pub enum Hash {
     Sha256(String),
+    /// ⚠️ 当前**不校验**——etag 无法本地重算，需通过下载请求层 If-Range 头让服务端比对
+    /// （206=匹配继续，200=不匹配从头）。downloader 尚未实现 If-Range（第 17/23 轮
+    /// 留后续 P2-dl1），故 [`verify`] 对 Etag 返回 `Ok(true)` 占位。manifest 仅配 Etag
+    /// （无 Sha256）时完整性校验真空——建议 manifest 同时配 Sha256 强校验。
     Etag(String),
 }
 
@@ -28,18 +35,20 @@ pub async fn compute_sha256(path: &Path) -> std::io::Result<String> {
     }).await.map_err(std::io::Error::other)?
 }
 
-/// 校验文件是否符合期望 hash。Sha256→比 hex；Etag→直接字符串比对（调用方保证语义）。
+/// 校验文件是否符合期望 hash。
+///
+/// - `Sha256`：本地重算 hex 比对（强校验）
+/// - `Etag`：**当前 no-op 返回 Ok(true)**——见 [`Hash::Etag`] 文档，需 If-Range 实现
 pub async fn verify(path: &Path, expected: &Hash) -> Result<bool, std::io::Error> {
     match expected {
         Hash::Sha256(expected_hex) => {
             let actual = compute_sha256(path).await?;
             Ok(actual.eq_ignore_ascii_case(expected_hex))
         }
-        Hash::Etag(expected_etag) => {
-            // etag 无法本地重算，仅用于 If-Range 续传校验（服务端比对）。
-            // 这里作为"已标记通过"占位——实际 etag 校验在下载请求层（If-Range 206=通过）。
+        Hash::Etag(_) => {
+            // etag 无法本地重算。If-Range 续传校验未实现（第 17/23 轮留后续 P2-dl1），
+            // 当前作为"已标记通过"占位。manifest 应同时配 Sha256 保证完整性。
             let _ = path;
-            let _ = expected_etag;
             Ok(true)
         }
     }

@@ -56,7 +56,12 @@ impl<'a> RecordStore<'a> {
     pub fn insert(&self, meta: &RecordingMeta, thumbnail: Option<&[u8]>) -> RecordResult<()> {
         let audio_tracks_json = serde_json::to_string(&meta.audio_tracks)
             .unwrap_or_else(|_| "[]".into());
-        self.conn.execute(
+        // 第二十二轮 P2-rec1：recordings + recordings_thumbnails 两 INSERT 包事务。原先
+        // autocommit 下第一条（recordings，has_thumbnail=1）成功、第二条（缩略图 BLOB）失败
+        // → recordings 标 has_thumbnail=true 但 thumbnails 表无行，get_thumbnail 返回 None
+        // （前端永久显示破图）。事务保证两表同生共灭。
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO recordings
              (id, file_path, title, duration_ms, width, height, fps, codec,
               has_system_audio, has_microphone, audio_tracks, source_type, file_size,
@@ -73,12 +78,13 @@ impl<'a> RecordStore<'a> {
             ],
         )?;
         if let Some(thumb) = thumbnail {
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO recordings_thumbnails (recording_id, blob, width, height, created_at)
                  VALUES (?1, ?2, 240, 135, ?3)",
                 rusqlite::params![meta.id, thumb, meta.created_at],
             )?;
         }
+        tx.commit()?;
         Ok(())
     }
 

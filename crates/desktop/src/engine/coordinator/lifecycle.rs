@@ -110,15 +110,23 @@ pub(crate) fn handle_toggle(
                     let session_id = tr.id;
                     rt.spawn(async move {
                         // 看门狗：close 超时也必须发 CloudStreamingDone，否则 stage 永久卡死
-                        let result = tokio::time::timeout(
-                            std::time::Duration::from_secs(30),
-                            handle.close_async(),
-                        )
+                        // 第二十二轮 P2-d4：catch_unwind 兜 close_async 内 panic——原 timeout 只兜
+                        // 超时不兜 panic，panic 终止 task → tx.send 永不执行 → stage 永久卡
+                        // CloudClosing。对齐 polish.rs:112 / paste.rs:102 范式。panic 后仍 send
+                        // Err，让 handler 能 finalize_cloud 收尾（无标点补全）。
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| async {
+                            tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                handle.close_async(),
+                            )
+                            .await
+                        }))
                         .await;
                         let text_result = match result {
-                            Ok(Ok(text)) => Ok(text),
-                            Ok(Err(e)) => Err(e.to_string()),
-                            Err(_) => Err("cloud close timeout (30s)".to_string()),
+                            Ok(Ok(Ok(text))) => Ok(text),
+                            Ok(Ok(Err(e))) => Err(e.to_string()),
+                            Ok(Err(_)) => Err("cloud close timeout (30s)".to_string()),
+                            Err(_) => Err("cloud close panic".to_string()),
                         };
                         let _ = tx_clone.send(Command::CloudStreamingDone {
                             text: text_result,
