@@ -143,6 +143,8 @@ export function drawBlur(ctx: CanvasRenderingContext2D, ann: Annotation, scale: 
 | `screenshot_watermark_opacity` | f32 | `0.3` | 透明度 0.0-1.0 |
 | `screenshot_watermark_font_size` | u32 | `24` | 字号（逻辑像素） |
 
+**⚠️ `apply_config_value` 分发器同步**：`crates/desktop/src/commands/settings_commands.rs::apply_config_value` 是 config 字段写入的 match 分发器。新增 4 个水印字段必须在这里加对应 match arm（text/position 走 `value.as_str()`，opacity `value.as_f64()` + clamp 0.0-1.0，font_size `value.as_i64()` + max(1)），否则 `set_config("screenshot_watermark_*")` 走 `_ => Err("未知配置字段")` 静默失败。（final review 发现 plan 初版遗漏此点，已修 `312816cd`）
+
 ### 3.3 渲染
 
 `lib/annotation.ts` 新增 `drawWatermark`：
@@ -160,19 +162,22 @@ export function drawWatermark(ctx: CanvasRenderingContext2D, canvasW: number, ca
   if (!opts.text) return;
   const margin = 16;
   ctx.save();
-  ctx.globalAlpha = opts.opacity;
+  ctx.globalAlpha = Math.max(0, Math.min(1, opts.opacity));
   ctx.fillStyle = opts.color ?? "#ffffff";
   ctx.font = `${opts.fontSize}px -apple-system, system-ui, sans-serif`;
-  // 测量文字宽高
   const metrics = ctx.measureText(opts.text);
   const tw = metrics.width;
   const th = opts.fontSize;
-  // 9 格定位
-  let x = margin, y = margin;
-  if (opts.position.includes("right"))  x = canvasW - tw - margin;
-  if (opts.position.includes("center") && !opts.position.includes("top") && !opts.position.includes("bottom")) x = (canvasW - tw) / 2;
-  if (opts.position.includes("bottom")) y = canvasH - th - margin;
-  if (opts.position.includes("middle") && !opts.position.includes("left") && !opts.position.includes("right")) y = (canvasH - th) / 2;
+  // 9 格定位——正向 includes 匹配（不用反向排除，避免 top-center 等 4 格失效）
+  const pos = opts.position;
+  let x: number;
+  if (pos.includes("center"))      x = (canvasW - tw) / 2;
+  else if (pos.includes("right"))  x = canvasW - tw - margin;
+  else                              x = margin;  // left 或默认
+  let y: number;
+  if (pos.includes("middle"))      y = (canvasH - th) / 2;
+  else if (pos.includes("bottom")) y = canvasH - th - margin;
+  else                              y = margin;  // top 或默认
   ctx.fillText(opts.text, x, y + th);  // y+th 因为 fillText 基线在文字底部
   ctx.restore();
 }

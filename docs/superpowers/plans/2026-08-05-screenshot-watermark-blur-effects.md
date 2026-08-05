@@ -37,6 +37,30 @@
 
 ---
 
+## 实施状态（2026-08-05 Subagent-Driven 执行完毕）
+
+| Task | 状态 | commit | 备注 |
+|---|:---:|---|---|
+| 1 blurMode + drawBlur 分发器 | ✅ | `40c106d5` | review clean |
+| 2 drawMosaic→drawBlur 替换 | ✅ | `0a216762` | brief 误列 RecordAnnotation（实际无导出路径），只改 2 处 |
+| 3 useAnnotationState blurMode state | ✅ | `8610a65a` | review clean |
+| 4 AnnotationToolbar blur popover | ✅ | `fae8edf5` | 2 Minor（toggle 语义/a11y）非阻塞 |
+| 5 e2e Gaussian 性能验证 | ⏳ 待用户 | — | 代码就绪，待手动验证决定是否 fallback stackblur |
+| 6 config 4 水印字段 | ✅ | `b32fe15b` | review clean |
+| 7 drawWatermark + 9 格定位 | ✅ | `6a6b01a7` | review 发现 9 格 bug→fix（反向排除改正向 includes） |
+| 8 水印按钮 + 读 config | ✅ | `e286b0c8` | brief 误写 camelCase，实际 snake_case（implementer 修正） |
+| 9 设置页水印卡片 | ✅ | `1e0e6c38` | +i18n key 合理偏差 |
+| 10 文档同步 | ✅ | `add77f69` | configuration.md + architecture.md |
+| **Final review fix** | ✅ | `312816cd` | BLOCKER: apply_config_value 缺 4 arm + MAJOR: 画布水印预览缺失 |
+
+**Plan 执行中的修正**（brief 误差，subagent+review 全部捕获）：
+- Task 2: brief「3 处」实际 2 处（RecordAnnotation 无导出路径）
+- Task 7: brief 9 格定位代码有 bug（4 格失效），review 发现→fix
+- Task 8: brief casing 错（camelCase→实际 snake_case）
+- Final: plan 遗漏 apply_config_value 分发器 + 画布预览
+
+---
+
 ## Phase 1：模糊效果（Gaussian + Redact）
 
 ### Task 1: Annotation 加 blurMode 字段 + drawBlur 分发器
