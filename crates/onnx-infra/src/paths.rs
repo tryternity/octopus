@@ -12,9 +12,8 @@ pub fn find_hf_cache(source: &str) -> Result<PathBuf> {
 
     if !model_dir.exists() {
         anyhow::bail!(
-            "模型 '{}' 未在 ~/.octopus/models/ 或 HF cache 找到。请运行 `octopus-cli download {}` 下载。",
+            "模型 '{}' 未在本地找到（~/.octopus/models/ 和 HF cache 均无）。请先下载该模型。",
             source,
-            source
         );
     }
     find_latest_snapshot(&model_dir)

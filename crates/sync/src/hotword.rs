@@ -39,7 +39,7 @@ use octopus_infra::db::{self, HotwordSet, HotwordWord};
 use octopus_infra::hotword_text::hotword_word_md5_from_fields;
 
 use crate::outline::OutlineEntry;
-use crate::store::{iso_to_unix_ms, md5_hex, shard_dir, sync_root, write_atomically};
+use crate::store::{iso_to_unix_ms, md5_hex, now_secs, shard_dir, sync_root, write_atomically};
 
 // === 路径辅助 ===
 
@@ -435,10 +435,7 @@ pub fn export_all_hotwords_with(sets: &[HotwordSet], words: &[HotwordWord]) -> R
     }
 
     // 2. 写每个词典 + 收集总 outline 的 set entries
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now_secs = now_secs();
     let mut set_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
     for h in sets {
         // GC 2026-08-02：超期 set tombstone 不写文件 + 不进 outline（清空步骤已删其目录）
@@ -537,10 +534,7 @@ pub fn incremental_export_hotwords_with(
         words_by_set.entry(w.set_id.as_str()).or_default().push(w);
     }
 
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now_secs = now_secs();
     let mut changed = 0usize;
     let mut new_set_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
     let id_set: std::collections::HashSet<&str> = sets.iter().map(|h| h.id.as_str()).collect();
@@ -674,10 +668,7 @@ pub fn incremental_export_hotwords_with(
 ///
 /// 扫描 hotword/ 下每个词典目录的 meta.json，返回 HotwordSetMeta 列表。
 pub fn import_hotwords_from_files() -> Result<Vec<HotwordSetMeta>> {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now_secs = now_secs();
     let dir = hotword_dir();
     let mut metas = Vec::new();
     if !dir.is_dir() {
@@ -722,10 +713,7 @@ pub fn import_hotwords_from_files() -> Result<Vec<HotwordSetMeta>> {
 /// 导入全部 cipher 数据，hotword clone 也应一次导入全部词，而非等下次 sync_now 的
 /// merge_hotwords 才 pull（clone → 下次 sync 之间词典是空壳，UX 等同数据丢失）。
 pub fn import_hotword_words_from_files() -> Result<Vec<(String, Vec<HotwordWordFile>)>> {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now_secs = now_secs();
     let dir = hotword_dir();
     let mut result = Vec::new();
     if !dir.is_dir() {
@@ -855,10 +843,7 @@ pub struct HotwordMergeReport {
 ///
 /// merge 完后从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）。
 pub fn merge_hotwords() -> Result<HotwordMergeReport> {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now_secs = now_secs();
     let remote_outline = read_hotword_outline()?;
     let db_sets = db::list_all_hotword_sets()?; // 含 tombstone（is_deleted>0）——merge 需感知软删态
     let db_by_id: std::collections::HashMap<&str, &HotwordSet> =
@@ -866,19 +851,30 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
     let mut report = HotwordMergeReport::default();
 
     // === 阶段 1：set 层 merge（词典元数据）===
+    // pull_set report 累加小 helper——3 处 match 分支结构相同（2026-08-05 抽取消除重复）。
+    let acc_pull = |uuid: &str, now: i64, report: &mut HotwordMergeReport| -> Result<(), ()> {
+        match pull_set(uuid, now) {
+            Ok(true) => {
+                report.pulled += 1;
+                Ok(())
+            }
+            Ok(false) => {
+                report.skipped += 1;
+                Ok(())
+            }
+            Err(e) => {
+                log::warn!("[sync] 热词 merge: 词典 {} pull 跳过：{}", uuid, e);
+                report.skipped += 1;
+                Err(())
+            }
+        }
+    };
     for (uuid, entry) in &remote_outline.sets {
         let remote_updated = entry.updated_ms;
         match db_by_id.get(uuid.as_str()) {
             None => {
                 // DB 无 → pull（读 meta 文件 upsert，回填 sync_md5）
-                match pull_set(uuid, now_secs) {
-                    Ok(true) => report.pulled += 1,
-                    Ok(false) => report.skipped += 1,
-                    Err(e) => {
-                        log::warn!("[sync] 热词 merge: 词典 {} 文件读取失败，已跳过：{}", uuid, e);
-                        report.skipped += 1;
-                    }
-                }
+                let _ = acc_pull(uuid, now_secs, &mut report);
             }
             Some(db_h) => {
                 let local_updated = iso_to_unix_ms(&db_h.updated_at);
@@ -892,24 +888,10 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
                     .map(|f| f.is_deleted > 0 && !is_tombstone_expired(f.is_deleted, now_secs))
                     .unwrap_or(false);
                 if remote_is_tombstone {
-                    match pull_set(uuid, now_secs) {
-                        Ok(true) => report.pulled += 1,
-                        Ok(false) => report.skipped += 1,
-                        Err(e) => {
-                            log::warn!("[sync] 热词 merge: 词典 {} tombstone pull 跳过：{}", uuid, e);
-                            report.skipped += 1;
-                        }
-                    }
+                    let _ = acc_pull(uuid, now_secs, &mut report);
                 } else if remote_updated > local_updated {
                     // 远程更新 → pull 覆盖 DB
-                    match pull_set(uuid, now_secs) {
-                        Ok(true) => report.pulled += 1,
-                        Ok(false) => report.skipped += 1,
-                        Err(e) => {
-                            log::warn!("[sync] 热词 merge: 词典 {} pull 跳过：{}", uuid, e);
-                            report.skipped += 1;
-                        }
-                    }
+                    let _ = acc_pull(uuid, now_secs, &mut report);
                 } else if local_updated > remote_updated {
                     // DB 更新 → push 覆盖文件
                     write_hotword_set_file(&HotwordSetMeta::from_hotword_set(db_h))?;
@@ -2099,10 +2081,7 @@ mod tests {
         export_all_hotwords().expect("export 初始（is_deleted=0）");
 
         // 远程（A 机）软删「八爪鱼」——is_deleted=当前秒（未超期 tombstone，应传播）, updated_ms 远未来
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+        let now_secs = now_secs();
         write_remote_word(set_id, "八爪鱼", "ba zhao yu", now_secs, 9999999999999);
 
         merge_hotwords().expect("merge");
@@ -2376,10 +2355,7 @@ mod tests {
         // 远程被 A 机删除后 push：tombstone。is_deleted 用「当前时刻 - 1 小时」
         //（未超期，10 天 retention 内），updated_ms = 1000（比本地 DB 更早，
         // 模拟「A 删除了一个很久没动的词典，B 最近刚改过」）。
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+        let now_secs = now_secs();
         let recent_tombstone = now_secs - 3600; // 1 小时前删除
         write_remote_set_with(set_id, "会被删除的词典", 1000, recent_tombstone);
 
@@ -2423,10 +2399,7 @@ mod tests {
         export_all_hotwords().expect("export 初始 active");
 
         let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, "八爪鱼");
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+        let now_secs = now_secs();
         let recent_tombstone = now_secs - 3600;
 
         // 远程删除该词（tombstone），updated_ms=1000 比本地 DB 早

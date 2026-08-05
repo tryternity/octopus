@@ -241,47 +241,57 @@ fn check_https(parsed: &GitRemoteUrl) -> Result<PrivacyVerdict, SyncError> {
     }
 }
 
-/// GitHub API 查询——`GET https://api.github.com/repos/{owner}/{repo}`。
+/// GitHub/Gitee API 查询通用骨架——收敛两家 match 结构重复（2026-08-05 问题 3）。
 ///
-/// 返回策略：
-/// - 200 + `private: false` → `Public`
-/// - 200 + `private: true` → `Private`（Phase 1 未认证不会到这）
-/// - 404 → `Ambiguous`（私有 vs 不存在无法区分）
-/// - 403 → `RateLimited`（任意 403 一并硬阻断——未认证查询的 403 实践中即 API 限流；
-///   即使成因非限流（如 abuse detection 触发的 403）也阻断，方向更保守。S-SYNC-PUBLIC-LEAK-ON-RATELIMIT）
-/// - 网络错误 → `NetworkError`
-/// - 其他状态码 → fallback ls-remote
-fn check_via_github_api(owner: &str, repo: &str) -> Result<PrivacyVerdict, SyncError> {
-    let api_url = format!("https://api.github.com/repos/{}/{}", owner, repo);
-    let resp = http_get_json(&api_url, HTTP_TIMEOUT_SECS);
-
+/// `is_private` 闭包从 JSON 判定是否私有（GitHub 看 `private`，Gitee 看 `private || internal`）。
+/// `host_label` / `rate_limit_msg` / `fallback_url` 由调用方提供。
+fn check_via_api(
+    api_url: &str,
+    is_private: impl Fn(&serde_json::Value) -> bool,
+    host_label: &str,
+    rate_limit_msg: &str,
+    fallback_url: String,
+) -> Result<PrivacyVerdict, SyncError> {
+    let resp = http_get_json(api_url, HTTP_TIMEOUT_SECS);
     match resp {
         HttpResult::Ok(json) => {
-            let private = json
-                .get("private")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if private {
+            if is_private(&json) {
                 Ok(PrivacyVerdict::Private)
             } else {
                 Ok(PrivacyVerdict::Public)
             }
         }
-        HttpResult::Status(404) => Ok(PrivacyVerdict::Ambiguous(
-            "GitHub 返 404（可能是私有库，也可能不存在）".to_string(),
-        )),
-        HttpResult::Status(403) => Ok(PrivacyVerdict::RateLimited(
-            "GitHub API 限流（60/h/IP）——请稍后重试或换用 SSH URL".to_string(),
-        )),
+        HttpResult::Status(404) => Ok(PrivacyVerdict::Ambiguous(format!(
+            "{} 返 404（可能是私有库，也可能不存在）",
+            host_label
+        ))),
+        HttpResult::Status(403) => Ok(PrivacyVerdict::RateLimited(rate_limit_msg.to_string())),
         HttpResult::Status(code) => {
-            log::warn!("[sync] GitHub API 返 {} —— fallback 到 ls-remote", code);
-            check_via_ls_remote(&format!(
-                "https://github.com/{}/{}.git",
-                owner, repo
-            ))
+            log::warn!("[sync] {} API 返 {} —— fallback 到 ls-remote", host_label, code);
+            check_via_ls_remote(&fallback_url)
         }
         HttpResult::NetworkError(msg) => Ok(PrivacyVerdict::NetworkError(msg)),
     }
+}
+
+/// GitHub API 查询——`GET https://api.github.com/repos/{owner}/{repo}`。
+///
+/// 返回值：
+/// - `private == true` → `Private`
+/// - `private == false` → `Public`
+/// - 404 → `Ambiguous`（可能是私有库，也可能不存在）
+/// - 403 → `RateLimited`（任意 403 一并硬阻断——未认证查询的 403 实践中即 API 限流；
+///   即使成因非限流（如 abuse detection 触发的 403）也阻断，方向更保守。S-SYNC-PUBLIC-LEAK-ON-RATELIMIT）
+/// - 网络错误 → `NetworkError`
+/// - 其他状态码 → fallback ls-remote
+fn check_via_github_api(owner: &str, repo: &str) -> Result<PrivacyVerdict, SyncError> {
+    check_via_api(
+        &format!("https://api.github.com/repos/{}/{}", owner, repo),
+        |json| json.get("private").and_then(|v| v.as_bool()).unwrap_or(false),
+        "GitHub",
+        "GitHub API 限流（60/h/IP）——请稍后重试或换用 SSH URL",
+        format!("https://github.com/{}/{}.git", owner, repo),
+    )
 }
 
 /// Gitee API 查询——`GET https://gitee.com/api/v5/repos/{owner}/{repo}`。
@@ -289,37 +299,17 @@ fn check_via_github_api(owner: &str, repo: &str) -> Result<PrivacyVerdict, SyncE
 /// Gitee 三态：public / private / internal（企业内部库）。
 /// `private || internal` → Private；`public == true` → Public。
 fn check_via_gitee_api(owner: &str, repo: &str) -> Result<PrivacyVerdict, SyncError> {
-    let api_url = format!("https://gitee.com/api/v5/repos/{}/{}", owner, repo);
-    let resp = http_get_json(&api_url, HTTP_TIMEOUT_SECS);
-
-    match resp {
-        HttpResult::Ok(json) => {
-            let private = json
-                .get("private")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let internal = json
-                .get("internal")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if private || internal {
-                Ok(PrivacyVerdict::Private)
-            } else {
-                Ok(PrivacyVerdict::Public)
-            }
-        }
-        HttpResult::Status(404) => Ok(PrivacyVerdict::Ambiguous(
-            "Gitee 返 404（可能是私有库，也可能不存在）".to_string(),
-        )),
-        HttpResult::Status(403) => Ok(PrivacyVerdict::RateLimited(
-            "Gitee API 限流——请稍后重试或换用 SSH URL".to_string(),
-        )),
-        HttpResult::Status(code) => {
-            log::warn!("[sync] Gitee API 返 {} —— fallback 到 ls-remote", code);
-            check_via_ls_remote(&format!("https://gitee.com/{}/{}.git", owner, repo))
-        }
-        HttpResult::NetworkError(msg) => Ok(PrivacyVerdict::NetworkError(msg)),
-    }
+    check_via_api(
+        &format!("https://gitee.com/api/v5/repos/{}/{}", owner, repo),
+        |json| {
+            let private = json.get("private").and_then(|v| v.as_bool()).unwrap_or(false);
+            let internal = json.get("internal").and_then(|v| v.as_bool()).unwrap_or(false);
+            private || internal
+        },
+        "Gitee",
+        "Gitee API 限流——请稍后重试或换用 SSH URL",
+        format!("https://gitee.com/{}/{}.git", owner, repo),
+    )
 }
 
 /// `git ls-remote --heads <url>` 嗅探。

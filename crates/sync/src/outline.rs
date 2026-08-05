@@ -52,6 +52,27 @@ impl Default for Outline {
     }
 }
 
+/// 合并单个 map（cipher 或 folder）：本地有 + 远程无 → 保留；本地无 + 远程有 → 加入；
+/// 双方都有 → 取 updated_ms 更新者。
+/// 2026-08-05 抽取：消除 merge_outlines 中 ciphers/folders 两段逐字重复。
+fn merge_map(
+    merged: &mut BTreeMap<String, OutlineEntry>,
+    remote: &BTreeMap<String, OutlineEntry>,
+) {
+    for (uuid, remote_entry) in remote {
+        match merged.get(uuid) {
+            None => {
+                merged.insert(uuid.clone(), remote_entry.clone());
+            }
+            Some(local_entry) => {
+                if remote_entry.updated_ms > local_entry.updated_ms {
+                    merged.insert(uuid.clone(), remote_entry.clone());
+                }
+            }
+        }
+    }
+}
+
 /// 合并本地与远程 outline——按 uuid 取 updated_ms 更新者。
 ///
 /// 返回 merged outline。vault_version 取 max。
@@ -62,32 +83,8 @@ impl Default for Outline {
 /// 对于「双方都有」——取 updated_ms 更大的（毫秒时间戳数值比较）。
 pub fn merge_outlines(local: &Outline, remote: &Outline) -> Outline {
     let mut merged = local.clone();
-    // ciphers
-    for (uuid, remote_entry) in &remote.ciphers {
-        match merged.ciphers.get(uuid) {
-            None => {
-                merged.ciphers.insert(uuid.clone(), remote_entry.clone());
-            }
-            Some(local_entry) => {
-                if remote_entry.updated_ms > local_entry.updated_ms {
-                    merged.ciphers.insert(uuid.clone(), remote_entry.clone());
-                }
-            }
-        }
-    }
-    // folders
-    for (uuid, remote_entry) in &remote.folders {
-        match merged.folders.get(uuid) {
-            None => {
-                merged.folders.insert(uuid.clone(), remote_entry.clone());
-            }
-            Some(local_entry) => {
-                if remote_entry.updated_ms > local_entry.updated_ms {
-                    merged.folders.insert(uuid.clone(), remote_entry.clone());
-                }
-            }
-        }
-    }
+    merge_map(&mut merged.ciphers, &remote.ciphers);
+    merge_map(&mut merged.folders, &remote.folders);
     // vault_version 取 max
     merged.vault_version = local.vault_version.max(remote.vault_version);
     merged
