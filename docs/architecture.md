@@ -242,6 +242,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **截图工具栏位置（2026-07-21 fix）**：选区确定后弹出标注工具栏，位置三级 fallback——① 选区下方（belowSpace >= 44）；② 选区上方（aboveSpace >= 44）；③ **选区内部底部**（上下都不够时，如全屏截图，工具栏覆盖在选区上留 8px 内边距，保证可点击，避免被钳到屏幕顶部菜单栏或底部 Dock 区域）。原逻辑只考虑上下两选，全屏截图时工具栏会被推到 Dock 区域难以点击。**X 方向 clamp（2026-07-22 fix）**：工具栏水平居中于选区，但 `toolbarCenterX = clamp(sel.x + sel.w/2, DOCK_MARGIN + halfW, innerWidth - DOCK_MARGIN - halfW)`——两侧预留 `DOCK_MARGIN = 80px`（macOS Dock 宽度），防止选区靠近屏幕左/右边缘时工具栏跑出可视区域。`useLayoutEffect` 测量工具栏实际宽度 `toolbarW` 后再算 clamp（避免首次渲染闪烁）。
 
+**标注模糊效果 + 水印（2026-08-05 新增）**：标注工具栏的 `blur` 工具从单一像素化升级为 3 种效果——Pixelate（现有 `drawMosaic` shrink-enlarge 算法）/ Gaussian（`drawGaussian` 用 `ctx.filter='blur(Npx)'` + clip 重绘）/ Redact（`drawRedact` 纯黑 fillRect）。`Annotation.blurMode?: "pixelate" | "gaussian" | "redact"` 字段切换（默认 pixelate 向后兼容），`drawBlur` 分发器统一入口替换原 `drawMosaic` 调用（Screenshot composeAndCropBytes + ImagePreview 两处）。blur 按钮点击弹 popover 子菜单选 blurMode（而非直接选中工具）。**水印**：4 个 config 字段（`screenshot_watermark_text` / `_position` / `_opacity` / `_font_size`），工具栏水印按钮弹输入框写 config，导出时 `drawWatermark` 叠加到全 canvas（9 格定位，正向 `includes` 匹配 center/right/middle/bottom）。**水印不进 annotations 数组**（独立全局叠加层，config 驱动，不受 undo/redo 影响），渲染在所有标注之后。全前端 canvas 渲染，后端零改动。详见 [spec](superpowers/specs/2026-08-05-screenshot-watermark-blur-effects.md)。
+
 **全窗口独立 entry 架构（2026-07-21）**：所有 9 个窗口各自独立 HTML + `src/entries/xxx-main.tsx`，依赖图自然隔离。设计原则：**产物边界 = 依赖边界 = 职责边界**——每窗口的 import 闭包只含自己需要的依赖，CodeMirror 只进 compact-editor/result、lucide-react 只进 settings/vault-picker/password-generator，互不污染。
 
 | 窗口 | HTML | 专属 chunk（实测） | 主导依赖 |

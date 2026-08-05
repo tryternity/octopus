@@ -312,6 +312,10 @@ octopus-cli config
 | `clipboard_max_items` | int | `1000` | desktop | 剪贴板最大保留条数（不含收藏，超出自动清理） |
 | `clipboard_max_age_days` | int | `30` | desktop | 剪贴板自动清理天数（超过此天数的非收藏记录自动删除） |
 | `screenshot_shortcut` | string | `"Alt+S"` | desktop | 截图全局快捷键（框选 → 标注 → 入剪贴板历史）。详见 [screenshot 设计](superpowers/specs/2026-06-28-archived-specs.md)。GUI 设置页可配 + 热重载 |
+| `screenshot_watermark_text` | string | `""` | desktop | 截图水印文字，空=不加水印。工具栏水印按钮 + 设置页均可配。导出时 `drawWatermark` 叠加（不进 annotations 数组，独立全局层）。热重载 |
+| `screenshot_watermark_position` | string | `"bottom-right"` | desktop | 截图水印 9 格位置：`top-left`/`top-center`/`top-right`/`middle-left`/`middle-center`/`middle-right`/`bottom-left`/`bottom-center`/`bottom-right`。热重载 |
+| `screenshot_watermark_opacity` | f32 | `0.3` | desktop | 截图水印透明度 0.0-1.0。热重载 |
+| `screenshot_watermark_font_size` | u32 | `24` | desktop | 截图水印字号（逻辑像素）。热重载 |
 | `download_mirror` | string | `""` | cli + desktop | HF 模型下载镜像 host（如 `https://hf-mirror.com`），空 = 官方源 huggingface.co。cli `download --mirror` 可临时覆盖 |
 | `active_polish_prompt` | string | `"1"` | desktop | 激活的润色 prompt id（`prompts` 表 `id` 字段，字符串形式存储）。默认 `"1"` 指向系统内置 prompt。设置窗口 prompt 管理页可切换（`set_active_prompt` 命令即时生效，下次润色用新 prompt）。详见 [prompts 表](#prompts-表-润色提示词管理) |
 
