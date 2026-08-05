@@ -113,6 +113,29 @@ pub fn folder_file_path(uuid: &str) -> Result<PathBuf> {
 
 // === 数据结构 ===
 
+/// serde 兼容反序列化：is_deleted 字段从 bool（旧 .sync 文件 `"isDeleted": true/false`）
+/// → i64（v60：0=活跃，>0=删除时刻 epoch 秒）。
+///
+/// - 旧 `true` → 1（近似 epoch，hotword 旧文件也是 1；1=1970 秒会被 GC 视为超期 tombstone）
+/// - 旧 `false` → 0
+/// - 数字 → 原样 i64
+/// - 其他 → 0（保守当活跃）
+///
+/// 序列化（写出）走默认 i64 路径，新文件写数字。对称 hotword 的兼容方案。
+fn deserialize_is_deleted_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let v = serde_json::Value::deserialize(deserializer)?;
+    match v {
+        serde_json::Value::Bool(true) => Ok(1),
+        serde_json::Value::Bool(false) => Ok(0),
+        serde_json::Value::Number(n) => Ok(n.as_i64().unwrap_or(0)),
+        _ => Ok(0),
+    }
+}
+
 /// meta.json 内容——只含同步所需字段（不含 app_key_local_enc / K_machine 相关）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -224,9 +247,12 @@ pub struct CipherPlaintextMeta {
     pub reprompt: i64,
     /// 第十四轮 P2-1：serde default 兼容老格式文件（软删功能 v53 上线前 sync 的 cipher
     /// 文件无此字段）——缺 default 则 read_cipher_file 报错 → import/merge 静默跳过 → 密码丢失。
-    /// 对齐 hotword HotwordSetMeta:145。老文件 → false（活跃），符合 MVP 语义。
-    #[serde(default)]
-    pub is_deleted: bool,
+    /// 对齐 hotword HotwordSetMeta:145。
+    ///
+    /// v60（2026-08-04）：从 bool 改 i64（0=活跃，>0=删除时刻 epoch 秒 tombstone）。
+    /// `deserialize_with` 兼容旧文件中可能的 `"isDeleted": true/false`（true→1，false→0）。
+    #[serde(default, deserialize_with = "deserialize_is_deleted_i64")]
+    pub is_deleted: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -289,8 +315,9 @@ pub struct FolderFile {
     pub encrypted_name: String,
     pub sort_order: i64,
     /// 第十四轮 P2-1：serde default 兼容老格式文件（同 CipherPlaintextMeta）。
-    #[serde(default)]
-    pub is_deleted: bool,
+    /// v60：从 bool 改 i64（0=活跃，>0=tombstone epoch），deserialize_with 兼容旧 bool。
+    #[serde(default, deserialize_with = "deserialize_is_deleted_i64")]
+    pub is_deleted: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -847,7 +874,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: false,
+            is_deleted: 0,
             sync_md5: None,
             created_at: "2026-07-21T10:00:00".into(),
             updated_at: "2026-07-21T10:00:00".into(),
@@ -921,6 +948,64 @@ mod tests {
         assert_eq!(back.data, cipher.data);
     }
 
+    /// v60 兼容守护：旧 .sync 文件用 `"isDeleted": true/false`（bool）存软删状态。
+    /// 新代码 is_deleted 是 i64，deserialize_is_deleted_i64 应把 true→1、false→0。
+    /// 防止旧 sync 文件 read 失败 → clone/import 静默跳过 → 数据丢失。
+    #[test]
+    fn cipher_file_deserializes_legacy_bool_is_deleted() {
+        // 模拟旧格式 cipher 文件（isDeleted 是 bool true）
+        let legacy_json = r#"{
+            "version": 1,
+            "id": "legacy-bool-uuid",
+            "encrypted": {
+                "name": "v1:n",
+                "notes": null,
+                "data": "v1:d",
+                "fields": null,
+                "passwordHistory": null
+            },
+            "plaintextMeta": {
+                "folderId": null,
+                "favorite": false,
+                "atype": 1,
+                "reprompt": 0,
+                "isDeleted": true,
+                "createdAt": "2026-07-21T00:00:00",
+                "updatedAt": "2026-07-21T00:00:00"
+            }
+        }"#;
+        let file: CipherFile = serde_json::from_str(legacy_json).expect("旧 bool 格式应能反序列化");
+        assert_eq!(file.plaintext_meta.is_deleted, 1, "旧 true 应转为 1");
+
+        // 同理 false → 0
+        let legacy_false = legacy_json.replace("\"isDeleted\": true", "\"isDeleted\": false");
+        let file2: CipherFile =
+            serde_json::from_str(&legacy_false).expect("旧 bool false 应能反序列化");
+        assert_eq!(file2.plaintext_meta.is_deleted, 0, "旧 false 应转为 0");
+
+        // 新格式（i64 数字）仍正常
+        let new_format = legacy_json.replace("\"isDeleted\": true", "\"isDeleted\": 1700000000");
+        let file3: CipherFile =
+            serde_json::from_str(&new_format).expect("新 i64 格式应能反序列化");
+        assert_eq!(file3.plaintext_meta.is_deleted, 1_700_000_000);
+    }
+
+    /// v60 兼容守护：旧 folder 文件 `"isDeleted": true` → i64。
+    #[test]
+    fn folder_file_deserializes_legacy_bool_is_deleted() {
+        let legacy_json = r#"{
+            "version": 1,
+            "id": "legacy-folder",
+            "encryptedName": "v1:n",
+            "sortOrder": 0,
+            "isDeleted": true,
+            "createdAt": "2026-07-21T00:00:00",
+            "updatedAt": "2026-07-21T00:00:00"
+        }"#;
+        let file: FolderFile = serde_json::from_str(legacy_json).expect("旧 bool folder 应能反序列化");
+        assert_eq!(file.is_deleted, 1, "旧 folder true 应转为 1");
+    }
+
     #[test]
     fn delete_missing_cipher_file_is_ok() {
         let _g = VaultRootGuard::new();
@@ -949,7 +1034,7 @@ mod tests {
             id: "c3d4e5f6-a7b8-4901-9003-cdefg345678".into(),
             name: "v1:enc-folder".into(),
             sort_order: 0,
-            is_deleted: false,
+            is_deleted: 0,
             sync_md5: None,
             created_at: "2026-07-21T00:00:00".into(),
             updated_at: "2026-07-21T00:00:00".into(),

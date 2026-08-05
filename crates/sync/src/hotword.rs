@@ -31,6 +31,7 @@
 //!
 //! 详见 spec `2026-08-01-hotword-word-record-design.md` §3 + plan `2026-08-01-hotword-word-level-merge.md`。
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -39,6 +40,7 @@ use octopus_infra::db::{self, HotwordSet, HotwordWord};
 use octopus_infra::hotword_text::hotword_word_md5_from_fields;
 
 use crate::outline::OutlineEntry;
+use crate::pipeline::{merge_three_way, MergeReport, SyncEntity};
 use crate::store::{iso_to_unix_ms, md5_hex, now_secs, shard_dir, sync_root, write_atomically};
 
 // === 路径辅助 ===
@@ -822,6 +824,41 @@ pub fn push_hotwords_to_files() -> Result<usize> {
     Ok(changed)
 }
 
+// === Thread-local set_id（HotwordWordEntity trait method 间传递当前词典 id）===
+//
+// `merge_three_way` 泛型骨架按 `SyncEntity` trait method 调用 pull/push，trait method 无参数
+// 无法传 set_id。word merge 需知道当前在 merge 哪个词典（读该词典 outline + 文件路径）。
+// 用 thread-local 在 `merge_hotwords` 入口对每个 set set 一次，trait method 内
+// `thread_set_id()` 取——对称 clipboard 的 `THREAD_KEY` 模式（key 不可变 / set_id 在 set 循环里变）。
+thread_local! {
+    static THREAD_SET_ID: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// merge 入口对每个 set 调一次——set thread-local set_id，后续 word trait method 内取。
+///
+/// 调用方：仅 [`merge_hotwords`]（set 层 merge 完后对每个 DB set set 一次）。trait method
+/// 不应调本函数。clear 在 merge 末尾调（drop guard 也行，但显式 clear 更清晰）。
+fn set_thread_set_id(id: &str) {
+    THREAD_SET_ID.with(|s| *s.borrow_mut() = Some(id.to_string()));
+}
+
+/// 清空 thread-local set_id（merge 末尾调，避免泄漏到下次 merge）。
+fn clear_thread_set_id() {
+    THREAD_SET_ID.with(|s| *s.borrow_mut() = None);
+}
+
+/// 取 thread-local set_id——HotwordWordEntity 的 trait method（`read_file` / `read_outline_entries`
+/// / `write_file` / `upsert_db_from_file` / `list_db_rows`）用。
+///
+/// 未 set 时 panic（`merge_hotwords` 必然先 set，调用方契约）。
+fn thread_set_id() -> String {
+    THREAD_SET_ID.with(|s| {
+        s.borrow()
+            .clone()
+            .expect("hotword thread set_id 未 set——merge_hotwords 应先调 set_thread_set_id")
+    })
+}
+
 // === merge engine（2026-08-01，取代 pull+push 两步）===
 
 /// merge_hotwords 的结果报告（对称于 vault `MergeReport`，但独立于 vault crate——
@@ -840,108 +877,38 @@ pub struct HotwordMergeReport {
 
 /// 3-way merge：DB ↔ 文件系统按 `updated_at` 最新赢，相等时 md5 比对 DB 赢。
 ///
-/// 分两阶段：
-/// 1. **set 层 merge**（词典元数据）：遍历总 outline，逐词典 3-way 判定
-/// 2. **word 层 merge**（词数据）：对每个词典读其 outline + DB 该词典的词，逐词 3-way 判定
+/// 2026-08-05 重构：委托到泛型 [`merge_three_way`] 骨架，由 [`HotwordSetEntity`]（set 层）
+/// + [`HotwordWordEntity`]（word 层）impl [`SyncEntity`] 提供具体逻辑。判定顺序（tombstone 单向
+/// 优先 / 时间戳 / md5 冲突 DB 赢）与原内联实现完全一致——对称 `clipboard::merge_clipboard_favorites`。
 ///
-/// merge 完后从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）。
+/// 分两阶段：
+/// 1. **set 层 merge**（词典元数据）：`merge_three_way::<HotwordSetEntity>` 遍历总 outline，逐词典 3-way 判定。
+/// 2. **word 层 merge**（词数据）：对每个 DB 存在的 set，set thread-local set_id 后
+///    `merge_three_way::<HotwordWordEntity>` 遍历该词典 outline，逐词 3-way 判定。
+///
+/// **export 时机**（关键——与单层 clipboard 不同）：热词 export 是协调 set+word 两层的全量重建
+/// （`export_all_hotwords` 会清空所有 set 目录 + 重建），必须在两层都收敛后调一次。故两个 trait
+/// 的 `export_all` 都 noop，本函数在 set 层 + word 层 merge 都跑完后统一调一次 `export_all_hotwords`
+/// ——与原内联实现的「export 只调一次」语义一致。
 pub fn merge_hotwords() -> Result<HotwordMergeReport> {
-    let now_secs = now_secs();
-    let remote_outline = read_hotword_outline()?;
-    let db_sets = db::list_all_hotword_sets()?; // 含 tombstone（is_deleted>0）——merge 需感知软删态
-    let db_by_id: std::collections::HashMap<&str, &HotwordSet> =
-        db_sets.iter().map(|h| (h.id.as_str(), h)).collect();
-    let mut report = HotwordMergeReport::default();
+    let now = now_secs();
+    let mut report = MergeReport::default();
 
-    // === 阶段 1：set 层 merge（词典元数据）===
-    // pull_set report 累加小 helper——3 处 match 分支结构相同（2026-08-05 抽取消除重复）。
-    let acc_pull = |uuid: &str, now: i64, report: &mut HotwordMergeReport| -> Result<(), ()> {
-        match pull_set(uuid, now) {
-            Ok(true) => {
-                report.pulled += 1;
-                Ok(())
-            }
-            Ok(false) => {
-                report.skipped += 1;
-                Ok(())
-            }
-            Err(e) => {
-                log::warn!("[sync] 热词 merge: 词典 {} pull 跳过：{}", uuid, e);
-                report.skipped += 1;
-                Err(())
-            }
-        }
-    };
-    for (uuid, entry) in &remote_outline.sets {
-        let remote_updated = entry.updated_ms;
-        match db_by_id.get(uuid.as_str()) {
-            None => {
-                // DB 无 → pull（读 meta 文件 upsert，回填 sync_md5）
-                let _ = acc_pull(uuid, now_secs, &mut report);
-            }
-            Some(db_h) => {
-                let local_updated = iso_to_unix_ms(&db_h.updated_at);
-                // 🔴 复活 bug 修复（2026-08-04）：删除是单向终态——远程已 tombstone
-                //（未超期）时，**无论本地时间戳多新都应 pull tombstone 到 DB**，
-                // 而不是把本地 active 写回文件覆盖远程 tombstone。否则第三台从没
-                // 见过该词典的机器会把 active 当新词典拉进来 → 复活。
-                // pull_set 内部已有超期检查 + DB-tombstone-vs-remote-active 拒绝复活，
-                // 这里只需确保 remote-tombstone-vs-local-active 也走 pull 路径。
-                let remote_is_tombstone = read_hotword_set_file(uuid)
-                    .map(|f| f.is_deleted > 0 && !is_tombstone_expired(f.is_deleted, now_secs))
-                    .unwrap_or(false);
-                if remote_is_tombstone {
-                    let _ = acc_pull(uuid, now_secs, &mut report);
-                } else if remote_updated > local_updated {
-                    // 远程更新 → pull 覆盖 DB
-                    let _ = acc_pull(uuid, now_secs, &mut report);
-                } else if local_updated > remote_updated {
-                    // DB 更新 → push 覆盖文件
-                    write_hotword_set_file(&HotwordSetMeta::from_hotword_set(db_h))?;
-                    report.pushed += 1;
-                } else {
-                    // 时间戳相等 → md5 比对，冲突 DB 赢
-                    let db_md5 = db_h
-                        .sync_md5
-                        .clone()
-                        .unwrap_or_else(|| hotword_set_md5(db_h));
-                    if db_md5 != entry.md5 {
-                        write_hotword_set_file(&HotwordSetMeta::from_hotword_set(db_h))?;
-                        report.pushed += 1;
-                        report.conflicts += 1;
-                    }
-                }
-            }
-        }
-    }
+    // 阶段 1：set 层 merge（词典元数据）。trait export_all noop——不在中间 export。
+    merge_three_way::<HotwordSetEntity>(&mut report, now)?;
 
-    // set：DB 有 + outline 无 → push（写 meta 文件）
-    for db_h in &db_sets {
-        if !remote_outline.sets.contains_key(&db_h.id) {
-            write_hotword_set_file(&HotwordSetMeta::from_hotword_set(db_h))?;
-            report.pushed += 1;
-        }
-    }
-
-    // === 阶段 2：word 层 merge（每个词典的词数据）===
-    // 对每个 DB 存在的词典，读其 outline + DB 该词典的词，逐词 3-way merge。
-    // 远程词典在阶段 1 已 pull 到 DB，故这里以 DB 词典为准遍历即可覆盖。
-    // 第五轮 S2：入口一次查询按 set_id 分组，避免 N 个词典 × N 次 list_all_hotword_words() 全表扫。
-    let latest_sets = db::list_all_hotword_sets()?; // 含 tombstone——word merge 也要覆盖软删词典的词
-    let all_words = db::list_all_hotword_words()?;
-    let words_by_set: std::collections::HashMap<&str, Vec<&HotwordWord>> = {
-        let mut map: std::collections::HashMap<&str, Vec<&HotwordWord>> = std::collections::HashMap::new();
-        for w in &all_words {
-            map.entry(w.set_id.as_str()).or_default().push(w);
-        }
-        map
-    };
+    // 阶段 2：word 层 merge（每个 DB 存在的 set 的词数据）。
+    // 远程 set 在阶段 1 已 pull 到 DB，故以 DB set 为准遍历覆盖。含 tombstone——软删词典的
+    // 词也要 merge（删词典时词被硬删，但若远程有词 outline 仍需同步软删意图）。
+    let latest_sets = db::list_all_hotword_sets()?;
     for set in &latest_sets {
-        let set_words = words_by_set.get(set.id.as_str()).map(|v| v.as_slice()).unwrap_or(&[]);
-        merge_hotword_words(&set.id, set_words, &mut report, now_secs)?;
+        set_thread_set_id(&set.id);
+        merge_three_way::<HotwordWordEntity>(&mut report, now)?;
     }
+    clear_thread_set_id();
 
-    // === 阶段 3：从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）===
+    // 阶段 3：从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）。
+    // 必须在两层 merge 都收敛后调一次——export_all_hotwords 会清空所有 set 目录，提前调会丢词。
     export_all_hotwords()?;
 
     log::info!(
@@ -951,168 +918,328 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
         report.conflicts,
         report.skipped
     );
-    Ok(report)
+    Ok(report.into())
 }
 
-/// Pull 单个词典（读 meta 文件 → upsert DB，回填 sync_md5）。
-/// 返回 Ok(true) 表示成功 upsert，Ok(false) 表示 name 冲突/超期 tombstone 跳过。
-/// GC 2026-08-02：超期 tombstone（is_deleted>0 且超 RETENTION）不 pull——防 GC 后跨设备复活。
-fn pull_set(uuid: &str, now_secs: i64) -> Result<bool> {
-    match read_hotword_set_file(uuid) {
-        Ok(file) => {
-            // 超期 tombstone 不复活——本机已 GC（或即将 GC），不 pull 回来
-            if is_tombstone_expired(file.is_deleted, now_secs) {
-                log::debug!("[sync] 热词 merge: 词典 {} 超期 tombstone，skip pull", uuid);
-                return Ok(false);
-            }
-            // 删除单向传播（2026-08-03）：DB 已 tombstone 且远程 meta active 时拒绝 pull——
-            // 防本地删除被远程旧 active 状态复活（用户删词典→sync→git ff 拉到远程 active 版本→复活）。
-            // 反向（DB active + 远程 tombstone）允许——远程删除正常传播到本地。
-            if file.is_deleted == 0 {
-                if let Ok(db_h) = db::get_hotword_set(uuid) {
-                    if db_h.is_deleted > 0 {
-                        log::info!(
-                            "[sync] 热词 merge: 词典 {} 本地已删除（is_deleted={}），远程 active，拒绝复活",
-                            uuid,
-                            db_h.is_deleted
-                        );
-                        return Ok(false);
-                    }
-                }
-            }
-            let h = file.to_hotword_set(None);
-            let md5 = hotword_set_md5(&h);
-            let mut h = h;
-            h.sync_md5 = Some(md5);
-            match db::upsert_hotword_set(&h) {
-                Ok(()) => Ok(true),
-                Err(e) => {
-                    log::warn!(
-                        "[sync] 热词 merge: 词典 {} pull 跳过（可能 name 冲突）：{}",
-                        uuid,
-                        e
-                    );
-                    Ok(false)
-                }
-            }
+impl From<MergeReport> for HotwordMergeReport {
+    /// `MergeReport`（pipeline 通用 4 字段）→ `HotwordMergeReport`（保留原对外形状）。
+    fn from(r: MergeReport) -> Self {
+        HotwordMergeReport {
+            pulled: r.pulled,
+            pushed: r.pushed,
+            conflicts: r.conflicts,
+            skipped: r.skipped,
         }
-        Err(e) => Err(e),
     }
 }
 
-/// 单个词典的 word 级 3-way merge（对称 vault cipher merge）。
-/// 读词典内 outline（远程）+ DB 该词典的词（本地），逐词判定。
-fn merge_hotword_words(
-    set_id: &str,
-    set_words: &[&HotwordWord],
-    report: &mut HotwordMergeReport,
+/// 从文件构建的 `HotwordSet` 行执行核心 upsert 逻辑（原 `pull_set` 的核心，去掉重读文件）。
+///
+/// 2026-08-05 重构：原 `pull_set` 内联三段守卫（超期 tombstone / 删除单向传播 / name 冲突），
+/// 现 `HotwordSetEntity::upsert_db_from_file` 直接调本函数（pipeline 已 `read_file` + `file_to_row`
+/// 一次，避免双读）。
+///
+/// 守卫顺序（与原内联实现一致）：
+/// 1. **超期 tombstone 不复活**：`is_deleted>0` 且超 `HOTWORD_TOMBSTONE_RETENTION_SECS` → skip。
+///    merge_three_way 的 DB-有分支已过滤超期 tombstone，但 DB-无分支（`None => pull`）不过滤，
+///    故本守卫对 DB-无路径仍是必要的。
+/// 2. **删除单向传播**：远程 active（`is_deleted==0`）+ DB 已 tombstone（`is_deleted>0`）→ 拒绝复活。
+///    反向（远程 tombstone + DB active）允许——远程删除正常传播。
+/// 3. **name 冲突**：`upsert_hotword_set` UNIQUE(name,is_deleted) 失败 → skip。
+fn upsert_set_from_row(h: &HotwordSet, now_secs: i64) -> Result<bool> {
+    // 1. 超期 tombstone 不复活——本机已 GC（或即将 GC），不 pull 回来
+    if is_tombstone_expired(h.is_deleted, now_secs) {
+        log::debug!("[sync] 热词 merge: 词典 {} 超期 tombstone，skip pull", h.id);
+        return Ok(false);
+    }
+    // 2. 删除单向传播（2026-08-03）：DB 已 tombstone 且远程 active 时拒绝 pull——
+    //    防本地删除被远程旧 active 状态复活（用户删词典→sync→git ff 拉到远程 active 版本→复活）。
+    //    反向（DB active + 远程 tombstone）允许——远程删除正常传播到本地。
+    if h.is_deleted == 0 {
+        if let Ok(db_h) = db::get_hotword_set(&h.id) {
+            if db_h.is_deleted > 0 {
+                log::info!(
+                    "[sync] 热词 merge: 词典 {} 本地已删除（is_deleted={}），远程 active，拒绝复活",
+                    h.id,
+                    db_h.is_deleted
+                );
+                return Ok(false);
+            }
+        }
+    }
+    // 3. 回填 sync_md5（set md5 = id + name）后 upsert
+    let md5 = hotword_set_md5(h);
+    let mut h = h.clone();
+    h.sync_md5 = Some(md5);
+    match db::upsert_hotword_set(&h) {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            log::warn!(
+                "[sync] 热词 merge: 词典 {} pull 跳过（可能 name 冲突）：{}",
+                h.id,
+                e
+            );
+            Ok(false)
+        }
+    }
+}
+
+/// 从文件构建的 `HotwordWord` 行执行核心 upsert 逻辑（原 `pull_word` 的核心，去掉重读文件）。
+///
+/// 2026-08-05 重构：`HotwordWordEntity::upsert_db_from_file` 直接调本函数（pipeline 已 read_file +
+/// file_to_row 一次）。
+///
+/// 守卫顺序（与原内联实现一致）：
+/// 1. **超期 tombstone 不复活**：`is_deleted>0` 且超期 → skip（同 set 守卫）。
+/// 2. **删除单向传播**：远程 active + DB 已 tombstone → 拒绝复活（对称 set 保护）。
+/// 3. **upsert**：词无 name 冲突（复合键 set_id+word 幂等），失败记 warn + skip。
+fn upsert_word_from_row(
+    w: &HotwordWord,
     now_secs: i64,
-) -> Result<()> {
-    let remote_outline = read_hotword_set_outline(set_id)?;
-    // 第五轮 S2：set_words 由调用方预查询分组传入，不再每 set 全表扫 list_all_hotword_words()。
-    let db_by_id: std::collections::HashMap<&str, &HotwordWord> =
-        set_words.iter().map(|w| (w.id.as_str(), *w)).collect();
-
-    // word：outline 有 → 3-way 判定
-    for (uuid, entry) in &remote_outline.words {
-        let remote_updated = entry.updated_ms;
-        match db_by_id.get(uuid.as_str()) {
-            None => {
-                // DB 无 → pull（读词文件 upsert，回填 sync_md5）
-                match pull_word(set_id, uuid, now_secs, None) {
-                    Ok(true) => report.pulled += 1,
-                    Ok(false) => report.skipped += 1,
-                    Err(e) => {
-                        log::warn!(
-                            "[sync] 热词 merge: 词 {} 文件读取失败，已跳过：{}",
-                            uuid, e
-                        );
-                        report.skipped += 1;
-                    }
-                }
-            }
-            Some(db_w) => {
-                let local_updated = iso_to_unix_ms(&db_w.updated_at);
-                // 🔴 复活 bug 修复（2026-08-04，对称 set 级修复）：删除是单向终态——
-                // 远程 word 已 tombstone（未超期）时，无论本地时间戳多新都应 pull
-                // tombstone 到 DB，而不是把本地 active 写回文件覆盖远程 tombstone。
-                let remote_word_is_tombstone = read_hotword_word_file(set_id, uuid)
-                    .map(|f| f.is_deleted > 0 && !is_tombstone_expired(f.is_deleted, now_secs))
-                    .unwrap_or(false);
-                if remote_word_is_tombstone {
-                    match pull_word(set_id, uuid, now_secs, Some(db_w)) {
-                        Ok(true) => report.pulled += 1,
-                        Ok(false) => report.skipped += 1,
-                        Err(e) => {
-                            log::warn!("[sync] 热词 merge: 词 {} tombstone pull 跳过：{}", uuid, e);
-                            report.skipped += 1;
-                        }
-                    }
-                } else if remote_updated > local_updated {
-                    // 远程更新 → pull 覆盖 DB（软删传播：is_deleted=true 的词 pull 后 DB 也变软删）
-                    match pull_word(set_id, uuid, now_secs, Some(db_w)) {
-                        Ok(true) => report.pulled += 1,
-                        Ok(false) => report.skipped += 1,
-                        Err(e) => {
-                            log::warn!("[sync] 热词 merge: 词 {} pull 跳过：{}", uuid, e);
-                            report.skipped += 1;
-                        }
-                    }
-                } else if local_updated > remote_updated {
-                    // DB 更新 → push 覆盖文件
-                    write_hotword_word_file(&HotwordWordFile::from_hotword_word(db_w))?;
-                    report.pushed += 1;
-                } else {
-                    // 时间戳相等 → word 不可变（id=f(set_id,word)，不可改名）→ 无冲突，跳过
-                }
-            }
-        }
+    db_current: Option<&HotwordWord>,
+) -> Result<bool> {
+    // 1. 超期 tombstone 不复活
+    if is_tombstone_expired(w.is_deleted, now_secs) {
+        log::debug!("[sync] 热词 merge: 词 {} 超期 tombstone，skip pull", w.id);
+        return Ok(false);
     }
-
-    // word：DB 有 + outline 无 → push（写词文件）
-    for db_w in set_words {
-        if !remote_outline.words.contains_key(&db_w.id) {
-            write_hotword_word_file(&HotwordWordFile::from_hotword_word(db_w))?;
-            report.pushed += 1;
-        }
-    }
-
-    Ok(())
-}
-
-/// Pull 单个词（读词文件 → upsert DB，回填 sync_md5）。
-/// 返回 Ok(true) 表示成功 upsert，Ok(false) 不应发生（词无 name 冲突）或超期 tombstone skip。
-/// GC 2026-08-02：超期 tombstone 不 pull（防 GC 后跨设备复活）。
-fn pull_word(set_id: &str, uuid: &str, now_secs: i64, db_current: Option<&HotwordWord>) -> Result<bool> {
-    match read_hotword_word_file(set_id, uuid) {
-        Ok(file) => {
-            if is_tombstone_expired(file.is_deleted, now_secs) {
-                log::debug!("[sync] 热词 merge: 词 {} 超期 tombstone，skip pull", uuid);
+    // 2. 删除单向传播（2026-08-03）：DB 已 tombstone 且远程词 active 时拒绝 pull——
+    //    防本地删词被远程旧 active 状态复活（对称 set 保护）。
+    if w.is_deleted == 0 {
+        if let Some(db_w) = db_current {
+            if db_w.is_deleted > 0 {
+                log::info!(
+                    "[sync] 热词 merge: 词 {}（词典 {}）本地已删除（is_deleted={}），远程 active，拒绝复活",
+                    w.id, w.set_id, db_w.is_deleted
+                );
                 return Ok(false);
             }
-            // 删除单向传播（2026-08-03）：DB 已 tombstone 且远程词 active 时拒绝 pull——
-            // 防本地删词被远程旧 active 状态复活（对称 pull_set 保护）。
-            if file.is_deleted == 0 {
-                if let Some(db_w) = db_current {
-                    if db_w.is_deleted > 0 {
-                        log::info!(
-                            "[sync] 热词 merge: 词 {}（词典 {}）本地已删除（is_deleted={}），远程 active，拒绝复活",
-                            uuid, set_id, db_w.is_deleted
-                        );
-                        return Ok(false);
-                    }
-                }
-            }
-            let w = file.to_hotword_word();
-            match db::upsert_hotword_word(&w) {
-                Ok(()) => Ok(true),
-                Err(e) => {
-                    log::warn!("[sync] 热词 merge: 词 {} upsert 跳过：{}", uuid, e);
-                    Ok(false)
-                }
-            }
         }
-        Err(e) => Err(e),
+    }
+    // 3. upsert（词无 name 冲突——复合键 set_id+word 幂等）
+    match db::upsert_hotword_word(w) {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            log::warn!("[sync] 热词 merge: 词 {} upsert 跳过：{}", w.id, e);
+            Ok(false)
+        }
+    }
+}
+
+
+// === SyncEntity impl（2026-08-05，trait 统一 merge 骨架）===
+
+/// 热词词典（set 层）的 [`SyncEntity`] 标记类型——零大小，仅承载 trait impl。
+///
+/// `merge_three_way::<HotwordSetEntity>` 驱动 set 层 3-way merge，各 method 委托到本模块现有函数
+/// （`read_hotword_set_file` / `write_hotword_set_file` / `read_hotword_outline` / `export_all_hotwords`
+/// / `purge_expired_hotword_tombstones`）。`upsert_db_from_file` 委托 [`upsert_set_from_row`]。
+///
+/// - `Row` = `HotwordSet`（infra DB 行）——`list_db_rows` / `file_to_row` / `write_file` / `upsert_db_from_file` 共用。
+/// - `File` = `HotwordSetMeta`（磁盘序列化格式，version 2）。
+pub struct HotwordSetEntity;
+
+impl SyncEntity for HotwordSetEntity {
+    type Row = HotwordSet;
+    type File = HotwordSetMeta;
+
+    const LABEL: &'static str = "hotword_set";
+
+    /// 10 天（`HOTWORD_TOMBSTONE_RETENTION_SECS`）——超期 set tombstone 被 GC 硬删 + 不进 outline。
+    fn tombstone_retention_secs() -> i64 {
+        octopus_infra::db::HOTWORD_TOMBSTONE_RETENTION_SECS
+    }
+
+    // ── DB 操作 ──
+
+    fn list_db_rows() -> Result<Vec<Self::Row>> {
+        db::list_all_hotword_sets()
+    }
+
+    fn sync_key(row: &Self::Row) -> &str {
+        &row.id
+    }
+
+    fn updated_ms(row: &Self::Row) -> i64 {
+        iso_to_unix_ms(&row.updated_at)
+    }
+
+    fn is_tombstone(row: &Self::Row) -> bool {
+        row.is_deleted > 0
+    }
+
+    fn md5_of(row: &Self::Row) -> String {
+        row.sync_md5.clone().unwrap_or_else(|| hotword_set_md5(row))
+    }
+
+    // ── 文件操作 ──
+
+    fn read_file(key: &str) -> Result<Self::File> {
+        read_hotword_set_file(key)
+    }
+
+    /// 从文件构建 DB 行——`to_hotword_set(None)`，sync_md5 由 `upsert_db_from_row` 回填。
+    fn file_to_row(file: &Self::File) -> Self::Row {
+        file.to_hotword_set(None)
+    }
+
+    fn file_is_tombstone(file: &Self::File) -> bool {
+        file.is_deleted > 0
+    }
+
+    fn file_tombstone_timestamp(file: &Self::File) -> i64 {
+        file.is_deleted
+    }
+
+    fn write_file(row: &Self::Row) -> Result<()> {
+        write_hotword_set_file(&HotwordSetMeta::from_hotword_set(row))
+    }
+
+    // ── merge 操作 ──
+
+    fn upsert_db_from_file(row: &Self::Row) -> Result<bool> {
+        // 用当前时间做超期 tombstone 守卫（与原 merge_hotwords 传 now_secs 行为一致）。
+        upsert_set_from_row(row, now_secs())
+    }
+
+    // ── GC ──
+
+    fn purge_expired_tombstones(now: i64) -> Result<usize> {
+        let purged = octopus_infra::db::purge_expired_hotword_tombstones(now)?;
+        if purged > 0 {
+            log::info!("[sync] hotword_set GC: 清理 {} 条超期 set tombstone", purged);
+        }
+        Ok(purged)
+    }
+
+    // ── 导出 ──
+
+    /// **故意 noop**——热词 export 是协调 set+word 两层的全量重建（`export_all_hotwords` 会
+    /// 清空所有 set 目录 + 重建，必须等 set 层 + word 层都收敛后调一次）。若 set 层 merge 末尾
+    /// 就 export，会清掉尚未 merge 的 word 文件 + 词 outline → word 层 merge 读不到远程词 → 丢词。
+    ///
+    /// 故 [`merge_hotwords`] 在 set 层 + word 层 merge 都跑完后，统一调一次 `export_all_hotwords`。
+    fn export_all() -> Result<()> {
+        Ok(())
+    }
+
+    // ── outline（set 层 = 总 outline 的 sets）──
+
+    fn read_outline_entries() -> Result<Vec<(String, OutlineEntry)>> {
+        Ok(read_hotword_outline()?.sets.into_iter().collect())
+    }
+}
+
+/// 热词词记录（word 层）的 [`SyncEntity`] 标记类型——零大小，仅承载 trait impl。
+///
+/// `merge_three_way::<HotwordWordEntity>` 驱动 word 层 3-way merge（每次一个 set 的词）。
+/// **当前 set 通过 thread-local 传递**（`merge_hotwords` 对每个 DB set 调一次 `set_thread_set_id`），
+/// 因 trait method 无参数无法传 set_id。`upsert_db_from_file` 委托 [`upsert_word_from_row`]。
+///
+/// - `Row` = `HotwordWord`（infra DB 行）。
+/// - `File` = `HotwordWordFile`（磁盘序列化格式，version 1）。
+/// - `list_db_rows` 按 `thread_set_id()` 过滤——避免跨 set 比较（每 set 单独 merge）。
+/// - `read_outline_entries` 读 `thread_set_id()` 对应的词典 outline。
+/// - `purge_expired_tombstones` noop——word GC 由 set GC（[`HotwordSetEntity::purge_expired_tombstones`]
+///   → `purge_expired_hotword_tombstones`）连带清理（删 set tombstone 时连删其词，活跃 set 内超期
+///   word tombstone 也在同函数内清）。
+pub struct HotwordWordEntity;
+
+impl SyncEntity for HotwordWordEntity {
+    type Row = HotwordWord;
+    type File = HotwordWordFile;
+
+    const LABEL: &'static str = "hotword_word";
+
+    /// 10 天——同 set 层（共用 `HOTWORD_TOMBSTONE_RETENTION_SECS`）。pipeline 的 tombstone 单向
+    /// 优先判定用此值过滤超期 remote tombstone。
+    fn tombstone_retention_secs() -> i64 {
+        octopus_infra::db::HOTWORD_TOMBSTONE_RETENTION_SECS
+    }
+
+    // ── DB 操作 ──
+
+    /// 按 thread-local set_id 过滤——每 set 单独 merge（避免跨 set 比较）。
+    /// infra 无 per-set 全量（含 tombstone）查询，故从全表过滤。
+    fn list_db_rows() -> Result<Vec<Self::Row>> {
+        let set_id = thread_set_id();
+        Ok(db::list_all_hotword_words()?
+            .into_iter()
+            .filter(|w| w.set_id == set_id)
+            .collect())
+    }
+
+    fn sync_key(row: &Self::Row) -> &str {
+        &row.id
+    }
+
+    fn updated_ms(row: &Self::Row) -> i64 {
+        iso_to_unix_ms(&row.updated_at)
+    }
+
+    fn is_tombstone(row: &Self::Row) -> bool {
+        row.is_deleted > 0
+    }
+
+    fn md5_of(row: &Self::Row) -> String {
+        hotword_word_md5(row)
+    }
+
+    // ── 文件操作 ──
+
+    /// 从 thread-local 取 set_id——merge 入口对每个 set set 一次。
+    fn read_file(key: &str) -> Result<Self::File> {
+        let set_id = thread_set_id();
+        read_hotword_word_file(&set_id, key)
+    }
+
+    /// 文件 → DB 行（直接 `to_hotword_word`，word 无 sync_md5 字段）。
+    fn file_to_row(file: &Self::File) -> Self::Row {
+        file.to_hotword_word()
+    }
+
+    fn file_is_tombstone(file: &Self::File) -> bool {
+        file.is_deleted > 0
+    }
+
+    fn file_tombstone_timestamp(file: &Self::File) -> i64 {
+        file.is_deleted
+    }
+
+    fn write_file(row: &Self::Row) -> Result<()> {
+        write_hotword_word_file(&HotwordWordFile::from_hotword_word(row))
+    }
+
+    // ── merge 操作 ──
+
+    /// word 无 name 冲突（复合键 set_id+word 幂等），但仍有超期 tombstone + 删除单向传播守卫。
+    /// db_current 查 DB（复合键 set_id+word），now 取当前秒。
+    fn upsert_db_from_file(row: &Self::Row) -> Result<bool> {
+        let db_current = db::get_hotword_word(&row.set_id, &row.word)?;
+        upsert_word_from_row(row, now_secs(), db_current.as_ref())
+    }
+
+    // ── GC ──
+
+    /// noop——word GC 由 set GC（`purge_expired_hotword_tombstones`）连带清理。
+    fn purge_expired_tombstones(_now: i64) -> Result<usize> {
+        Ok(0)
+    }
+
+    // ── 导出 ──
+
+    /// **故意 noop**——对称 [`HotwordSetEntity::export_all`]：热词 export 是两层协调重建，
+    /// 必须等 set 层 + 全部 set 的 word 层 merge 都跑完后由 [`merge_hotwords`] 统一调一次。
+    /// 每个 set 的 word merge 末尾若 export，会清空所有 set 目录（含尚未 merge 的其他 set 词）。
+    fn export_all() -> Result<()> {
+        Ok(())
+    }
+
+    // ── outline（word 层 = 当前 thread-set-id 的词典 outline 的 words）──
+
+    fn read_outline_entries() -> Result<Vec<(String, OutlineEntry)>> {
+        let set_id = thread_set_id();
+        Ok(read_hotword_set_outline(&set_id)?.words.into_iter().collect())
     }
 }
 

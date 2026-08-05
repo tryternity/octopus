@@ -277,7 +277,7 @@ mod tests {
                 last_used_at: "2026-01-01".into(),
             }],
             reprompt: RepromptType::Password,
-            is_deleted: false,
+            is_deleted: 0,
             created_at: "2026-01-01T00:00:00".into(),
             updated_at: "2026-01-02T00:00:00".into(),
         }
@@ -322,7 +322,7 @@ mod tests {
         assert_eq!(dto.name, "Example Login");
         assert_eq!(dto.notes.as_deref(), Some("some notes"));
         assert_eq!(dto.reprompt, 1, "RepromptType::Password 应映射为 1");
-        assert!(!dto.is_deleted);
+        assert_eq!(dto.is_deleted, 0);
         assert_eq!(dto.created_at, "2026-01-01T00:00:00");
         assert_eq!(dto.updated_at, "2026-01-02T00:00:00");
 
@@ -444,7 +444,7 @@ mod tests {
             fields: input.fields.clone(),
             password_history: vec![],
             reprompt: input.reprompt,
-            is_deleted: false,
+            is_deleted: 0,
             created_at: "2026-01-01T00:00:00".into(),
             updated_at: "2026-01-01T00:00:00".into(),
         };

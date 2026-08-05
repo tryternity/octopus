@@ -161,7 +161,7 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
             // 我们直接基于明文重算 dedup key 即可，不需要重新解密。
             ciphers
                 .into_iter()
-                .filter(|c| !c.is_deleted)
+                .filter(|c| c.is_deleted == 0)
                 .map(|c| cipher_dedup_key(&c))
                 .collect::<HashSet<_>>()
         })
@@ -562,7 +562,7 @@ mod tests {
         // 校验：库内应有 2 行（1 软删 + 1 新），未软删的有 1 行
         let (all, _) = storage::list_ciphers(&key).expect("list final");
         assert_eq!(all.len(), 2, "应有 2 行（软删 1 + 新 1）");
-        let live: Vec<_> = all.iter().filter(|c| !c.is_deleted).collect();
+        let live: Vec<_> = all.iter().filter(|c| c.is_deleted == 0).collect();
         assert_eq!(live.len(), 1, "应有 1 行未软删");
     }
 

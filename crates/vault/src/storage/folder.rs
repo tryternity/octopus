@@ -23,7 +23,8 @@ pub struct FolderDto {
     /// 已解密的明文名称（DB 中存的是 `v1:` 前缀密文）。
     pub name: String,
     pub sort_order: i64,
-    pub is_deleted: bool,
+    /// 软删标记（schema v60：i64，0=活跃，>0=删除时刻 epoch 秒 tombstone）。
+    pub is_deleted: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -48,7 +49,8 @@ pub fn list_folders(key: &DerivedKey) -> Result<(Vec<FolderDto>, Vec<String>)> {
     let mut failures: Vec<String> = Vec::new();
     for row in rows {
         // 过滤软删 folder（UI 只看 active）——sync 路径不经此函数。
-        if row.is_deleted {
+        // v60：is_deleted 是 i64（0=活跃，>0=tombstone）。
+        if row.is_deleted > 0 {
             continue;
         }
         match row_to_dto(&row, key) {
@@ -71,8 +73,8 @@ pub fn list_folders(key: &DerivedKey) -> Result<(Vec<FolderDto>, Vec<String>)> {
 /// 调用方必须先生成 UUID 传入（2026-07-21 v44：不再 AUTOINCREMENT）。
 pub fn create_folder(id: &str, name: &str, key: &DerivedKey) -> Result<()> {
     let encrypted = key.encrypt(name.as_bytes())?;
-    // 新建 folder sort_order=0（db.sql DEFAULT）——md5 用 0 算
-    let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, 0, false);
+    // 新建 folder sort_order=0（db.sql DEFAULT）——md5 用 0 算；is_deleted=0（活跃）
+    let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, 0, 0);
     db::insert_vault_folder(id, &encrypted, &md5)
 }
 
@@ -84,7 +86,7 @@ pub fn rename_folder(id: &str, new_name: &str, key: &DerivedKey) -> Result<()> {
     // 软删态 folder rename 后 md5 与 row 不一致 → 跨设备 sync ping-pong）。
     let row = db::load_vault_folder(id)?;
     let sort_order = row.as_ref().map(|f| f.sort_order).unwrap_or(0);
-    let is_deleted = row.as_ref().map(|f| f.is_deleted).unwrap_or(false);
+    let is_deleted = row.as_ref().map(|f| f.is_deleted).unwrap_or(0);
     let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, sort_order, is_deleted);
     db::update_vault_folder_name(id, &encrypted, &md5)
 }
@@ -101,10 +103,15 @@ pub fn rename_folder(id: &str, new_name: &str, key: &DerivedKey) -> Result<()> {
 pub fn delete_folder(id: &str) -> Result<()> {
     db::with_db(|conn| {
         let tx = conn.unchecked_transaction()?;
-        // 1. UPDATE is_deleted = 1 + updated_at
+        // v60：is_deleted 存删除时刻 epoch 秒（与 cipher/hotword/clipboard tombstone 一致）。
+        let now_secs: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(1);
+        // 1. UPDATE is_deleted = epoch + updated_at
         tx.execute(
-            "UPDATE vault_folders SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![id],
+            "UPDATE vault_folders SET is_deleted = ?2, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![id, now_secs],
         )?;
         // 2. 读完整 row（含新 is_deleted）算 md5
         let row = load_vault_folder_at(&tx, id)?
@@ -250,11 +257,11 @@ mod tests {
         assert_eq!(folders[0].id, id_a);
         assert_eq!(folders[0].name, "keep");
 
-        // 但 DB 行仍在（软删）——is_deleted=1
+        // 但 DB 行仍在（软删）——is_deleted>0（tombstone epoch）
         let raw: Vec<octopus_infra::db::VaultFolder> = db::list_vault_folders().expect("raw list");
         assert_eq!(raw.len(), 2, "软删后 DB 行应仍在");
         let dropped = raw.iter().find(|f| f.id == id_b).expect("dropped row exists");
-        assert!(dropped.is_deleted, "dropped folder 应 is_deleted=true");
+        assert!(dropped.is_deleted > 0, "dropped folder 应 is_deleted>0（tombstone）");
     }
 
     /// 用错误的 key 解密 folder.name：修复 #9 后整表不再 Err，

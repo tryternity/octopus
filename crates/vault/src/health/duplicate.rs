@@ -38,7 +38,7 @@ pub fn find_duplicates(ciphers: &[&Cipher]) -> Vec<DuplicateGroup> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     for c in ciphers {
         // L6 修复（2026-07-24）：跳过软删/回收站的 cipher——它们不应参与重复检测。
-        if c.is_deleted {
+        if c.is_deleted > 0 {
             continue;
         }
         // CipherData 当前仅 Login 单变体；保留 if let 以便未来扩展 SecureNote/Card/Identity。
@@ -94,7 +94,7 @@ mod tests {
             fields: vec![],
             password_history: vec![],
             reprompt: RepromptType::None,
-            is_deleted: false,
+            is_deleted: 0,
             created_at: "2026-07-18".into(),
             updated_at: "2026-07-18".into(),
         }
@@ -182,7 +182,7 @@ mod tests {
     fn test_skip_deleted_ciphers() {
         let mut c1 = make_cipher("c1", Some("same"));
         let c2 = make_cipher("c2", Some("same"));
-        c1.is_deleted = true; // c1 软删
+        c1.is_deleted = 1_700_000_000; // tombstone epoch（c1 软删）
         let ciphers = [c1, c2];
         // c1 被过滤后只剩 c2（无重复）——不应报告重复组
         let groups = find_duplicates(&ciphers.iter().collect::<Vec<_>>());
