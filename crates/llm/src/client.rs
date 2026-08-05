@@ -96,7 +96,6 @@ fn chat_text(
     config: &CompatibleLlmConfig,
     timeout: Option<std::time::Duration>,
 ) -> Result<String> {
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let (thinking, enable_thinking) = thinking_flags(config);
 
     let request = ChatRequest {
@@ -111,12 +110,7 @@ fn chat_text(
         enable_thinking,
     };
 
-    let client = &*HTTP_CLIENT;
-    let mut builder = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", config.secret_key))
-        .json(&request);
+    let mut builder = build_chat_post(config).json(&request);
     // 调用方可覆盖 client 级超时（Run And Paste silent 用 30s，默认 120s）
     if let Some(dur) = timeout {
         builder = builder.timeout(dur);
@@ -267,11 +261,20 @@ fn strip_edited_markers(text: &str) -> String {
     RE_HOTWORDS_MARKER.replace_all(&text, "").to_string()
 }
 
+/// 构造 LLM chat/completions 的 POST RequestBuilder（url + Content-Type + Authorization）。
+/// 调用方再 .json(&request) + .send()。
+/// 2026-08-05 抽取：消除 chat_text / test_connection 的 URL + headers 构造重复。
+fn build_chat_post(config: &CompatibleLlmConfig) -> reqwest::blocking::RequestBuilder {
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    HTTP_CLIENT
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", config.secret_key))
+}
+
 /// 测试 LLM 连接是否可用（发一个 max_tokens=1 的极简请求）。
 /// 成功返回 Ok(())，失败返回错误信息。用于设置页连接检测。
 pub fn test_connection(config: &CompatibleLlmConfig) -> Result<()> {
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-
     let (thinking, enable_thinking) = thinking_flags(config);
 
     let request = ChatRequest {
@@ -286,12 +289,7 @@ pub fn test_connection(config: &CompatibleLlmConfig) -> Result<()> {
         enable_thinking,
     };
 
-    let client = &*HTTP_CLIENT;
-
-    let response = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", config.secret_key))
+    let response = build_chat_post(config)
         .json(&request)
         .send()
         .context("LLM API 连接失败（检查网络 / API base URL）")?;

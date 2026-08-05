@@ -552,7 +552,18 @@ fn show_config() -> Result<()> {
     Ok(())
 }
 
-fn record_from_config() -> Result<Vec<f32>> {
+/// 打开麦克风输入流——读 config.microphone 选设备 + build_input_stream（F32/I16 mono mix）。
+///
+/// 返回 `(stream, shared_buffer, sample_rate)`。shared_buffer 是 `Arc<Mutex<Vec<f32>>>`，
+/// 音频回调实时追加 mono f32 样本。调用方 play 后轮询 buffer。
+///
+/// 2026-08-05 抽取：消除 record_from_config / run_e2e_streaming_paraformer /
+/// run_e2e_streaming_zipformer 三处逐字重复的设备选择 + build_input_stream 闭包。
+fn open_mic_stream() -> Result<(
+    cpal::Stream,
+    std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+    u32,
+)> {
     let app_cfg = octopus_infra::config::load_config()?;
     let device_name = if app_cfg.microphone.is_empty() {
         ""
@@ -574,11 +585,15 @@ fn record_from_config() -> Result<Vec<f32>> {
     let sample_rate = config.sample_rate().0;
     let channels = config.channels() as usize;
 
-    println!("Recording from: {}", device.name().unwrap_or_default());
-    println!("Sample rate: {}, Channels: {}", sample_rate, channels);
+    println!(
+        "Recording from: {} ({}Hz, {}ch)",
+        device.name().unwrap_or_default(),
+        sample_rate,
+        channels
+    );
 
-    let samples = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
-    let samples_clone = samples.clone();
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
+    let buffer_clone = buffer.clone();
 
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => device.build_input_stream(
@@ -588,7 +603,10 @@ fn record_from_config() -> Result<Vec<f32>> {
                     .chunks(channels)
                     .map(|c| c.iter().sum::<f32>() / channels as f32)
                     .collect();
-                samples_clone.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
+                buffer_clone
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend_from_slice(&mono);
             },
             |err| eprintln!("Audio error: {}", err),
             None,
@@ -599,16 +617,26 @@ fn record_from_config() -> Result<Vec<f32>> {
                 let mono: Vec<f32> = data
                     .chunks(channels)
                     .map(|c| {
-                        c.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>() / channels as f32
+                        c.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>()
+                            / channels as f32
                     })
                     .collect();
-                samples_clone.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
+                buffer_clone
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend_from_slice(&mono);
             },
             |err| eprintln!("Audio error: {}", err),
             None,
         )?,
         fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),
     };
+
+    Ok((stream, buffer, sample_rate))
+}
+
+fn record_from_config() -> Result<Vec<f32>> {
+    let (stream, samples, sample_rate) = open_mic_stream()?;
 
     stream.play()?;
     let mut input = String::new();
@@ -630,77 +658,14 @@ fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
 
     let mut engine = octopus_asr_local::streaming_paraformer::StreamingParaformer::new(model)?;
 
-    // Set up microphone
-    let app_cfg = octopus_infra::config::load_config()?;
-    let device_name = if app_cfg.microphone.is_empty() {
-        ""
-    } else {
-        &app_cfg.microphone
-    };
+    // Set up microphone（复用 open_mic_stream，2026-08-05 抽取）
+    let (stream, buffer, native_rate) = open_mic_stream()?;
 
-    let host = cpal::default_host();
-    let device = if device_name.is_empty() {
-        host.default_input_device()
-            .ok_or_else(|| anyhow::anyhow!("No input device"))?
-    } else {
-        host.input_devices()?
-            .find(|d| d.name().map(|n| n.contains(device_name)).unwrap_or(false))
-            .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", device_name))?
-    };
-
-    let config = device.default_input_config()?;
-    let native_rate = config.sample_rate().0;
-    let channels = config.channels() as usize;
-
-    println!(
-        "Recording from: {} ({}Hz, {}ch)",
-        device.name().unwrap_or_default(),
-        native_rate,
-        channels
-    );
-
-    // Shared sample buffer
-    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
-    let buffer_clone = buffer.clone();
     // Resample state for non-16kHz devices
     let mut resampler = if native_rate != 16000 {
         Some(octopus_asr_local::audio::AudioResampler::new(native_rate)?)
     } else {
         None
-    };
-
-    let stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => device.build_input_stream(
-            &config.into(),
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                let mono: Vec<f32> = data
-                    .chunks(channels)
-                    .map(|c| c.iter().sum::<f32>() / channels as f32)
-                    .collect();
-                buffer_clone.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
-            },
-            |err| eprintln!("Audio error: {}", err),
-            None,
-        )?,
-        cpal::SampleFormat::I16 => {
-            let buffer_clone = buffer.clone();
-            device.build_input_stream(
-                &config.into(),
-                move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    let mono: Vec<f32> = data
-                        .chunks(channels)
-                        .map(|c| {
-                            c.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>()
-                                / channels as f32
-                        })
-                        .collect();
-                    buffer_clone.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
-                },
-                |err| eprintln!("Audio error: {}", err),
-                None,
-            )?
-        }
-        fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),
     };
 
     stream.play()?;
@@ -800,77 +765,12 @@ fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
 
     let mut engine = octopus_asr_local::streaming_zipformer::StreamingZipformer::new(model)?;
 
-    // Set up microphone (same pattern as paraformer e2e)
-    let app_cfg = octopus_infra::config::load_config()?;
-    let device_name = if app_cfg.microphone.is_empty() {
-        ""
-    } else {
-        &app_cfg.microphone
-    };
-
-    let host = cpal::default_host();
-    let device = if device_name.is_empty() {
-        host.default_input_device()
-            .ok_or_else(|| anyhow::anyhow!("No input device"))?
-    } else {
-        host.input_devices()?
-            .find(|d| d.name().map(|n| n.contains(device_name)).unwrap_or(false))
-            .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", device_name))?
-    };
-
-    let config = device.default_input_config()?;
-    let native_rate = config.sample_rate().0;
-    let channels = config.channels() as usize;
+    // Set up microphone（复用 open_mic_stream，2026-08-05 抽取）
+    let (stream, buffer, native_rate) = open_mic_stream()?;
     let mut resampler = if native_rate != 16000 {
         Some(octopus_asr_local::audio::AudioResampler::new(native_rate)?)
     } else {
         None
-    };
-
-    println!(
-        "Recording from: {} ({}Hz, {}ch)",
-        device.name().unwrap_or_default(),
-        native_rate,
-        channels
-    );
-
-    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
-
-    let stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => {
-            let bc = buffer.clone();
-            device.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let mono: Vec<f32> = data
-                        .chunks(channels)
-                        .map(|c| c.iter().sum::<f32>() / channels as f32)
-                        .collect();
-                    bc.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
-                },
-                |err| eprintln!("Audio error: {}", err),
-                None,
-            )?
-        }
-        cpal::SampleFormat::I16 => {
-            let bc = buffer.clone();
-            device.build_input_stream(
-                &config.into(),
-                move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    let mono: Vec<f32> = data
-                        .chunks(channels)
-                        .map(|c| {
-                            c.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>()
-                                / channels as f32
-                        })
-                        .collect();
-                    bc.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
-                },
-                |err| eprintln!("Audio error: {}", err),
-                None,
-            )?
-        }
-        fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),
     };
 
     stream.play()?;
