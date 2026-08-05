@@ -118,6 +118,7 @@ macro_rules! handler {
             crate::commands::hotword_commands::set_fuzzy_dialect_rule,
             // ── clipboard_commands ──
             crate::clipboard::clipboard_commands::query_clipboard_history,
+            crate::clipboard::clipboard_commands::get_clipboard_item,
             crate::clipboard::clipboard_commands::toggle_clipboard_favorite,
             crate::clipboard::clipboard_commands::delete_clipboard_item,
             crate::clipboard::clipboard_commands::delete_clipboard_items,
@@ -146,6 +147,9 @@ macro_rules! handler {
             crate::clipboard::clipboard_commands::pop_and_paste,
             crate::clipboard::clipboard_commands::paste_stack_status,
             crate::clipboard::clipboard_commands::clear_paste_stack,
+            crate::clipboard::clipboard_commands::peek_paste_stack,
+            crate::clipboard::clipboard_commands::remove_from_paste_stack,
+            crate::clipboard::clipboard_commands::move_paste_stack_item,
             // ── screenshot_commands ──
             crate::record::screenshot_commands::start_screenshot,
             crate::record::screenshot_commands::confirm_screenshot,
