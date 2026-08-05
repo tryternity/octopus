@@ -70,6 +70,46 @@ export default function Screenshot() {
   const [qrScanning, setQrScanning] = useState(false);
   const [qrResult, setQrResult] = useState<string[] | null>(null);
 
+  // 水印配置——从 get_config 读（Task 8）。
+  // config-changed 监听：AnnotationToolbar 水印按钮 set_config 后后端 emit config-changed
+  // （settings_commands.rs:317 set_config 末尾统一 emit），此处重读刷新。
+  // 与 Terminal/index.tsx L94-114 字体配置读取同范式（mount + config-changed 都重读）。
+  // 注：AppConfig 无 #[serde(rename_all)]，config JSON 字段为 snake_case（非 brief 写的 camelCase）。
+  const [watermarkOpts, setWatermarkOpts] = useState<WatermarkOpts | null>(null);
+  useEffect(() => {
+    const loadWatermark = () => {
+      invoke<{ config: Record<string, unknown> }>("get_config")
+        .then((res) => {
+          const cfg = res.config;
+          const text = cfg.screenshot_watermark_text as string | undefined;
+          if (text) {
+            setWatermarkOpts({
+              text,
+              position: (cfg.screenshot_watermark_position as string) || "bottom-right",
+              opacity: typeof cfg.screenshot_watermark_opacity === "number"
+                ? cfg.screenshot_watermark_opacity
+                : 0.3,
+              fontSize: typeof cfg.screenshot_watermark_font_size === "number"
+                ? cfg.screenshot_watermark_font_size
+                : 24,
+            });
+          } else {
+            setWatermarkOpts(null);
+          }
+        })
+        .catch(() => {
+          // screenshot 窗口理论上已注册 get_config（invoke_handler.rs:49 全局注册）；
+          // 失败时静默——保持无水印状态，不阻塞截图流程。
+        });
+    };
+    loadWatermark();
+    let unlisten: (() => void) | null = null;
+    listen("config-changed", loadWatermark)
+      .then((fn) => { unlisten = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); };
+  }, []);
+
   // 工具栏实际宽度（useLayoutEffect 测量，用于 X 方向 clamp 防止跑出屏幕）
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [toolbarW, setToolbarW] = useState(0);
@@ -632,8 +672,7 @@ export default function Screenshot() {
     invoke("stop_scroll_recording").catch(() => {});
   }
 
-  // watermarkOpts 由父组件从 config 读取传入（Task 8）。Phase 2 Step 2 前先从 localStorage 读测试。
-  const watermarkOpts: WatermarkOpts | null = null; // TODO Task 8 替换为真实 config 读取
+  // watermarkOpts 由组件上方 useEffect 从 get_config 读取（Task 8），config-changed 时刷新。
 
   async function composeAndCropBytes(): Promise<ArrayBuffer | null> {
     // 2026-07-20 perf：bg 现在是 ImageBitmap（直接 RGBA），优先用它；
@@ -924,6 +963,8 @@ export default function Screenshot() {
           popoverY={mode === "selected" ? popoverY : undefined}
           // popover X：跟随按钮中心（state.popoverX），未点按钮时 fallback 到选区中心
           popoverX={annotation.popoverX || (sel.x + sel.w / 2)}
+          // 水印按钮仅截图工具栏显示（录屏无水印功能，Task 8）
+          showWatermark={true}
         >
           {/* divider + OCR + QR（截图独有） */}
           <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />

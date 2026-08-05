@@ -20,6 +20,7 @@ import type { ReactNode, MutableRefObject } from "react";
 import type { Tool } from "@/lib/annotation";
 import { ToolPropsPopover } from "@/pages/Screenshot/ToolPropsPopover";
 import { useT } from "@/lib/i18n";
+import { invoke } from "@/lib/tauri";
 import type { AnnotationState } from "./useAnnotationState";
 
 // blur 渲染模式三选项（与 useAnnotationState.blurMode 联动）
@@ -69,6 +70,13 @@ export interface AnnotationToolbarProps {
 
   /** 是否显示 highlight 工具按钮（默认 true） */
   showHighlight?: boolean;
+
+  /**
+   * 是否显示水印按钮（默认 false）。
+   * 水印按钮不走 tool 选中逻辑，点击弹独立输入框（Task 8）。
+   * 截图工具栏传 true（需 config 水印），录屏不传 / 传 false。
+   */
+  showWatermark?: boolean;
 }
 
 // ── 内联 ToolButton（原 pages/Screenshot/ToolButton.tsx，19 行 dumb component）──
@@ -138,6 +146,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     children,
     visible = true,
     showHighlight = true,
+    showWatermark = false,
   } = props;
 
   // ── blur 按钮 popover 子菜单状态 ──
@@ -158,6 +167,45 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showBlurPopover]);
+
+  // ── 水印按钮 popover 输入框状态（Task 8）──
+  // 水印不走 tool 选中逻辑——点击水印按钮弹输入框，输入文字 → set_config 持久化。
+  // 后端 set_config 末尾统一 emit "config-changed"（settings_commands.rs:317），
+  // 父组件（Screenshot）监听 config-changed 重读 get_config 刷新 watermarkOpts → Canvas 重画。
+  // 输入留空确认 = 清除水印（set_config 空 string）。
+  const [showWatermarkPopover, setShowWatermarkPopover] = useState(false);
+  const [watermarkInput, setWatermarkInput] = useState("");
+  const watermarkPopoverRef = useRef<HTMLDivElement | null>(null);
+  const watermarkBtnRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!showWatermarkPopover) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (watermarkPopoverRef.current?.contains(target)) return;
+      if (watermarkBtnRef.current?.contains(target)) return;
+      setShowWatermarkPopover(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showWatermarkPopover]);
+
+  // 水印按钮点击：读当前 config 的水印文字预填输入框（避免每次重新输）。
+  const openWatermarkPopover = () => {
+    invoke<{ config: Record<string, unknown> }>("get_config")
+      .then((res) => {
+        setWatermarkInput((res.config.screenshot_watermark_text as string) || "");
+      })
+      .catch(() => setWatermarkInput(""));
+    setShowWatermarkPopover(true);
+  };
+
+  // 确认：set_config（空字符串=清除水印）。失败不阻塞 UI，静默。
+  const confirmWatermark = () => {
+    invoke("set_config", { key: "screenshot_watermark_text", value: watermarkInput })
+      .catch(() => {});
+    setShowWatermarkPopover(false);
+  };
 
   if (!visible) return null;
 
@@ -320,6 +368,105 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
             </div>
           )}
         </div>
+
+        {/* 水印按钮（Task 8）：弹独立输入框，不走 tool 选中逻辑。
+            输入文字 → set_config 持久化，后端 emit config-changed → 父组件 Screenshot
+            监听后重读 get_config 刷新 watermarkOpts → Canvas 导出时画水印。 */}
+        {showWatermark && (
+          <div style={{ position: "relative" }}>
+            <div ref={watermarkBtnRef}>
+              <ToolButton
+                active={false}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (showWatermarkPopover) {
+                    setShowWatermarkPopover(false);
+                  } else {
+                    openWatermarkPopover();
+                  }
+                }}
+                label={t("screenshot.tool.watermark")}
+                icon={<img
+                  src="icons/text.svg"
+                  alt={t("screenshot.tool.watermark")}
+                  className="w-[18px] h-[18px]"
+                  style={{ filter: "var(--icon-filter)" }}
+                />}
+              />
+            </div>
+            {showWatermarkPopover && (
+              <div
+                ref={watermarkPopoverRef}
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  marginTop: 4,
+                  padding: 8,
+                  background: "var(--color-surface)",
+                  color: "var(--color-foreground)",
+                  borderRadius: 8,
+                  boxShadow: "0 8px 24px -4px rgba(0,0,0,0.2), 0 2px 8px -2px rgba(0,0,0,0.1)",
+                  zIndex: 102,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  minWidth: 200,
+                }}
+              >
+                <input
+                  type="text"
+                  value={watermarkInput}
+                  onChange={(e) => setWatermarkInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      confirmWatermark();
+                    } else if (e.key === "Escape") {
+                      setShowWatermarkPopover(false);
+                    }
+                  }}
+                  placeholder={t("screenshot.watermark.placeholder")}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoFocus
+                  style={{
+                    padding: "5px 8px",
+                    border: "1px solid var(--color-border)",
+                    borderRadius: 5,
+                    background: "var(--color-bg, transparent)",
+                    color: "var(--color-foreground)",
+                    fontSize: 13,
+                    outline: "none",
+                    width: "100%",
+                    boxSizing: "border-box",
+                  }}
+                />
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    confirmWatermark();
+                  }}
+                  style={{
+                    padding: "5px 8px",
+                    border: "none",
+                    borderRadius: 5,
+                    background: "var(--color-voice)",
+                    color: "#fff",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 500,
+                  }}
+                >
+                  {t("screenshot.watermark.confirm")}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* 橡皮擦：不弹 popover，直接切工具 */}
         <ToolButton

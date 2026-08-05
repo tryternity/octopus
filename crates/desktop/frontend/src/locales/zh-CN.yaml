@@ -1035,6 +1035,7 @@ screenshot:
     redo: 重做
     clearAll: 清空标注
     qrcode: 二维码
+    watermark: 水印
   scrollShot: 滚动截图
   saveToFile: 保存到文件
   confirm: 确认
@@ -1051,6 +1052,9 @@ screenshot:
     circle: 圆圈
     thickness: 粗细
     solidFill: 实心填充
+  watermark:
+    placeholder: 输入水印文字（留空清除）
+    confirm: 确认
 
 # ════════ Clipboard 剪贴板 ════════
 clipboard:

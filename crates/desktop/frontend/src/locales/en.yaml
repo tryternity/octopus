@@ -1026,6 +1026,7 @@ screenshot:
     redo: Redo
     clearAll: Clear All
     qrcode: QR Code
+    watermark: Watermark
   scrollShot: Scroll Capture
   saveToFile: Save to File
   confirm: Confirm
@@ -1041,6 +1042,9 @@ screenshot:
     circle: Circle
     thickness: Thickness
     solidFill: Solid Fill
+  watermark:
+    placeholder: Enter watermark text (empty to clear)
+    confirm: Confirm
 
 # ════════ Clipboard ════════
 clipboard:
