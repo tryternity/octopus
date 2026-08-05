@@ -1,8 +1,9 @@
 import { cn } from "@/lib/utils";
-import { LayoutGrid, ScanText } from "lucide-react";
+import { LayoutGrid, ScanText, Layers } from "lucide-react";
 import { SvgIcon, type IconName } from "@/components/SvgIcon";
 import { useT } from "@/lib/i18n";
 
+// 顺序必须与 index.tsx TABS_VALUES 一致——Cmd+N / Ctrl+N 按 tab 在数组中的序号映射。
 const TAB_DEFS = [
   { value: "all", icon: LayoutGrid, labelKey: "clipboard.filter.all", svg: undefined as string | undefined },
   { value: "favorite", icon: null, labelKey: "clipboard.filter.favorite", svg: "favorite" },
@@ -11,6 +12,7 @@ const TAB_DEFS = [
   { value: "ocr", icon: ScanText, labelKey: "OCR", svg: undefined },
   { value: "image", icon: null, labelKey: "clipboard.filter.image", svg: "images" },
   { value: "file", icon: null, labelKey: "clipboard.filter.file", svg: "files" },
+  { value: "queue", icon: Layers, labelKey: "clipboard.filter.queue", svg: undefined },
 ] as const;
 
 export default function FilterTabs({

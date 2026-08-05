@@ -146,6 +146,9 @@ macro_rules! handler {
             crate::clipboard::clipboard_commands::pop_and_paste,
             crate::clipboard::clipboard_commands::paste_stack_status,
             crate::clipboard::clipboard_commands::clear_paste_stack,
+            crate::clipboard::clipboard_commands::peek_paste_stack,
+            crate::clipboard::clipboard_commands::remove_from_paste_stack,
+            crate::clipboard::clipboard_commands::move_paste_stack_item,
             // ── screenshot_commands ──
             crate::record::screenshot_commands::start_screenshot,
             crate::record::screenshot_commands::confirm_screenshot,
