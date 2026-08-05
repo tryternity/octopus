@@ -1168,8 +1168,8 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 | P2-ocr3（image 无 size guard）| 需 `ImageReader` + 维度限制 API 重构；OCR 输入受 watcher 40MB 限制兜底 | 新留后续 |
 | P2-l2（无重试退避）| 功能增强，非 bug | 不修 |
 | P2-dl1（Etag If-Range 实现）| ✅ 注释撒谎已修正（verify.rs 文档明示 Etag 当前 no-op）；**If-Range 续传校验功能性实现仍留后续** | = 第 17 轮 P2-1 |
-| P2-sync1（export 非原子清空+重建）| 需在 merge_three_way 泛型骨架内系统性改（tmp→rename 原子，或先写后清孤儿）。经评估窗口仅微秒级（remove→create 间），复杂度高，用户确认留专项 | = 第 21 轮 P2-s1 |
-| P2-sync2（merge push 写被 export 覆盖）| 同 P2-sync1；属性能问题（冗余 IO）非正确性问题，export_all 保证最终一致 | = 第 21 轮 P2-s2 |
+| P2-sync1（export 非原子清空+重建）| 需在 merge_three_way 泛型骨架内系统性改（tmp→rename 原子，或先写后清孤儿）。经评估窗口仅微秒级（remove→create 间），复杂度高，用户确认留专项。**设计 spec 已写**：[sync export 原子化设计](./2026-08-05-sync-export-atomicity-design.md)（方案 B 先写后清孤儿 + 删冗余 push 写），待实施 plan | = 第 21 轮 P2-s1 |
+| P2-sync2（merge push 写被 export 覆盖）| 同 P2-sync1；属性能问题（冗余 IO）非正确性问题，export_all 保证最终一致。**与 P2-sync1 合并修复**（见设计 spec §4.4 删 push_or_skip 的 write_file） | = 第 21 轮 P2-s2 |
 
 注：P2-srv1（scheduler 无超时）**本轮已修**（见上方修复明细 §A1），从留后续移除。
 
