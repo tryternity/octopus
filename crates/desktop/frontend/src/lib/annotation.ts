@@ -422,13 +422,26 @@ export function drawWatermark(ctx: CanvasRenderingContext2D, canvasW: number, ca
   const metrics = ctx.measureText(opts.text);
   const tw = metrics.width;
   const th = opts.fontSize;
+  // 9 格定位——用包含明确关键词匹配，不用反向排除
   const pos = opts.position;
-  let x = margin;
-  let y = margin;
-  if (pos.includes("right")) x = canvasW - tw - margin;
-  if (pos.includes("center") && !pos.startsWith("top") && !pos.startsWith("bottom")) x = (canvasW - tw) / 2;
-  if (pos.includes("bottom")) y = canvasH - th - margin;
-  if (pos.includes("middle") && !pos.endsWith("left") && !pos.endsWith("right")) y = (canvasH - th) / 2;
+  // 水平：left/center/right
+  let x: number;
+  if (pos.includes("center")) {
+    x = (canvasW - tw) / 2;
+  } else if (pos.includes("right")) {
+    x = canvasW - tw - margin;
+  } else {
+    x = margin; // left 或默认
+  }
+  // 垂直：top/middle/bottom
+  let y: number;
+  if (pos.includes("middle")) {
+    y = (canvasH - th) / 2;
+  } else if (pos.includes("bottom")) {
+    y = canvasH - th - margin;
+  } else {
+    y = margin; // top 或默认
+  }
   ctx.fillText(opts.text, x, y + th);
   ctx.restore();
 }
