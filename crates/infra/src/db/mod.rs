@@ -5,6 +5,7 @@
 // 按表域拆为子模块（每个子文件一组表的 CRUD + 对应测试）：
 mod action_bar;
 mod agent;
+mod clipboard_favorite;
 mod config;
 mod hotword;
 mod models;
@@ -14,6 +15,7 @@ mod vault;
 
 pub use action_bar::*;
 pub use agent::*;
+pub use clipboard_favorite::*;
 pub use config::*;
 pub use hotword::*;
 pub use models::*;
@@ -426,6 +428,15 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 tx.commit()?;
                 log::info!("DB migrated v57→v58: hotword_sets 加 set 级软删（is_deleted 时间戳 + 复合 UNIQUE）");
             }
+            58 => {
+                // v58→v59：clipboard_history.id INTEGER→TEXT(UUID) + clipboard_favorites 表。
+                // **破坏性变更**——无法自动迁移（id 类型变更，老数据是 INTEGER 毫秒戳）。
+                // 用户必须清库重建（spec 2026-08-05-clipboard-favorite-sync-design.md §1.2）。
+                anyhow::bail!(
+                    "DB schema v58→v59 is a breaking change (clipboard_history.id INTEGER→TEXT UUID). \
+                     Run: rm ~/.octopus/octopus.db* (then restart app to rebuild)."
+                );
+            }
             _ => {
                 anyhow::bail!(
                     "DB schema version {} is outdated (current {}). \
@@ -451,7 +462,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
 /// v56（2026-08-01）：方言规则 DB 化——fuzzy_dialect_rules 表 + 旧 fuzzy_dialect 开关迁移。
 /// v55（2026-08-01）：数据迁移——asr_correct 强制翻 true（让存量用户热词生效，无表结构变更）。
 /// v54（2026-07-30）：image_data 表移除 blob + image_type 列（原图改文件系统存储）。
-pub const CURRENT_SCHEMA_VERSION: u32 = 58;
+pub const CURRENT_SCHEMA_VERSION: u32 = 59;
 
 /// v28 迁移：为所有 source_type IN (0,1)（builtin+local）且 secret_key 为空的模型填充 manifest JSON。
 /// 按 domain 分发到 model_manifests 常量。
@@ -873,20 +884,22 @@ mod tests {
         conn
     }
 
-    /// v54 库（asr_correct='false'）→ init_schema → asr_correct 翻 true + user_version 升 55。
+    /// v54 库 → init_schema → 迁移到 v58 成功（asr_correct 翻 true + v55/v56/v57/v58 步骤），
+    /// 但 v58→v59 是破坏性变更（clipboard_history.id INTEGER→TEXT），bail!
     #[test]
     fn migrate_v54_to_v55_flips_asr_correct_to_true() {
         let conn = open_with_version(54, "false");
-        init_schema(&conn).expect("v54→v55 迁移");
-        let after: String = conn
-            .query_row(
-                "SELECT config_value FROM app_config WHERE config_key='asr_correct'",
-                [], |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(after, "true", "迁移后 asr_correct 应翻 true");
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, CURRENT_SCHEMA_VERSION);
+        // v54→v58 迁移成功，但 v58→v59 bail（破坏性变更——clipboard_history.id 类型变更）
+        let result = init_schema(&conn);
+        assert!(
+            result.is_err(),
+            "v54→v59 迁移应在 v58→v59 步骤 bail（破坏性变更），实际成功"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("breaking change"),
+            "错误消息应含 'breaking change'，实际：{}", err_msg
+        );
     }
 
     /// v55 库（已是最新）→ init_schema → no-op（不重复迁移）。

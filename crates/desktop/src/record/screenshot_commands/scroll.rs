@@ -808,7 +808,7 @@ pub async fn start_scroll_recording(
             png
         };
         let hash = octopus_clipboard::image::hash_bytes(&png_bytes);
-        let item_id = octopus_clipboard::store::chrono_millis();
+        let item_id = uuid::Uuid::new_v4().to_string();
 
         // 线程一：立即写剪贴板（用户最关心，~1s）
         let png_for_clipboard = png_bytes.clone();
@@ -824,7 +824,7 @@ pub async fn start_scroll_recording(
         // 线程二：WebP 编码 + DB 入库（后台，~2-3s）
         let canvas_for_db = canvas;
         let hash_for_db = hash.clone();
-        let id_for_db = item_id;
+        let id_for_db = item_id.clone();
         let _db_task = tokio::task::spawn_blocking(move || {
             let img = image::DynamicImage::ImageRgba8(canvas_for_db);
             let encoded = match octopus_clipboard::image::encode_image(&img) {

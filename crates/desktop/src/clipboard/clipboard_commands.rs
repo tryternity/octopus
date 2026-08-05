@@ -31,25 +31,31 @@ pub async fn query_clipboard_history(
 
 #[tauri::command]
 pub async fn toggle_clipboard_favorite(
-    id: i64,
+    history_id: String,
     app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::toggle_favorite(conn, id)
+) -> Result<bool, String> {
+    // 走业务层（非 store::toggle_favorite）：维护 clipboard_favorites 表三态
+    // （active/tombstone/restore），让收藏变更可被 sync 跨设备传播。
+    // with_db 持全局 ReentrantMutex，business 逻辑内串行调多次 DB（load →
+    // insert/soft_delete/restore → set_is_favorite），放 spawn_blocking 避免阻塞 Tokio worker。
+    let now_fav = tokio::task::spawn_blocking(move || {
+        octopus_clipboard::favorite::toggle_favorite(&history_id)
     })
+    .await
+    .map_err(|e| e2s_ctx("join error: {}", e))?
     .map_err(e2s)?;
     // 广播给浮窗 + 设置页同步刷新（否则两端列表状态不一致）
     let _ = app_handle.emit("clipboard://changed", ());
-    Ok(())
+    Ok(now_fav)
 }
 
 #[tauri::command]
 pub async fn delete_clipboard_item(
-    id: i64,
+    id: String,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::delete_item(conn, id)
+        octopus_clipboard::store::delete_item(conn, &id)
     })
     .map_err(e2s)?;
     let _ = app_handle.emit("clipboard://changed", ());
@@ -58,7 +64,7 @@ pub async fn delete_clipboard_item(
 
 #[tauri::command]
 pub async fn delete_clipboard_items(
-    ids: Vec<i64>,
+    ids: Vec<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
     let n = octopus_infra::db::with_db(|conn| {
@@ -142,11 +148,11 @@ fn write_item_to_clipboard(handle: &ClipboardHandle, item: &ClipboardItem) -> Re
 
 #[tauri::command]
 pub async fn copy_clipboard_item(
-    id: i64,
+    id: String,
     handle: State<'_, Arc<ClipboardHandle>>,
 ) -> Result<(), String> {
     let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, id)
+        octopus_clipboard::store::get_item_by_id(conn, &id)
     })
     .map_err(e2s)?;
 
@@ -189,14 +195,14 @@ pub async fn clipboard_stats(
 /// 双击条目：写剪贴板 → hide 窗口 → 恢复焦点 → 模拟粘贴
 #[tauri::command]
 pub async fn paste_clipboard_item(
-    id: i64,
+    id: String,
     app_handle: tauri::AppHandle,
     handle: State<'_, Arc<ClipboardHandle>>,
     focus: State<'_, Arc<crate::platform::focus_tracker::FocusTracker>>,
 ) -> Result<(), String> {
     // 1. 从 DB 按 id 读条目内容（O(1) rowid 查找，不再整页反序列化）
     let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, id)
+        octopus_clipboard::store::get_item_by_id(conn, &id)
     })
     .map_err(e2s)?;
 
@@ -243,7 +249,7 @@ pub async fn paste_clipboard_item(
 /// 返回写入的绝对路径，同时写入剪贴板。
 #[tauri::command]
 pub async fn save_image_item(
-    id: i64,
+    id: String,
     format: String,
     quality: Option<u8>,
     open_folder: Option<bool>,
@@ -255,7 +261,7 @@ pub async fn save_image_item(
 
     // 1. 从 DB 读条目
     let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, id)
+        octopus_clipboard::store::get_item_by_id(conn, &id)
     })
     .map_err(e2s)?;
 
@@ -370,9 +376,9 @@ fn decode_file_uri(raw: &str) -> String {
 
 /// 文件条目：用系统默认应用打开第一个文件
 #[tauri::command]
-pub async fn open_file_item(id: i64) -> Result<(), String> {
+pub async fn open_file_item(id: String) -> Result<(), String> {
     let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, id)
+        octopus_clipboard::store::get_item_by_id(conn, &id)
     })
     .map_err(e2s)?;
 
@@ -416,7 +422,7 @@ pub(crate) fn current_ocr_meta() -> (String, String) {
 pub async fn insert_ocr_clipboard_item(
     text: String,
     app_handle: tauri::AppHandle,
-) -> Result<i64, String> {
+) -> Result<String, String> {
     // current_ocr_meta 在 with_db 外取：其内部 load_config_key → with_db，闭包内调虽已
     // 不再死锁（db.rs 已换 ReentrantMutex，同线程重入安全），但仍会让 DB 锁跨 load_config_key
     // 嵌套持有；外取既保持锁短持、又避免重入链路，故保留此习惯。
@@ -452,7 +458,7 @@ pub struct OcrResult {
 }
 
 #[tauri::command]
-pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
+pub async fn ocr_image(id: String) -> Result<OcrResult, String> {
     // 全局 OCR 互斥：已有 OCR 在跑则立即拒绝，避免多任务并发进入推理。
     let _ocr_lock = octopus_ocr::engine::OcrLockGuard::try_acquire()
         .ok_or_else(|| "前一个 OCR 还未完成，请稍后".to_string())?;
@@ -462,7 +468,7 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
         std::thread::current().id()
     );
     let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, id)
+        octopus_clipboard::store::get_item_by_id(conn, &id)
     })
     .map_err(e2s)?;
     log::info!("[ocr-image] got item");
@@ -517,10 +523,10 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
 /// 返回识别到的二维码内容列表（可能空）。
 #[tauri::command]
 pub async fn scan_qrcode_image(
-    image_id: i64,
+    image_id: String,
 ) -> Result<Vec<String>, String> {
     let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, image_id)
+        octopus_clipboard::store::get_item_by_id(conn, &image_id)
     })
     .map_err(e2s)?;
 
@@ -553,13 +559,13 @@ pub async fn scan_qrcode_image(
 /// OCR 编辑、剪贴板文本条目编辑两处共用。
 #[tauri::command]
 pub async fn set_clipboard_item_text(
-    item_id: i64,
+    item_id: String,
     text: String,
     handle: State<'_, Arc<ClipboardHandle>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::update_content(conn, item_id, &text)
+        octopus_clipboard::store::update_content(conn, &item_id, &text)
     })
     .map_err(e2s)?;
 
@@ -578,10 +584,10 @@ pub async fn insert_clipboard_text_item(
     text: String,
     handle: State<'_, Arc<ClipboardHandle>>,
     app_handle: tauri::AppHandle,
-) -> Result<i64, String> {
+) -> Result<String, String> {
     let new_id = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
-            id: octopus_clipboard::store::chrono_millis(),
+            id: uuid::Uuid::new_v4().to_string(),
             item_type: octopus_clipboard::ItemType::Text,
             content: text.clone(),
             ref_data: None,
@@ -608,11 +614,11 @@ pub async fn insert_clipboard_text_item(
 /// （4-5x 膨胀），前端还要 `map/join/btoa` 手动转 base64。后端一次编码成 data URL，
 /// 前端直接 `<img src={...}>`，省掉膨胀与转换开销（剪贴板窗口滚动时每个图片条目都触发）。
 #[tauri::command]
-pub async fn get_image_thumb(id: i64) -> Result<String, String> {
+pub async fn get_image_thumb(id: String) -> Result<String, String> {
     // spawn_blocking：两次 with_db 调用（item + thumb blob），可能在 watcher 写大图时阻塞。
     tokio::task::spawn_blocking(move || -> Result<String, String> {
         let item = octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::get_item_by_id(conn, id)
+            octopus_clipboard::store::get_item_by_id(conn, &id)
         })
         .map_err(e2s)?;
 
@@ -644,12 +650,12 @@ pub async fn get_image_thumb(id: i64) -> Result<String, String> {
 /// 前端 ImagePreview 用它加载到 <img>/canvas 做标注。镜像 get_image_thumb，
 /// 仅取 blob（全分辨率）而非 thumb。返回 data URL 同样为避免 IPC 序列化膨胀。
 #[tauri::command]
-pub async fn get_image_full(id: i64) -> Result<tauri::ipc::Response, String> {
+pub async fn get_image_full(id: String) -> Result<tauri::ipc::Response, String> {
     // spawn_blocking：两次 with_db（item + blob，4MB WebP 读取），watcher 写时可能阻塞。
     // ipc::Response 不便从 spawn_blocking 闭包返回（非简单 Send），只把 DB 读包进去。
     let blob: Vec<u8> = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
         let item = octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::get_item_by_id(conn, id)
+            octopus_clipboard::store::get_item_by_id(conn, &id)
         })
         .map_err(e2s)?;
 
@@ -679,10 +685,10 @@ pub async fn get_image_full(id: i64) -> Result<tauri::ipc::Response, String> {
 /// 检查图片原图文件是否存在（文件系统存储后可能被用户删除）。
 /// 前端加载缩略图时顺带调此命令，缺失则标记条目为"原图已丢失"。
 #[tauri::command]
-pub async fn check_image_file_exists(id: i64) -> Result<bool, String> {
+pub async fn check_image_file_exists(id: String) -> Result<bool, String> {
     tokio::task::spawn_blocking(move || -> Result<bool, String> {
         let item = octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::get_item_by_id(conn, id)
+            octopus_clipboard::store::get_item_by_id(conn, &id)
         })
         .map_err(e2s)?;
         let item = item.ok_or("条目不存在")?;

@@ -73,7 +73,7 @@ static SCREENSHOT_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// 最近一次截图 OCR 结果（关联 image_id）。emit("ocr-screenshot://result") 早于
 /// 新窗 React mount 会被丢，ImagePreview mount 后用 get_last_screenshot_ocr 主动拉取兜底。
 /// 截图 OCR 全局互斥（OcrLockGuard），单槽即可，无需并发保护。
-static LAST_SCREENSHOT_OCR: Mutex<Option<(i64, crate::clipboard::clipboard_commands::OcrResult)>> = Mutex::new(None);
+static LAST_SCREENSHOT_OCR: Mutex<Option<(String, crate::clipboard::clipboard_commands::OcrResult)>> = Mutex::new(None);
 
 /// 注册截图全局快捷键。main 启动注册 + set_config 热重载共用，
 /// 与 result_window::register_edit_global_shortcut 范式一致。
@@ -269,14 +269,14 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 fn save_screenshot_to_history(
     png_bytes: &[u8],
     predecoded: Option<&::image::DynamicImage>,
-) -> Result<i64, String> {
+) -> Result<String, String> {
     let hash = octopus_clipboard::image::hash_bytes(png_bytes);
     let existing = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::find_by_content_hash(conn, &hash)
     }).map_err(e2s)?;
     if let Some(id) = existing {
         octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::touch_created_at(conn, id)
+            octopus_clipboard::store::touch_created_at(conn, &id)
         }).map_err(e2s)?;
         Ok(id)
     } else {
@@ -297,10 +297,10 @@ fn save_screenshot_to_history(
                 crop_w as i64, crop_h as i64,
             )
         }).map_err(e2s)?;
-        let id = octopus_clipboard::store::chrono_millis();
+        let id = uuid::Uuid::new_v4().to_string();
         octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
-                id,
+                id: id.clone(),
                 item_type: octopus_clipboard::ItemType::Image,
                 content: String::new(),
                 ref_data: Some(hash.clone()),
@@ -356,7 +356,7 @@ pub async fn ocr_screenshot(
         let (text, blocks) = engine.recognize_with_blocks_from_image(&img).map_err(e2s)?;
         log::info!("[ocr-screenshot] after recognize text_len={} blocks={}", text.len(), blocks.len());
 
-        let ocr_id_opt: Option<i64> = if !text.trim().is_empty() {
+        let ocr_id_opt: Option<String> = if !text.trim().is_empty() {
             log::info!("[ocr-screenshot] before insert_ocr_item");
             let ocr_id = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::insert_ocr_item(conn, &text, &ocr_engine, &ocr_model)
@@ -371,7 +371,7 @@ pub async fn ocr_screenshot(
     })
     .await
     .map_err(e2s)??;
-    let image_id_opt: Option<i64> = Some(image_id);
+    let image_id_opt: Option<String> = Some(image_id.clone());
 
     let _ = app_handle.emit("clipboard://changed", ());
 
@@ -391,7 +391,7 @@ pub async fn ocr_screenshot(
         // 合并双开为一次 open_compact_editor_tabs：避免连续单开在「窗口刚 build、
         // React 未 mount」中间态丢失第二个 tab（首个经 URL 注入幸存，第二个被
         // push 覆盖 + emit 丢 → ocr 文本 tab 丢失）。批量调用只走一次 create/emit。
-        let mut tabs: Vec<(i64, Option<&str>)> = Vec::new();
+        let mut tabs: Vec<(String, Option<&str>)> = Vec::new();
         if let Some(img_id) = image_id_opt {
             log::info!("[ocr-screenshot] main: open image tab {}", img_id);
             tabs.push((img_id, None));
@@ -440,7 +440,7 @@ pub async fn scan_qrcode_screenshot(
 /// 治 emit("ocr-screenshot://result") 早于新窗 React mount 的竞态——截图 OCR 后
 /// 新窗 ImagePreview mount 时主动拉高亮遮罩（emit 已被丢）。截图 OCR 全局互斥，单槽即可。
 #[tauri::command]
-pub fn get_last_screenshot_ocr(image_id: i64) -> Option<crate::clipboard::clipboard_commands::OcrResult> {
+pub fn get_last_screenshot_ocr(image_id: String) -> Option<crate::clipboard::clipboard_commands::OcrResult> {
     let mut g = LAST_SCREENSHOT_OCR.lock();
     if let Some((id, res)) = g.take() {
         if id == image_id {

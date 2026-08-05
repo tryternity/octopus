@@ -9,9 +9,9 @@
 - **方法**：每个模块由一个独立 subagent 同时深读 octopus 源码与 tolaria 对应文档，按统一模板（现状 → 对比矩阵 → 独特价值 → 不足 → 改进方向）产出，最后汇总。所有论断均带 `file:line` 或外部 URL 锚定证据。
 - **更新记录**：
   - 2026-08-03：初版（基于 HEAD `8322cb94`）
-  - **2026-08-04**：合并 `origin/main`（fast-forward 37 commit 到 `b9d75ff0`）后修订两处已落地的事项：
-    - **Silero VAD v4 → v6 升级**（§1 现状 / §1.2 矩阵 / §1.4 #5 / §0.4 速览表）——`crates/asr-local/models/silero_vad_v6.onnx`（1.23MB）已替换 v4（1.7MB），详见 [spec](../superpowers/specs/2026-08-04-silero-vad-v6-upgrade-design.md)。**注意：仍未达 §1.4 #5 建议的 FireRedVAD（F1 97.57%）水准**，但 v6 相对 v4 噪声错误率 -16%、人声灵敏度 0.90 vs 0.15-0.32 已是显著提升
-    - **`stitch.rs` 拆分**（§2.1 文件索引 / §2.4 #8 / §2.5 #6）——123KB 单文件已拆成 `stitch/{mod,canvas_heal,fallback_chain,graybuf,ncc_match}.rs` 五个模块（共 2966 行），详见 [spec](../superpowers/specs/2026-08-04-stitch-refactor-design.md) + [plan](../superpowers/plans/2026-08-04-stitch-refactor.md)。**§2.5 #6 的拆分建议已落地，移入「已完成」**
+  - 2026-08-04（第 1 次）：合并 `origin/main`（fast-forward 37 commit 到 `b9d75ff0`）后修订 VAD v4→v6 升级 + `stitch.rs` 拆分两处已落地事项
+  - 2026-08-04（第 2 次）：根据讨论修订剪贴板加密策略——字段级加密 → 整库加密（绑定 sync）
+  - **2026-08-04（第 3 次，本次）**：双向同步到 `origin/main` HEAD `14b29713`（含 main 推过来的 6 commit「too_many_arguments struct 治理」+ 第八~十三轮审查修复）后，全面复核 9 大模块描述与代码一致性。结论：**报告内容总体仍准确**，唯一需要精化的是 VAD v6 描述（补充官方 16k_op15 精简版、ONNX 签名破坏性变更细节、commit `3f6fd519` 锚定）。其余模块（ASR 引擎清单 7 族+4 家、ActionBar agent claude/codex/gemini/pi、OCR PP-OCRv6-small、vault folder 软删同步）核对后均与代码一致。main 带来的多是 refactor（stitch 拆分 / 内联资源集中化 / too_many_arguments struct 化）+ fix（hotword spawn_blocking / vault folder 软删同步 P0 / rAF 背压等），不引入新功能模块。
 
 ---
 
@@ -81,7 +81,7 @@ octopus 的 ASR 子系统分布在两个 crate：`crates/asr-local`（离线推�
 | **离线引擎（7 族）** | Whisper / SenseVoice-原版（FunASR 4 输入 ONNX，非 sherpa 简化版）/ Paraformer / Qwen3-ASR / Zipformer（CTC + Transducer 自动判别）/ Moonshine / FireRedASR2-AED CTC（`crates/asr-local/src/config.rs:77-96` EngineCategory 枚举；`crates/infra/src/db.sql:388-402` seed 14 条本地条目） |
 | **流式引擎** | Paraformer 流式 + Zipformer CTC/Transducer 流式（`crates/asr-local/src/streaming/`），通过 `StreamingSession` 枚举统一 `accept_samples / flush / finish / reset` 语义（`streaming_engine.rs:14-34`） |
 | **云端引擎（4 家）** | 阿里云 DashScope（Fun-ASR / Paraformer-realtime / Qwen3-ASR-flash 三族，WSS）/ 字节豆包（Doubao-ASR 1.0/2.0 + SeedASR 2.0）/ 腾讯云（HMAC-SHA1 签名，16k_zh 系列 + 方言 + 多语种）/ 百度（START 帧鉴权，dev_pid 1537/15372/17372 等）—— 见 `crates/asr-cloud/src/{aliyun,bytedance,tencent,baidu}_stream.rs` + `db.sql:502-510` 的 model 预设 |
-| **VAD** | Silero VAD **v6**（2026-08-04 从 v4 升级），编译期内嵌字节（`include_bytes!("models/silero_vad_v6.onnx")`，1.23MB）+ 磁盘 `~/.octopus/models/vad.onnx` 覆盖；按 path 全局缓存 `Arc<Mutex<Session>>`（`audio/vad.rs:19-105`）。v6 相对 v4：噪声错误率 -16%、人声 prob 0.90 vs 0.15-0.32、静音 prob 0.002 vs 0.04；输入需 context 拼接 `[1,576] = context(64) + samples(512)`、窗口必须 512 样本（详见 [spec](../superpowers/specs/2026-08-04-silero-vad-v6-upgrade-design.md)）。`StreamingRunner` 用 32ms / 512 样本块、阈值 0.5、静音≥0.5s 触发标点 |
+| **VAD** | Silero VAD **v6**（2026-08-04 从 v4 升级，feat `3f6fd519` + 4 个修复/重构 commit），编译期内嵌字节（`octopus_infra::resources::silero_vad_v6_onnx()`，**官方 16k_op15 精简版 1.23MB**，比完整版 2.3MB 小 46%，已删 8kHz 分支）+ 磁盘 `~/.octopus/models/vad.onnx` 覆盖；按 path 全局缓存 `Arc<Mutex<Session>>`（`audio/vad.rs`）。v6 相对 v4：噪声错误率 -16%、人声 prob 0.90 vs 0.15-0.32、静音 prob 0.002 vs 0.04；ONNX 签名破坏性变更——`state` 单 tensor `[2,1,128]`（v4 是 h/c 双 `[2,1,64]`）+ 输入需 context 拼接 `[1,576] = context(64) + samples(512)`、窗口必须 512 样本（漏拼 context 导致 prob 恒近零，详见 [spec](../superpowers/specs/2026-08-04-silero-vad-v6-upgrade-design.md)）。`StreamingRunner` 用 32ms / 512 样本块、阈值 0.5、静音≥0.5s 触发标点 |
 | **降噪** | 可插拔 `FrameDenoise` trait，`denoise_mode` 选 RNNoise（`nnnoiseless` 纯 Rust，48k/480 样本）或 DeepFilterNet3（libDF v0.5.6 + tract 0.19，48k 全频带）。**已弃用**第三方 `dfn3.onnx`（压语音，gain≈0.10），改自控 fork `tryternity/DeepFilterNet@v0.5.6`（`Cargo.toml:26-34`） |
 | **热词** | 「有界热词纠错」——候选仅来自用户热词表 `HotwordIndex`（DB `hotword_words` 单记录表，v57 迁移；set 级软删 + tombstone sync，v58）。空表即 no-op，根治旧全词典 n-gram 过纠（"开始语音识别"→"开始于饮食别"）。`find_candidates` 用 `select_nth_unstable_by` 取 top-6（2026-08-02 优化，避免全 clone + 全排序） |
 | **方言 / 模糊拼音** | DB 表 `fuzzy_dialect_rules`（v56 迁移），基础规则常开（平翘舌 zh/ch/sh→z/c/s + 前后鼻音）+ syllable/initial/special_hu 三组可配。索引 key 与查询对称归一化（`text/hotword.rs:34-89`） |
@@ -116,7 +116,7 @@ octopus 的 ASR 子系统分布在两个 crate：`crates/asr-local`（离线推�
 | **License** | (闭源/私库) | Apache-2.0 | MIT | MIT | MIT | MIT | MIT | 见仓库 |
 | **本地引擎覆盖** | 7 族（Whisper/SenseVoice-原版/Paraformer/Qwen3-ASR/Zipformer×2/Moonshine/FireRedASR2） | 最全（Zipformer/Whisper/SenseVoice/Paraformer/Qwen3/Moonshine/Dolphin/FireRed/Telespeech 等，含 sherpa nano 简化版） | 仅 Whisper 家族 + Distil | 9 引擎（Parakeet/Canary/Cohere/Moonshine/SenseVoice/GigaAM/Whisper/Whisperfile/OpenAI） | **16 家族 60+ 变体**（Parakeet/Whisper/Qwen3/Cohere/Voxtral/Granite/SenseVoice/FunASR-Nano/Nemotron/GigaAM/MedASR/MOSS 等） | 1（MOSS-Transcribe-Diarize 0.9B） | 4（Qwen3-ASR/Fun-ASR-Nano/SenseVoice/Paraformer，ONNX+GGUF 混合） | FireRedASR2-LLM/AED + VAD + LID + Punc 四件套 |
 | **流式** | Paraformer + Zipformer CTC/Transducer | Zipformer Transducer 全系 + 多种 online 模型 | 否（仅 LocalAggressive 等第三方流式） | Moonshine streaming | Nemotron Streaming / Moonshine Streaming / Voxtral Realtime / Multitalker Parakeet | 否（端到端单次） | 否（明确不做，按住说话松开上屏） | 否（AED 60s 上限） |
-| **VAD** | Silero **v6**（2026-08-04 升级，噪声错误率 -16% vs v4）+ 磁盘覆盖 | Silero + 自研 + 多种 | Silero（vad_filter） | Silero（feature） | 各家族自带 | Whisper 编码器隐式分段 | sherpa-onnx VAD | **FireRedVAD**（F1 97.57%，100+ 语言，仍为 SOTA） |
+| **VAD** | Silero **v6**（2026-08-04 升级，16k_op15 精简版 1.23MB，噪声错误率 -16% vs v4）+ 磁盘覆盖 | Silero + 自研 + 多种 | Silero（vad_filter） | Silero（feature） | 各家族自带 | Whisper 编码器隐式分段 | sherpa-onnx VAD | **FireRedVAD**（F1 97.57%，100+ 语言，仍为 SOTA） |
 | **热词** | 有界纠错（HotwordIndex + 拼音首字母/模糊拼音/方言规则 DB 化） | 有限（部分模型 context） | 无 | 无 | 无 | 无 | **三层**（音素 RAG hot.txt + 正则 hot-rule.txt + 服务端 hot-server.txt，3s 热重载） | 无 |
 | **说话人分离** | **无** | **有**（speaker embedding + 聚类，3D-Speaker/NeMo） | 无（WhisperX 外挂） | 无 | MOSS Transcribe-Diarize 内联 | **核心卖点**（inline `[Sxx]` 标记 + SRT/ASS/JSON） | 无 | 无 |
 | **降噪** | RNNoise + DeepFilterNet3 双后端可切 | 语音增强 + 源分离（Spleeter/UVR） | 无 | 无 | 无 | 无 | 无 | 无 |
@@ -168,7 +168,7 @@ octopus 的 ASR 子系统分布在两个 crate：`crates/asr-local`（离线推�
 | **P0** | **集成 sherpa-onnx 说话人分离**：要么 FFI 调 sherpa-onnx Rust 绑定（`docs.rs/sherpa-onnx`，含 ActivityDetector/speaker embedding/diarization），要么移植 3D-Speaker ECAPA-TDNN ONNX。先做「ASR 文本 + 说话人标签」联合输出 | 大（2-3 周） | 补齐相对 sherpa/WhisperX/moss 最显著缺口；会议场景必备 |
 | **P1** | **双模型流式流水线**（学 YuHuang）：流式 paraformer-zh-streaming 出实时草稿 + SenseVoice/Qwen3-ASR 离线修正 + LCP 增量提交 + 三区悬浮窗。把当前单流式 session 升级为「快模型 + 准模型」双轨 | 中（1-2 周） | 边说边出字体验质变；当前流式质量受限于 Paraformer/Zipformer |
 | **P1** | **支持 Whisper Large v3 / Turbo**：放开 `N_MELS=128`，动态 filterbank，对齐 faster-whisper 的 mel 频谱。或直接接 transcribe-rs 的 whisper.cpp 绑定走 GGML 路径 | 中（1 周） | 多语种 + 高准确率场景；当前 small.en 仅英语 |
-| **P2** | **FireRedVAD 替换 Silero**：F1 97.57% vs v4 95.95%、False Alarm 2.69% vs 9.41%，且支持流式 + mVAD（语音/歌唱/音乐）。已有 firered 引擎，加 VAD 模块成本低。**2026-08-04 更新**：v6 升级已部分缓解，此项紧迫度下降，但仍是有意义的下一步 | 小（3-5 天） | 标点触发与分段准确度提升，直接改善热词/纠错命中 |
+| **P2** | **FireRedVAD 替换 Silero**：F1 97.57%、False Alarm 2.69%（v6 无公开 F1 对比，但 v6 噪声错误率较 v4 仅 -16%，相对 FireRedVAD 仍有差距），且 FireRedVAD 支持流式 + mVAD（语音/歌唱/音乐）。已有 firered 引擎，加 VAD 模块成本低。**2026-08-04 更新**：v6 升级已部分缓解，此项紧迫度下降，但仍是有意义的下一步 | 小（3-5 天） | 标点触发与分段准确度提升，直接改善热词/纠错命中 |
 | **P2** | **GGUF / K-quant 路径**（学 transcribe.cpp + CapsWriter）：用 llama.cpp + ggml-rs 跑 Qwen3-ASR / Fun-ASR-Nano / MOSS，q4_k 把 2GB→500MB 逐字节一致。可与 ONNX 并存作为「轻量档」 | 大（3-4 周） | 显存/内存减半，低端设备可用；移动端前置 |
 | **P2** | **macOS 系统级语音输入**（Push-to-Talk 全局热键 + 模拟输入）：参考 CapsWriter 的 pynput 思路用 rdev + enigo（Rust 已有生态），或做 InputMethodKit 插件 | 中（1-2 周） | 从「应用内工具」升级为「系统级输入法替代」 |
 | **P3** | **开源 + HF Space demo + 多语言绑定**：公开核心 asr-local crate（如 transcribe-rs 的 MIT 路径），提供 Python 绑定 + 在线 demo | 中 | 社区认知度；当前是私有项目零传播 |

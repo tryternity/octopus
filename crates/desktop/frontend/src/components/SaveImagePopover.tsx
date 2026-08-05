@@ -16,7 +16,7 @@ export default function SaveImagePopover({
   triggerRef,
   onClose,
 }: {
-  id: number;
+  id: string;
   triggerRef: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
 }) {

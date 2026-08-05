@@ -423,6 +423,17 @@ fn build_coordinator_loop(
                             pending_prepare = None;
                             debug!("Toggle: cancel pending prepare (user re-press)");
                         } else {
+                            // Idle → 开录音前检查 AX 权限（macOS）。
+                            // AX 权限未授权/刚授权未重启时，结果窗口的 show/set_focus 静默失败，
+                            // 用户看不到识别窗。在此拦截，提示授权+重启，不白跑录音。
+                            #[cfg(target_os = "macos")]
+                            {
+                                if !crate::platform::app_context::ffi::is_accessibility_trusted() {
+                                    log::warn!("[asr] AX 权限未授权，拒绝录音——提示用户授权+重启");
+                                    let _ = app_handle.emit("permission-required", "accessibility");
+                                    continue;
+                                }
+                            }
                             // Idle → 两阶段开录音：sync runtime + emit prepare-record + spawn 200ms 看门狗。
                             // 前端 listen prepare-record 后回推 currentSelectionRef（或 null）→ StartRecording；
                             // 200ms 未响应 → FallbackStart 普通开（selection=None）。

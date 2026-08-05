@@ -8,7 +8,7 @@ import { mergePendingTabs } from "./mergePendingTabs";
 const textTab = (key: string, text: string) => ({
   key,
   source: "clipboard",
-  itemId: 1,
+  itemId: "uuid-1",
   itemType: "text" as const,
   text,
 });

@@ -119,7 +119,7 @@ pub fn open_file_in_editor(name: String, category: String, app: AppHandle) -> Re
         let _ = window.set_focus();
     } else {
         // 窗口不存在 → 建 pending + 开窗（file source 不走 store_pending_temp，走通用 pending）
-        crate::commands::compact_editor_commands::store_pending_file(item_id, text, path_str.to_string());
+        crate::commands::compact_editor_commands::store_pending_file(item_id.to_string(), text, path_str.to_string());
         crate::commands::compact_editor_window::create_compact_editor_window(&app, None);
     }
     Ok(())

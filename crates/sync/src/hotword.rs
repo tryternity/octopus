@@ -882,7 +882,25 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
             }
             Some(db_h) => {
                 let local_updated = iso_to_unix_ms(&db_h.updated_at);
-                if remote_updated > local_updated {
+                // 🔴 复活 bug 修复（2026-08-04）：删除是单向终态——远程已 tombstone
+                //（未超期）时，**无论本地时间戳多新都应 pull tombstone 到 DB**，
+                // 而不是把本地 active 写回文件覆盖远程 tombstone。否则第三台从没
+                // 见过该词典的机器会把 active 当新词典拉进来 → 复活。
+                // pull_set 内部已有超期检查 + DB-tombstone-vs-remote-active 拒绝复活，
+                // 这里只需确保 remote-tombstone-vs-local-active 也走 pull 路径。
+                let remote_is_tombstone = read_hotword_set_file(uuid)
+                    .map(|f| f.is_deleted > 0 && !is_tombstone_expired(f.is_deleted, now_secs))
+                    .unwrap_or(false);
+                if remote_is_tombstone {
+                    match pull_set(uuid, now_secs) {
+                        Ok(true) => report.pulled += 1,
+                        Ok(false) => report.skipped += 1,
+                        Err(e) => {
+                            log::warn!("[sync] 热词 merge: 词典 {} tombstone pull 跳过：{}", uuid, e);
+                            report.skipped += 1;
+                        }
+                    }
+                } else if remote_updated > local_updated {
                     // 远程更新 → pull 覆盖 DB
                     match pull_set(uuid, now_secs) {
                         Ok(true) => report.pulled += 1,
@@ -1030,7 +1048,22 @@ fn merge_hotword_words(
             }
             Some(db_w) => {
                 let local_updated = iso_to_unix_ms(&db_w.updated_at);
-                if remote_updated > local_updated {
+                // 🔴 复活 bug 修复（2026-08-04，对称 set 级修复）：删除是单向终态——
+                // 远程 word 已 tombstone（未超期）时，无论本地时间戳多新都应 pull
+                // tombstone 到 DB，而不是把本地 active 写回文件覆盖远程 tombstone。
+                let remote_word_is_tombstone = read_hotword_word_file(set_id, uuid)
+                    .map(|f| f.is_deleted > 0 && !is_tombstone_expired(f.is_deleted, now_secs))
+                    .unwrap_or(false);
+                if remote_word_is_tombstone {
+                    match pull_word(set_id, uuid, now_secs, Some(db_w)) {
+                        Ok(true) => report.pulled += 1,
+                        Ok(false) => report.skipped += 1,
+                        Err(e) => {
+                            log::warn!("[sync] 热词 merge: 词 {} tombstone pull 跳过：{}", uuid, e);
+                            report.skipped += 1;
+                        }
+                    }
+                } else if remote_updated > local_updated {
                     // 远程更新 → pull 覆盖 DB（软删传播：is_deleted=true 的词 pull 后 DB 也变软删）
                     match pull_word(set_id, uuid, now_secs, Some(db_w)) {
                         Ok(true) => report.pulled += 1,
@@ -2318,5 +2351,95 @@ mod tests {
             "软删的词不应出现在 list_words_in_set"
         );
         assert!(report.skipped >= 1, "应记 skipped（拒绝复活 pull）");
+    }
+
+    /// 🔴 复活 bug 复现：远程已 tombstone（A 机删除后 push），本地 DB 仍是 active 且
+    /// updated_at 比远程 tombstone 的 updated_ms 更新（B 机在 A 删除前后给词典加过词 /
+    /// 改过 enabled）→ merge 第 895 行 `local_updated > remote_updated` 分支把 DB active
+    /// 写回文件，**覆盖远程 tombstone**。push 后 A pull 时虽然 pull_set 的「拒绝复活」
+    /// 检查能挡住，但**第三台从没见过该词典的 C 机**会把它当新词典拉进来 → 复活。
+    ///
+    /// 根因：merge_hotwords 阶段 1 的 `local_updated > remote_updated` 分支 **不考虑
+    /// 远程是否 tombstone**——只要本地比远程新就 push，但 tombstone 的语义是「删除意图」，
+    /// 不应被任何 active 状态覆盖（删除是单向终态）。
+    #[test]
+    fn merge_remote_tombstone_not_overwritten_by_local_active_newer() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::hard_delete_hotword_set(&h.id);
+        }
+
+        let set_id = "revive-bug-0001";
+        db::insert_hotword_set(set_id, "会被删除的词典").unwrap();
+        export_all_hotwords().expect("export 初始 active");
+
+        // 远程被 A 机删除后 push：tombstone。is_deleted 用「当前时刻 - 1 小时」
+        //（未超期，10 天 retention 内），updated_ms = 1000（比本地 DB 更早，
+        // 模拟「A 删除了一个很久没动的词典，B 最近刚改过」）。
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let recent_tombstone = now_secs - 3600; // 1 小时前删除
+        write_remote_set_with(set_id, "会被删除的词典", 1000, recent_tombstone);
+
+        // 本地 DB 仍是 active，updated_at 比远程 tombstone 更新（比如刚加过词）
+        // —— insert_hotword_set 用 datetime('now')，比 1000ms（1970 年）新
+        let db_h = db::get_hotword_set(set_id).unwrap();
+        assert_eq!(db_h.is_deleted, 0, "前置：本地 DB 仍 active");
+        let local_updated = iso_to_unix_ms(&db_h.updated_at);
+        assert!(
+            local_updated > 1000,
+            "前置：本地 updated_at 比远程 tombstone 新"
+        );
+
+        let _report = merge_hotwords().expect("merge");
+
+        // 🔴 BUG：merge 后文件被 DB active 覆盖，tombstone 丢失
+        // 期望：文件应保持 tombstone（删除是单向终态，不被 active 覆盖）
+        let file = read_hotword_set_file(set_id).expect("meta 文件应存在");
+        assert!(
+            file.is_deleted > 0,
+            "🔴 复活 bug：远程 tombstone 被本地 active 覆盖了！file.is_deleted={}（应 >0）。\n\
+             根因：merge_hotwords 阶段 1 `local_updated > remote_updated` 分支不考虑远程 tombstone，\n\
+             把 active 写回文件覆盖了删除意图。这会导致第三台机器把已删词典当新词典拉进来。",
+            file.is_deleted
+        );
+    }
+
+    /// 🔴 词级复活 bug 复现（对称 set 级）：远程已删除某词（tombstone），本地 DB 仍是 active
+    /// 且 updated_at 更新 → merge 的 `local_updated > remote_updated` 分支把 active 写回文件，
+    /// 覆盖远程 tombstone。修复后应 pull tombstone 到 DB，不覆盖文件。
+    #[test]
+    fn merge_remote_word_tombstone_not_overwritten_by_local_active_newer() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::hard_delete_hotword_set(&h.id);
+        }
+
+        let set_id = "revive-word-0001";
+        db::insert_hotword_set(set_id, "测试词典").unwrap();
+        add_words(set_id, "八爪鱼");
+        export_all_hotwords().expect("export 初始 active");
+
+        let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, "八爪鱼");
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let recent_tombstone = now_secs - 3600;
+
+        // 远程删除该词（tombstone），updated_ms=1000 比本地 DB 早
+        write_remote_word(set_id, "八爪鱼", "ba zhao yu", recent_tombstone, 1000);
+
+        let _report = merge_hotwords().expect("merge");
+
+        // 文件应保持 tombstone（不被本地 active 覆盖）
+        let file = read_hotword_word_file(set_id, &word_uuid).expect("词文件应存在");
+        assert!(
+            file.is_deleted > 0,
+            "🔴 词级复活 bug：远程 tombstone 被本地 active 覆盖了！file.is_deleted={}（应 >0）",
+            file.is_deleted
+        );
     }
 }

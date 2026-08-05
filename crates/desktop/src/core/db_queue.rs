@@ -73,7 +73,7 @@ fn process_db_command(cmd: DbCommand) {
     match cmd {
         DbCommand::Insert { id, text, segments, engine, engine_mode } => {
             if let Err(e) = octopus_asr_local::db::insert_transcription_at_id(
-                id,
+                &id.to_string(),
                 &text,
                 &segments,
                 &engine,
@@ -84,7 +84,7 @@ fn process_db_command(cmd: DbCommand) {
         }
         DbCommand::UpdateTextSegments { id, text, segments } => {
             if let Err(e) =
-                octopus_asr_local::db::update_text_segments(id, &text, &segments)
+                octopus_asr_local::db::update_text_segments(&id.to_string(), &text, &segments)
             {
                 warn!("Background DB update_text_segments failed: {}", e);
             }
@@ -92,7 +92,7 @@ fn process_db_command(cmd: DbCommand) {
         DbCommand::UpdatePolished { id, text, status, model, segments } => {
             // text = 润色后扁平（落 text 列），与 segments 对应；polished_text 列已随段模型移除。
             if let Err(e) = octopus_asr_local::db::update_polished(
-                id,
+                &id.to_string(),
                 &status,
                 model.as_deref(),
                 &segments,
@@ -113,7 +113,7 @@ fn process_db_command(cmd: DbCommand) {
             // 段模型下 DB 只存 text（= finish_text 扁平）：润色 done 用 polished_text，否则 raw_text。
             let text = polished_text.as_deref().unwrap_or(&raw_text);
             if let Err(e) = octopus_asr_local::db::finalize_transcription(
-                id,
+                &id.to_string(),
                 text,
                 &segments,
                 &polish_status,
@@ -125,19 +125,19 @@ fn process_db_command(cmd: DbCommand) {
         }
         DbCommand::UpdateEditedSegments { id, text, segments } => {
             if let Err(e) =
-                octopus_asr_local::db::update_edited_segments(id, &text, &segments)
+                octopus_asr_local::db::update_edited_segments(&id.to_string(), &text, &segments)
             {
                 warn!("Background DB update_edited_segments failed: {}", e);
             }
         }
         DbCommand::Delete { id } => {
-            if let Err(e) = octopus_infra::db::delete_transcriptions(&[id]) {
+            if let Err(e) = octopus_infra::db::delete_transcriptions(&[id.to_string()]) {
                 warn!("Background DB delete failed: {}", e);
             }
         }
         #[cfg(feature = "cloud")]
         DbCommand::UpdateMetaField { id, key, value } => {
-            if let Err(e) = octopus_infra::db::update_meta_field(id, &key, &value) {
+            if let Err(e) = octopus_infra::db::update_meta_field(&id.to_string(), &key, &value) {
                 warn!("Background DB update_meta_field failed: {}", e);
             }
         }

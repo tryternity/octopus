@@ -14,7 +14,7 @@ import { useT, t as ti18n } from "@/lib/i18n";
 export interface Tab {
   key: string;
   source: 'clipboard' | 'transcription' | 'temp' | 'file';
-  itemId: number;
+  itemId: string;
   itemType?: 'text' | 'image';
   text?: string;
   imgWidth?: number;
@@ -29,7 +29,7 @@ export interface Tab {
   filePath?: string;
 }
 interface OpenTabPayload {
-  itemId: number;
+  itemId: string;
   source: string;
   text?: string;
   isTemp?: boolean;
@@ -44,7 +44,7 @@ interface OpenTabPayload {
 }
 // 后端 get_pending_compact_tabs 返回（含完整数据，前端免再查 DB）。
 interface PendingTabFull {
-  itemId: number;
+  itemId: string;
   source: string;
   itemType: string;
   text: string;
@@ -80,7 +80,8 @@ const MAX_IMAGE_TABS = 5;
 function tabTitle(tab: Tab): string {
   const text = tab.text || "";
   const head = text.slice(0, 5).replace(/\s+/g, " ").trim() || (tab.itemType === 'image' ? ti18n("tab.image") : ti18n("tab.empty"));
-  const tail = tab.itemId.toString(16).slice(-5);
+  // UUID 主键迁移后 itemId 已是 string——取末尾 5 字符做去重尾缀
+  const tail = tab.itemId.slice(-5);
   return `${head}-${tail}`;
 }
 
@@ -98,7 +99,8 @@ function readInitialTabFromUrl(): { tabs: Tab[]; hasInitial: boolean } {
   const itemId = params.get("itemId");
   const source = params.get("source");
   if (!itemId || !source) return { tabs: [], hasInitial: false };
-  const id = Number(itemId);
+  // itemId 现在是 UUID 字符串（Rust 端 open_compact_editor_tab 拼 URL 时已用字符串）
+  const id = itemId;
   const itemType = params.get("itemType") || "text";
   const key = `${source}:${id}`;
   if (itemType === "image") {
@@ -152,7 +154,7 @@ function CompactEditor() {
 
   // 加载某 item 并新增 tab；已存在则切过去。source 决定从哪个表读 + 是否只读。
   // 基于 tabsRef.current 同步计算 next tabs（不依赖 setTabs updater 异步回调）。
-  const loadAndAddTab = useCallback(async (itemId: number, source: string) => {
+  const loadAndAddTab = useCallback(async (itemId: string, source: string) => {
     const key = `${source}:${itemId}`;
     const existIdx = tabsRef.current.findIndex(t => t.key === key);
     if (existIdx >= 0) { setActiveIdx(existIdx); return; }
@@ -211,7 +213,7 @@ function CompactEditor() {
         const p = payload as OpenTabPayload;
         if (p.source === 'temp') {
           const tempKey = `temp:${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          const newTab: Tab = { key: tempKey, source: 'temp' as const, itemId: 0, itemType: 'text' as const, text: p.text || "", isTemp: true, mode: (p.mode === 'contrast' ? 'contrast' : 'single'), originalText: p.originalText, translatedText: p.translatedText, translateSessionId: p.translateSessionId };
+          const newTab: Tab = { key: tempKey, source: 'temp' as const, itemId: "0", itemType: 'text' as const, text: p.text || "", isTemp: true, mode: (p.mode === 'contrast' ? 'contrast' : 'single'), originalText: p.originalText, translatedText: p.translatedText, translateSessionId: p.translateSessionId };
           // action bar 流式翻译开的 contrast tab——译文区 loading，
           // 用 sessionId 建立映射（发现 1+8 修复：不再依赖单值 ref 时序）
           if (newTab.mode === 'contrast' && (newTab.translatedText || "").startsWith("⏳") && newTab.translateSessionId) {
@@ -375,7 +377,7 @@ function CompactEditor() {
         const tabsWithText = active.mode === 'contrast'
           ? tabsRef.current.map((t, i) => i === activeIdx ? { ...t, text: saveText } : t)
           : tabsRef.current;
-        const newId = await invoke<number>("insert_clipboard_text_item", { text: saveText });
+        const newId = await invoke<string>("insert_clipboard_text_item", { text: saveText });
         const next = promoteTempTab(tabsWithText, activeIdx, newId);
         tabsRef.current = next;
         setTabs(next);

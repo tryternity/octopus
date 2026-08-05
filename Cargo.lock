@@ -5257,6 +5257,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "uuid",
  "webp",
 ]
 
@@ -5508,10 +5509,14 @@ dependencies = [
 name = "octopus-sync"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
+ "data-encoding",
+ "hex",
  "log",
  "md-5",
  "octopus-infra",
+ "rand 0.8.6",
  "regex",
  "rusqlite",
  "serde",
@@ -5520,6 +5525,7 @@ dependencies = [
  "tempfile",
  "ureq 2.12.1",
  "url",
+ "zeroize",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-export function useQr(imageId: number | null) {
+export function useQr(imageId: string | null) {
   const [qrScanning, setQrScanning] = useState(false);
   const [qrResult, setQrResult] = useState<string[] | null>(null);
 

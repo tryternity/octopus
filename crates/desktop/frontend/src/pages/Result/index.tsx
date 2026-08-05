@@ -172,7 +172,14 @@ function Result() {
       const msg = typeof payload === "string" ? payload : (payload as any)?.payload ?? "";
       if (msg) showToast(msg, 5000, true);
     });
-    return () => { unlisten.then((f) => f()); unlistenAgentError.then((f) => f()); unlistenMicError.then((f) => f()); };
+    // AX 权限未授权——提示授权+重启（识别窗依赖 AX 权限 show/focus）
+    const unlistenPermission = listen<string>("permission-required", (payload) => {
+      const perm = typeof payload === "string" ? payload : (payload as any)?.payload ?? "";
+      if (perm === "accessibility") {
+        showToast(t("result.axPermissionRequired"), 8000, true);
+      }
+    });
+    return () => { unlisten.then((f) => f()); unlistenAgentError.then((f) => f()); unlistenMicError.then((f) => f()); unlistenPermission.then((f) => f()); };
   }, []);
 
   // ── Toolbar hover ──

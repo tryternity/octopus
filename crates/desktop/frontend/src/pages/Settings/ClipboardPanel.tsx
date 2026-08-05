@@ -42,7 +42,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
   const [total, setTotal] = useState(0);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [page, setPage] = useState(1);
@@ -85,7 +85,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
     if (confirmDeleteTimerRef.current) clearTimeout(confirmDeleteTimerRef.current);
   }, []);
 
-  const toggleSelect = (id: number) => {
+  const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
@@ -336,7 +336,7 @@ function ClipboardRow({
   const handleFavorite = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await invoke("toggle_clipboard_favorite", { id: item.id });
+      await invoke("toggle_clipboard_favorite", { historyId: item.id });
       onChanged();
     } catch (e) {
       console.error(e);
