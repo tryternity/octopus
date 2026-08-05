@@ -308,7 +308,13 @@ export default function Screenshot() {
     } else {
       ctx.fillRect(0, 0, cssW, cssH);
     }
-  }, [sel, mode, ready, dpr, annotation.annotations, annotation.selectedAnn, annotation.tool, textDraft]);
+
+    // 水印实时预览（标注画布上显示，对齐导出效果）。
+    // 预览用 display canvas 的 CSS 尺寸（cssW/cssH）；导出走物理尺寸 bgW×bgH + scale。
+    if (watermarkOpts?.text) {
+      drawWatermark(ctx, cssW, cssH, watermarkOpts);
+    }
+  }, [sel, mode, ready, dpr, annotation.annotations, annotation.selectedAnn, annotation.tool, textDraft, watermarkOpts]);
 
   useEffect(() => { draw(); }, [draw]);
 

@@ -446,6 +446,24 @@ fn apply_config_value(
         "screenshot_shortcut" => {
             cfg.screenshot_shortcut = value.as_str().ok_or("screenshot_shortcut 需要字符串")?.to_string();
         }
+        // 截图水印 4 字段（与 config.rs AppConfig 字段对齐）。
+        // text/position 走字符串；opacity clamp 0-1；font_size max(1) 防 0/负数。
+        "screenshot_watermark_text" => {
+            cfg.screenshot_watermark_text = value.as_str().ok_or("screenshot_watermark_text 需要字符串")?.to_string();
+        }
+        "screenshot_watermark_position" => {
+            cfg.screenshot_watermark_position = value.as_str().ok_or("screenshot_watermark_position 需要字符串")?.to_string();
+        }
+        "screenshot_watermark_opacity" => {
+            let v = value.as_f64().ok_or("screenshot_watermark_opacity 需要数值")?;
+            cfg.screenshot_watermark_opacity = (v as f32).clamp(0.0, 1.0);
+        }
+        "screenshot_watermark_font_size" => {
+            let v = value.as_i64().or_else(|| value.as_f64().map(|f| f as i64))
+                .ok_or("screenshot_watermark_font_size 需要整数")?;
+            if v < 1 { return Err("screenshot_watermark_font_size 必须 >= 1".into()); }
+            cfg.screenshot_watermark_font_size = v as u32;
+        }
         "record_shortcut" => {
             cfg.record_shortcut = value.as_str().ok_or("record_shortcut 需要字符串")?.to_string();
         }
