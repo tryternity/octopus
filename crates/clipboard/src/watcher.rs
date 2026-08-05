@@ -83,16 +83,30 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
     use crate::store;
     use crate::image;
 
-    // ── ConcealedType 检测（macOS 密码管理器保护）──
-    // 1Password / Bitwarden / iCloud Keychain 等复制密码时标记
-    // org.nspasteboard.ConcealedType，明确告知消费方不要记录。
+    // ── ConcealedType / 密码管理器 hint 检测（跨平台）──
+    // 密码管理器（1Password/Bitwarden/KeePassXC/iCloud Keychain 等）复制密码时
+    // 会按平台约定标记一个特殊 pasteboard 类型，明确告知消费方「不要记录」。
     // 静默跳过避免密码明文入库 + FTS5 索引 + 跨设备 sync 传播。
-    // 仅 macOS——Windows/Linux 无此约定；octopus autotype 走 suppress_next
-    // 双重保险（跨平台保底 + macOS ConcealedType 兜底）。
-    #[cfg(target_os = "macos")]
-    {
-        const CONCEALED_TYPE: &str = "org.nspasteboard.ConcealedType";
-        if handle.has(ContentFormat::Other(CONCEALED_TYPE.to_string())) {
+    //
+    // 平台常量：
+    //   macOS   org.nspasteboard.ConcealedType（nspasteboard.org 社区约定）
+    //   Windows ExcludeClipboardContentFromMonitorProcessing（MS 官方 clipboard format）
+    //   Linux   x-kde-passwordManagerHint（KDE/KeePassXC 事实约定；GNOME 无统一标准）
+    //
+    // clipboard-rs 0.3.4 三平台后端（win.rs/x11.rs/wayland.rs）的 ContentFormat::Other
+    // 均支持任意类型字符串检测，故复用同一模式。octopus autotype 走 suppress_next
+    // 跨平台保底，此处检测是第三方密码管理器防护 + macOS 兜底。
+    const CONCEALED_HINTS: &[&str] = &[
+        #[cfg(target_os = "macos")]
+        "org.nspasteboard.ConcealedType",
+        #[cfg(target_os = "windows")]
+        "ExcludeClipboardContentFromMonitorProcessing",
+        // Linux X11/Wayland 共用此 MIME 约定（KeePassXC 等）
+        #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
+        "x-kde-passwordManagerHint",
+    ];
+    for hint in CONCEALED_HINTS {
+        if handle.has(ContentFormat::Other((*hint).to_string())) {
             return;
         }
     }

@@ -12,7 +12,8 @@
   - 2026-08-04（第 1 次）：合并 `origin/main`（fast-forward 37 commit 到 `b9d75ff0`）后修订 VAD v4→v6 升级 + `stitch.rs` 拆分两处已落地事项
   - 2026-08-04（第 2 次）：根据讨论修订剪贴板加密策略——字段级加密 → 整库加密（绑定 sync）
   - **2026-08-04（第 3 次）**：双向同步到 `origin/main` HEAD `14b29713`（含 main 推过来的 6 commit「too_many_arguments struct 治理」+ 第八~十三轮审查修复）后，全面复核 9 大模块描述与代码一致性。结论：**报告内容总体仍准确**，唯一需要精化的是 VAD v6 描述（补充官方 16k_op15 精简版、ONNX 签名破坏性变更细节、commit `3f6fd519` 锚定）。其余模块（ASR 引擎清单 7 族+4 家、ActionBar agent claude/codex/gemini/pi、OCR PP-OCRv6-small、vault folder 软删同步）核对后均与代码一致。main 带来的多是 refactor（stitch 拆分 / 内联资源集中化 / too_many_arguments struct 化）+ fix（hotword spawn_blocking / vault folder 软删同步 P0 / rAF 背压等），不引入新功能模块。
-  - **2026-08-05（第 4 次，本次）**：剪贴板模块两项落地后同步报告状态——① Paste Stack（P1 粘贴队列）已实现；② macOS ConcealedType 检测（P3）已实现。§0.4 / §3.2 / §3.4 / §3.5 对应条目从「缺失/待做」更新为「✅ 已实现」+ 实现细节引用。Windows/Linux concealed hint 检测仍标注为 follow-up。
+  - **2026-08-05（第 4 次）**：剪贴板模块两项落地后同步报告状态——① Paste Stack（P1 粘贴队列）已实现；② ConcealedType 检测（P3）已实现。
+  - **2026-08-05（第 5 次，本次）**：ConcealedType 检测从 macOS 扩展到 Windows + Linux 跨平台（`ExcludeClipboardContentFromMonitorProcessing` / `x-kde-passwordManagerHint`），§0.3 / §3.4 / §3.5 对应「仅 macOS」描述更新为「跨平台」。
 
 ---
 
@@ -35,7 +36,7 @@
 | 不足 | 影响 | 出现的模块 |
 |---|---|---|
 | **平台覆盖严重不均** | Action Bar（`window.rs:19-24` `#[cfg(not(target_os = "macos"))] return`）、Terminal（删 ConPTY）、录屏（Swift helper 仅 mac）、密码箱 Auto-Type（仅 `macos.rs`）只跑 macOS | Action Bar / Terminal / 录屏 / Vault |
-| **无加密 / 无 secret 检测** | `clipboard_history` 全明文（与 Maccy/EcoPaste 同档位，加 sync 前不构成缺口）；macOS concealed type 检测已于 2026-08-05 补齐（`watcher.rs` 检测 `org.nspasteboard.ConcealedType` 跳过密码管理器复制），Windows/Linux 的 `x-kde-passwordManagerHint` / `ExcludeClipboardContentFromMonitorProcessing` 仍未做；vault 的 `keychain.rs:14-30` 坦承 machine-key 是 obfuscation 而非真加密（受 adhoc 签名限制） | 剪贴板 / Vault |
+| **无加密 / 无 secret 检测** | `clipboard_history` 全明文（与 Maccy/EcoPaste 同档位，加 sync 前不构成缺口）；跨平台 concealed hint 检测已于 2026-08-05 补齐（`watcher.rs` 检测三平台密码管理器标记：macOS `org.nspasteboard.ConcealedType` / Windows `ExcludeClipboardContentFromMonitorProcessing` / Linux `x-kde-passwordManagerHint`，命中静默跳过）；vault 的 `keychain.rs:14-30` 坦承 machine-key 是 obfuscation 而非真加密（受 adhoc 签名限制） | 剪贴板 / Vault |
 | **无云同步 / 无团队流** | 剪贴板零依赖 sync crate；所有模块都不做团队共享 / 云分享链接（CleanShot Cloud、Cap 分享、Bitwarden 组织都没有） | 剪贴板 / 截图 / 录屏 / Vault |
 | **无浏览器扩展 / 系统级集成** | 没有任何 Native Messaging、IME 输入法、Passkey provider、桌面搜索集成 | Vault / Action Bar / 翻译 |
 | **生态/社区/文档弱** | 私有仓 + 零社区分发，相对 sherpa-onnx 12.9k★ / Pot 19.1k★ / kiss-translator 11.6k★ / WezTerm 全平台 | 全部 |
@@ -354,7 +355,7 @@ octopus 把「剪贴板历史」做成了 ASR / OCR / 截图 / 文件搬运的**
 
 ### 3.4 Octopus 不足 / 缺失
 
-1. **本地明文存储，与竞品同档位（Maccy / EcoPaste / CopyQ 默认明文），仅在加 sync 时成为问题。** `clipboard_history` 表明文存储，无应用层加密。但：① 字段级 AES-GCM 加密会破坏 FTS5 trigram 索引（加密列无法 tokenize）——这是 ortu 那套方案无法移植的核心障碍；② 运行时浮窗/历史可见，加密只能防「离线磁盘取证」，威胁模型与 FileVault/BitLocker 全盘加密重叠，应用层 ROI 差；③ 行业惯例：本地优先剪贴板工具默认明文 + 文件权限 0600 + 全盘加密覆盖本地威胁。**真正需要加密的时机是接入 sync 时**（同步前必须加密，否则 git repo 明文外泄）——见 §3.5 P2。~~Maccy/CopyQ 至少做的「过滤密码管理器 concealed type」octopus 也没做~~（**2026-08-05 已补齐 macOS ConcealedType 检测**，见 §3.5 P3；Windows/Linux 对应 hint 仍未做）。
+1. **本地明文存储，与竞品同档位（Maccy / EcoPaste / CopyQ 默认明文），仅在加 sync 时成为问题。** `clipboard_history` 表明文存储，无应用层加密。但：① 字段级 AES-GCM 加密会破坏 FTS5 trigram 索引（加密列无法 tokenize）——这是 ortu 那套方案无法移植的核心障碍；② 运行时浮窗/历史可见，加密只能防「离线磁盘取证」，威胁模型与 FileVault/BitLocker 全盘加密重叠，应用层 ROI 差；③ 行业惯例：本地优先剪贴板工具默认明文 + 文件权限 0600 + 全盘加密覆盖本地威胁。**真正需要加密的时机是接入 sync 时**（同步前必须加密，否则 git repo 明文外泄）——见 §3.5 P2。~~Maccy/CopyQ 至少做的「过滤密码管理器 concealed type」octopus 也没做~~（**2026-08-05 已补齐跨平台 concealed hint 检测**——macOS ConcealedType + Windows ExcludeClipboardContentFromMonitorProcessing + Linux x-kde-passwordManagerHint，见 §3.5 P3）。
 2. **无云同步 / 无跨设备。** vault 和热词都用 `octopus-sync` git 同步，**唯独 clipboard 不用**（grep 确认零依赖）。EcoPaste-Pro 的 transfer 插件 + UniClipboard 的 iroh P2P 都已成熟。octopus 已有 sync 基建却没接到 clipboard，是低成本就能补的能力。
 3. **无 macro / 脚本 / snippets。** CopyQ 的 ECMAScript 引擎、Ditto 的 ChaiScript、ortu 的 snippets+transforms（`{{date}}` 变量、JSON 美化、Base64 编解码）octopus 都没有。对开发者用户这是高价值功能。
 4. **无常用优先排序。** 列表只按 `created_at DESC` 排（`store.rs:104`），不像 VloamClip 按使用频率排序。高频话术只能靠 `is_favorite` 手动收藏。
@@ -362,7 +363,7 @@ octopus 把「剪贴板历史」做成了 ASR / OCR / 截图 / 文件搬运的**
 6. **富文本仅标记不存原文。** `is_rich` 标记了 HTML/RTF 存在（`watcher.rs:196-198`），但 content 只存纯文本——复制带格式的文档再粘贴会丢格式。CopyQ/Ditto/EcoPaste 都保留多 MIME 原文。
 7. **回收站不暴露给用户。** 仅 voice 内部软删（给热词挖掘用），text/image 删除即物理删，误删不可恢复。Paster/EcoPaste-Pro 有可恢复回收站。
 8. **Wayland 支持弱。** clipboard-rs 的 Wayland 是两级轮询（MIME+text 500ms），不如 arboard/wl-clipboard-rs 走协议事件优雅（ortu 文档明确指出此点）。
-9. **~~无密码管理器感知~~（2026-08-05 macOS 已补齐）。** `watcher.rs::handle_clipboard_change` 开头检测 `org.nspasteboard.ConcealedType`，命中静默跳过——对标 Maccy/CopyQ。**仅 macOS**，Linux `x-kde-passwordManagerHint` / Windows `ExcludeClipboardContentFromMonitorProcessing` 仍未做（跨平台 follow-up）。
+9. **~~无密码管理器感知~~（2026-08-05 跨平台已补齐）。** `watcher.rs::handle_clipboard_change` 开头检测三平台密码管理器 hint（macOS `org.nspasteboard.ConcealedType` / Windows `ExcludeClipboardContentFromMonitorProcessing` / Linux `x-kde-passwordManagerHint`），命中静默跳过——对标 Maccy/CopyQ。clipboard-rs 0.3.4 四后端的 `ContentFormat::Other` 统一支持任意类型字符串检测。
 
 ### 3.5 建议改进方向
 
@@ -378,7 +379,7 @@ octopus 把「剪贴板历史」做成了 ASR / OCR / 截图 / 文件搬运的**
 
 **P2（整库加密——sync 的前置依赖，本地场景可选）。** 用 **sqlite3mc / SQLCipher 整库加密**（Ditto 用的就是 SQLite3MC；`rusqlite` 加 `bundled-sqlite3mc` feature 即可），**不是字段级 AES-GCM**。理由：① 性能透明（页级 AES，~5-15% DB op 开销）；② FTS5 trigram 索引照常工作（索引也加密，搜索不受影响——字段级加密做不到这点）；③ 应用代码 0 行改动（连接时传 key 即可）。**密钥管理复用 vault 现成基建**：`crates/vault/src/keychain.rs` 的 HKDF-SHA256(machine_id || username || 常量) 派生方案（注释坦言是 obfuscation 而非真加密，但比纯硬编码好一档——攻击者需要知道 machine_id + username，不只逆向二进制）。**触发时机**：纯本地场景靠 FileVault/BitLocker + 文件权限 0600 已足够；**接入 sync（P1）时此项变为强制前置**，否则同步出去的就是明文。
 
-**P3（concealed type 检测——做个好公民）✅ macOS 部分 2026-08-05 已实现。** `watcher.rs::handle_clipboard_change` 开头（files/image/text 分支前）用 `handle.has(ContentFormat::Other("org.nspasteboard.ConcealedType"))` 检测（clipboard-rs 0.3.5 底层 `availableTypeFromArray` 支持任意 pasteboard 类型，零新依赖），命中静默 return。覆盖 1Password/Bitwarden/iCloud Keychain/KeePassXC 复制密码场景。**仅 macOS**（`#[cfg(target_os = "macos")]`）；Linux `x-kde-passwordManagerHint` / Windows `ExcludeClipboardContentFromMonitorProcessing` 仍未做（跨平台 follow-up）。octopus autotype 的 `suppress_next` 不变（跨平台保底 + macOS 双重保险）。详见 [spec](../superpowers/specs/2026-08-05-macos-concealed-type-skip.md)。
+**P3（concealed type 检测——做个好公民）✅ 跨平台 2026-08-05 已实现。** `watcher.rs::handle_clipboard_change` 开头（files/image/text 分支前）用 `CONCEALED_HINTS` 常量数组（`#[cfg]` 门控各平台 hint）+ `handle.has(ContentFormat::Other(...))` 检测，命中静默 return。覆盖三平台密码管理器复制场景：macOS `org.nspasteboard.ConcealedType`（1Password/Bitwarden/iCloud Keychain/KeePassXC）/ Windows `ExcludeClipboardContentFromMonitorProcessing`（MS 官方 format）/ Linux `x-kde-passwordManagerHint`（KeePassXC 事实约定）。clipboard-rs 0.3.4 四后端（macos/win/x11/wayland）的 `ContentFormat::Other` 均支持任意类型字符串检测，零新依赖。octopus autotype 的 `suppress_next` 不变（macOS 双重保险，Win/Linux autotype 未实现）。详见 [spec](../superpowers/specs/2026-08-05-macos-concealed-type-skip.md)。
 
 **P3（智能分组）。** 参考 ortu 的规则分类器（URL/Code/JSON/Shell/Email/Secret/Path + 置信度打分）或 EcoPaste-Pro 的 12 类扩展识别（加颜色/Markdown/Windows 指令），把扁平历史变成可治理的资料库。octopus 已有 `item_type` 一级分类，可在其上加二级 `subtype`。
 
