@@ -223,7 +223,15 @@ pub async fn paste_clipboard_item(
     let focus = focus.inner().clone();
     std::thread::spawn(move || {
         // 1. 按类型写剪贴板（文本/图片/文件，还原真实内容而非 hash/JSON）
-        let _ = write_item_to_clipboard(&handle, &item);
+        // 第十五轮 P2-B：写失败时不粘贴——否则粘贴的是剪贴板残留的上一条内容
+        //（可能是密码/token），误粘贴敏感数据。log 错误让用户感知。
+        match write_item_to_clipboard(&handle, &item) {
+            Ok(()) => {}
+            Err(e) => {
+                log::warn!("[clipboard] 写剪贴板失败，跳过粘贴（防误粘贴残留内容）：{}", e);
+                return;
+            }
+        }
         // 2. hide 后 macOS 自动还焦点（已确认 sublime_text 获得焦点）
         // 3. 等焦点稳定
         std::thread::sleep(std::time::Duration::from_millis(300));

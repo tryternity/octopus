@@ -67,6 +67,11 @@ export default function DownloadPage() {
 
   // 监听下载事件
   useEffect(() => {
+    // 第十五轮 #9：加 cancelled 哨兵——setup 是 async，若 unmount 发生在 listen() 返回前，
+    // unlistenRef.current 仍空 → cleanup 的 forEach 不执行 → listener 泄漏。
+    // 哨兵让 setup 完成后检查：已取消则立即 unlisten 刚注册的 listener。
+    let cancelled = false;
+    const localUnlistens: UnlistenFn[] = [];
     const setup = async () => {
       const onProgress = await listen<DownloadProgress>("download-progress", (e) => {
         const { repo, downloaded, total } = e.payload;
@@ -82,6 +87,8 @@ export default function DownloadPage() {
           ),
         );
       });
+      if (cancelled) { onProgress(); return; }
+      localUnlistens.push(onProgress);
       const onDone = await listen<DownloadDone>("download-done", (e) => {
         const { repo, error } = e.payload;
         setModels((prev) =>
@@ -97,11 +104,14 @@ export default function DownloadPage() {
           ),
         );
       });
-      unlistenRef.current = [onProgress, onDone];
+      if (cancelled) { onDone(); return; }
+      localUnlistens.push(onDone);
+      unlistenRef.current = localUnlistens;
     };
     setup();
     return () => {
-      unlistenRef.current.forEach((fn) => fn());
+      cancelled = true;
+      localUnlistens.forEach((fn) => fn());
     };
   }, []);
 

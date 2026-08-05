@@ -78,14 +78,19 @@ pub fn set_test_db(conn: Connection) {
     // 与 ensure_db → open_db_conn → init_schema 的初始化路径保持一致：
     // 1. 设置 PRAGMA（WAL/busy_timeout/foreign_keys）
     // 2. 跑 INIT_SQL 建表 + seed（IF NOT EXISTS 幂等）
-    // 3. 直接标 v40（跳过迁移分支）
+    // 3. 直接标 CURRENT_SCHEMA_VERSION（跳过迁移分支——test helper 不走迁移链）
     conn.execute_batch(
         "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
     )
     .expect("set_test_db: set PRAGMA");
     conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
-    conn.execute("PRAGMA user_version = 46", [])
-        .expect("set_test_db: set user_version");
+    // 第十五轮 P3-G：改用 CURRENT_SCHEMA_VERSION（原硬编 46 与实际 v58 不符，
+    // 裸 conn 调 init_schema 会从 v46 走迁移 → bail）。test helper 应反映当前 schema。
+    conn.execute(
+        &format!("PRAGMA user_version = {}", CURRENT_SCHEMA_VERSION),
+        [],
+    )
+    .expect("set_test_db: set user_version");
     TEST_DB_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
     });

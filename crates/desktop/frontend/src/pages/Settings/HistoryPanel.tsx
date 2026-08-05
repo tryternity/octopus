@@ -25,6 +25,12 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 300);
+  // 第十五轮 P3-组4 #4：confirmDelete timer 用 ref 管理（原裸 setTimeout 无 ref）。
+  // 对齐同文件 HistoryRow deleteTimer 模式：clearTimeout 旧 timer 防 stacking + unmount cleanup。
+  const confirmDeleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (confirmDeleteTimerRef.current) clearTimeout(confirmDeleteTimerRef.current);
+  }, []);
 
   const loadHistory = useCallback(async (resetOffset?: boolean) => {
     setLoading(true);
@@ -60,10 +66,12 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
     if (selectedIds.size === 0) return;
     if (!confirmDelete) {
       setConfirmDelete(true);
-      setTimeout(() => setConfirmDelete(false), 3000);
+      if (confirmDeleteTimerRef.current) clearTimeout(confirmDeleteTimerRef.current);
+      confirmDeleteTimerRef.current = setTimeout(() => setConfirmDelete(false), 3000);
       return;
     }
     try {
+      if (confirmDeleteTimerRef.current) { clearTimeout(confirmDeleteTimerRef.current); confirmDeleteTimerRef.current = null; }
       const ids = Array.from(selectedIds);
       await invoke("delete_history", { ids });
       showToast(t("settings.history.deletedN", { n: ids.length }));

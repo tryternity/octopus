@@ -79,14 +79,13 @@ pub fn create_folder(id: &str, name: &str, key: &DerivedKey) -> Result<()> {
 /// 重命名 folder。`new_name` 是明文；内部加密后写库。
 pub fn rename_folder(id: &str, new_name: &str, key: &DerivedKey) -> Result<()> {
     let encrypted = key.encrypt(new_name.as_bytes())?;
-    // rename 不改 sort_order——读当前值算 md5（之前 unwrap_or_default 吞 DB 错误，
-    // 失败时 sort_order 错算为 0 导致 sync_md5 不准——#6 修复）
-    let sort_order = db::list_vault_folders()?
-        .into_iter()
-        .find(|f| f.id == id)
-        .map(|f| f.sort_order)
-        .unwrap_or(0);
-    let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, sort_order, false);
+    // 第十四轮 P2-3：改 O(1) load_vault_folder（原 O(N) list_vault_folders().find()，
+    // 对齐 upsert_folder_with_sort 范式）+ 读真实 is_deleted 算 md5（原硬编 false →
+    // 软删态 folder rename 后 md5 与 row 不一致 → 跨设备 sync ping-pong）。
+    let row = db::load_vault_folder(id)?;
+    let sort_order = row.as_ref().map(|f| f.sort_order).unwrap_or(0);
+    let is_deleted = row.as_ref().map(|f| f.is_deleted).unwrap_or(false);
+    let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, sort_order, is_deleted);
     db::update_vault_folder_name(id, &encrypted, &md5)
 }
 

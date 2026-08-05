@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, Copy, RefreshCw } from "lucide-react";
 import { useT } from "@/lib/i18n";
@@ -136,6 +136,12 @@ export default function PasswordGenerator({
   const [result, setResult] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // 第十五轮 P3-组4 #8：handleCopy setTimeout 用 ref 管理（原裸 setTimeout 无 ref），
+  // 防 unmount 后 setState + 连续复制时 timer stacking。配套 unmount cleanup effect。
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+  }, []);
 
   // 各模式本地配置（默认值与 Rust 端 *Config::default() 对齐，定义于 buildConfig.ts）
   const [randomCfg, setRandomCfg] = useState<RandomCfg>(DEFAULT_RANDOM);
@@ -171,7 +177,8 @@ export default function PasswordGenerator({
       await navigator.clipboard.writeText(result);
       setCopied(true);
       showToast(t("settings.vault.generator.copy"));
-      setTimeout(() => setCopied(false), 2000);
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = setTimeout(() => setCopied(false), 2000);
     } catch {
       // 忽略——剪贴板权限失败时静默
     }

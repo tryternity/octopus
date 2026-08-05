@@ -99,6 +99,12 @@ export default function VaultPicker() {
     }, 150);
   }, []);
 
+  // 第十五轮 P3-组4 #3：search debounce timer unmount cleanup。
+  // 防 unmount 时 pending debounce 到期仍发起 invoke + setState（组件已卸载）。
+  useEffect(() => () => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+  }, []);
+
   const refresh = useCallback(async () => {
     setView({ kind: "loading" });
     setUnlockError(null);

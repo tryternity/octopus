@@ -81,6 +81,11 @@ function Settings() {
 
   const dismissToast = useCallback(() => setToast(null), []);
 
+  // 第十五轮 P3-组4 #2：toast timer unmount cleanup（防 toast setTimeout 在组件卸载后仍触发 setToast）。
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
+
   const refreshConfig = useCallback(async () => {
     try {
       const resp = await invoke<ConfigResponse>("get_config");

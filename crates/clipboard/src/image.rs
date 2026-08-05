@@ -1,4 +1,4 @@
-//! 图片编码：RGBA → MD5 hash（去重）→ JPEG q85 原图存文件系统 + 缩略图存 DB BLOB。
+//! 图片编码：RGBA → MD5 hash（去重）→ JPEG（按 IMAGE_SAVE_QUALITY，默认 q92）原图存文件系统 + 缩略图存 DB BLOB。
 //! 原图存 ~/Documents/octopus/screens/<hash>.jpg（2026-07-29 从 DB BLOB 改文件系统）。
 
 use anyhow::Result;

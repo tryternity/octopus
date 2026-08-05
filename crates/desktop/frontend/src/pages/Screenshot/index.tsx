@@ -62,6 +62,9 @@ export default function Screenshot() {
   const scrollSaveAfterStopRef = useRef(false);
   // OCR 全局互斥：他处正在识别时本入口被拒 → 屏幕中央短暂提示 1.8s
   const [ocrWarn, setOcrWarn] = useState(false);
+  // 第十五轮 P3-组4 #6：ocrWarn setTimeout 用 ref 管理（原裸 setTimeout 无 ref），
+  // 防 unmount 后 setState + 连续 warn 时 timer stacking（旧未到期被新覆盖前并行跑）。
+  const ocrWarnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 二维码识别：就地白卡展示结果（null=不显示，string[]=结果，识别中由 qrScanning 区分）
   const [qrScanning, setQrScanning] = useState(false);
@@ -113,6 +116,11 @@ export default function Screenshot() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // 第十五轮 P3-组4 #6：ocrWarn timer unmount cleanup（与 ocrWarnTimerRef 配套）。
+  useEffect(() => () => {
+    if (ocrWarnTimerRef.current) clearTimeout(ocrWarnTimerRef.current);
   }, []);
 
   // 滚动截图事件监听
@@ -675,7 +683,8 @@ export default function Screenshot() {
         const msg = String(e);
         if (msg.includes("还未完成")) {
           setOcrWarn(true);
-          setTimeout(() => setOcrWarn(false), 1800);
+          if (ocrWarnTimerRef.current) clearTimeout(ocrWarnTimerRef.current);
+          ocrWarnTimerRef.current = setTimeout(() => setOcrWarn(false), 1800);
         } else {
           console.error(e);
         }

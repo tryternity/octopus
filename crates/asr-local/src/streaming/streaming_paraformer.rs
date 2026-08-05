@@ -99,7 +99,9 @@ impl StreamingParaformer {
         drop(metadata);
 
         let decoder_num_blocks: usize = decoder_num_blocks_str.parse().unwrap_or(16);
-        let decoder_kernel_size: usize = decoder_kernel_size_str.parse().unwrap_or(11);
+        // 第十六轮 P2-2：.max(1) 防 usize 下溢——异常模型（decoder_kernel_size="0"）
+        // parse 成功得 0，unwrap_or(11) 不生效 → cache_time = 0 - 1 下溢 panic（new + reset 都炸）。
+        let decoder_kernel_size: usize = decoder_kernel_size_str.parse().unwrap_or(11).max(1);
 
         let cache_time = decoder_kernel_size - 1; // 10
         let feat_dim = FBANK_NUM_BINS * LFR_WINDOW_SIZE; // 560
@@ -261,7 +263,8 @@ impl StreamingParaformer {
         self.feat_cache.fill(0.0);
         self.encoder_out_cache.fill(0.0);
         self.alpha_cache = 0.0;
-        let cache_time = self.decoder_kernel_size - 1;
+        // 第十六轮 P2-2：saturating_sub 防御（构造端已 .max(1)，此处双保险）。
+        let cache_time = self.decoder_kernel_size.saturating_sub(1);
         // 形状一致时直接 fill(0.0) 复用内存（run_decoder 慢路径可能改维度，此处兜底重建）。
         let init_shape = (1, self.encoder_output_size, cache_time);
         for cache in &mut self.decoder_caches {

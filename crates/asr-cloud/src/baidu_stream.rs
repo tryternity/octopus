@@ -203,7 +203,11 @@ impl WsSessionHandler for BaiduHandler {
                     "FIN_TEXT" => {
                         // 最终结果（稳态）——提交此句
                         let result = json["result"].as_str().unwrap_or("").to_string();
-                        self.fin_texts.push(result);
+                        // 第十五轮 P3-D：过滤空 result——FIN_TEXT 协议异常发空时，
+                        // push 空串会导致 accumulate_display 的 join(sep) 产生多余分隔符（你好，，世界）。
+                        if !result.is_empty() {
+                            self.fin_texts.push(result);
+                        }
                         self.current_partial.clear();
                         let display = accumulate_display(
                             &self.fin_texts,
