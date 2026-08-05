@@ -139,17 +139,34 @@ async fn transcribe(
                 .into_response();
         }
     };
-    let text = match tokio::task::spawn_blocking(move || {
-        octopus_asr_local::pipeline::transcribe_batch(engine_arc.as_ref(), &samples, &cfg)
-    })
+    // 第二十三轮 P2-srv5：spawn_blocking 包 tokio::time::timeout——ASR 引擎某输入死循环
+    // （历史 paraformer drain bug 同型）会永久占 blocking pool 线程。超时返回 503，
+    // 孤儿 blocking 线程让其自然结束（tokio blocking pool 线程 JoinHandle drop 后仍跑到
+    // 完成再回收，结果丢弃）。对齐 scheduler A1 范式（孤儿线程自愈）。120s 覆盖长音频
+    // （60s 音频 RTF 0.5 = 30s 推理）+ 慢模型冷启动。
+    let text = match tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        tokio::task::spawn_blocking(move || {
+            octopus_asr_local::pipeline::transcribe_batch(engine_arc.as_ref(), &samples, &cfg)
+        }),
+    )
     .await
     {
-        Ok(result) => result,
-        Err(e) => {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => {
             return (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: format!("inference task failed: {}", e),
+                }),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: "ASR inference timeout (120s)——引擎可能死循环，请重试或换模型".into(),
                 }),
             )
                 .into_response();

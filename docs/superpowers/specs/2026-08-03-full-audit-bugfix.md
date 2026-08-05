@@ -409,7 +409,7 @@
 | 20 | `e12364d2` | P2-4 opus_mt 超长单句硬切 + P2-5 翻译引擎未知名显式报错 + P2-6 驳回 |
 | 21 | `d6b8b138` | P2-v1 resolve attempt_guard + P2-a3 whisper 空音频 + P2-a2 aliyun warn + P2-s5 clipboard 复活保护 |
 | 22 | （无 commit） | merge main（`c309b085` concealed hint）+ 复审 watcher.rs，**0 修复**（审查通过） |
-| 23 | （本轮，待 commit） | 全代码审查 23 P2 复查：修 11（infra 4 事务 + record thumbnail 事务 + autotype PasswordOnly verify + cloud close catch_unwind + ocr validate 激活 + llm error body 截断 + sync thread-local clear + **scheduler hang 超时兜底** + **download Etag 注释修正**）+ 驳回 1（P2-ocr2 误报）+ 留后续 11 |
+| 23 | （本轮，待 commit） | 全代码审查 23 P2 复查：修 12（infra 4 事务 + record thumbnail 事务 + autotype PasswordOnly verify + cloud close catch_unwind + ocr validate 激活 + llm error body 截断 + sync thread-local clear + **scheduler hang 超时兜底** + **download Etag 注释修正** + **server spawn_blocking 超时**）+ 驳回 1（P2-ocr2 误报）+ 留后续 10 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1037,7 +1037,7 @@ merge 未覆盖任何历史修复。
 - merge main 后历史修复（第 17/21 轮 clipboard）全部存活（Read 核实）。
 - 本轮无代码修复，无新增 commit。
 
-## 26. 第二十三轮审查修复（2026-08-05，全代码审查 23 P2 复查 → 修 11 + 驳回 1 + 留后续 11）
+## 26. 第二十三轮审查修复（2026-08-05，全代码审查 23 P2 复查 → 修 12 + 驳回 1 + 留后续 10）
 
 ### 触发
 
@@ -1142,6 +1142,12 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 **修复**（保守——实现 If-Range 是功能性增强，留后续）：修正 verify.rs 文档——`Hash::Etag` 加 doc 注释明示"当前**不校验**（no-op 返回 Ok(true)），需 If-Range 实现，建议 manifest 同时配 Sha256 强校验"；`verify` 函数 doc 同步；模块头注释去掉"If-Range 头构造"误导。**If-Range 续传校验的功能实现仍留后续**（衔接第 17 轮 P2-1）。
 
+#### P2-srv5 · server spawn_blocking 无超时
+
+**根因**：`transcribe` handler（main.rs:142-157）`spawn_blocking(move || transcribe_batch(...)).await` 无超时。ASR 引擎某输入死循环（历史 paraformer drain bug 同型）→ 永久占 blocking pool 线程，512 个挂起 → 耗尽 tokio blocking pool。
+
+**修复**：`tokio::time::timeout(Duration::from_secs(120), spawn_blocking(...)).await`，match 加 `Err(_) => 503`（"ASR inference timeout——引擎可能死循环"）。120s 覆盖长音频（60s 音频 RTF 0.5 = 30s 推理）+ 慢模型冷启动。超时后 blocking 线程仍在跑（无法 cancel），让其自然结束（tokio blocking pool JoinHandle drop 后跑到完成再回收，结果丢弃）——对齐 scheduler A1 范式。
+
 ### 驳回明细
 
 #### P2-ocr2 · EP 注册失败回退丢弃优化级/线程配置 ❌ 误报
@@ -1158,7 +1164,7 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 | P2-d3（ptt/clipboard spawn .expect）| spawn 失败是极端系统状态（fd/线程上限、内存耗尽），panic vs 降级差异小，fail-fast 更易诊断 | 新留后续 |
 | P2-srv2/srv3（WS 绕过 manager + engine 静默忽略）| 需系统性重设计 WS handler（共享 ONNX session + 独立 decoder state），`active_session` 返回共享 session 会串行化并发 | 新留后续（同源） |
 | P2-srv4（WAV decode 漏 spawn_blocking）| 曾尝试合并 decode+inference 到 spawn_blocking，破坏 duration_ms 计算 + 控制流，回退；decode 通常 <10ms（小文件），收益有限 | 新留后续 |
-| P2-srv5（spawn_blocking 无超时）| scheduler 已修 P2-srv1（spawn + recv_timeout），server 的 spawn_blocking 超时仍未做；需 `tokio::time::timeout` 包 await + 处理 JoinError | 新留后续 |
+| ~~P2-srv5（spawn_blocking 无超时）~~ | ✅ **本轮已修**（见修复明细 §P2-srv5），从留后续移除 | — |
 | P2-ocr3（image 无 size guard）| 需 `ImageReader` + 维度限制 API 重构；OCR 输入受 watcher 40MB 限制兜底 | 新留后续 |
 | P2-l2（无重试退避）| 功能增强，非 bug | 不修 |
 | P2-dl1（Etag If-Range 实现）| ✅ 注释撒谎已修正（verify.rs 文档明示 Etag 当前 no-op）；**If-Range 续传校验功能性实现仍留后续** | = 第 17 轮 P2-1 |
@@ -1170,5 +1176,5 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 ### 验证
 
 - `cargo build --release -p octopus-server -p octopus-cli` + `cargo build -p octopus-infra -p octopus-record -p octopus-paddle-ocr -p octopus-llm -p octopus-sync -p octopus-scheduler -p octopus-download -p octopus-desktop` —— 全 0 error 0 warning。
-- `cargo test`：infra 193 / record 50 / paddle-ocr 45 / llm 14 / sync 153 / **scheduler 5（+1 新增 hang 超时）** / download 33 / **desktop 525** 全过。
+- `cargo test`：infra 193 / record 50 / paddle-ocr 45 / llm 14 / sync 153 / **scheduler 5（+1 新增 hang 超时）** / download 33 / **server 4** / **desktop 525** 全过。
 - 新增 4 回归测试：hotword 2（P2-i1/i2 事务回滚）+ llm 1（truncate_error_body 截断）+ scheduler 1（hang 超时不阻塞后续）全过。
