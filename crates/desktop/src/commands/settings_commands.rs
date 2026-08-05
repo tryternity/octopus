@@ -89,6 +89,28 @@ fn list_microphones() -> Vec<String> {
 
 // ── set_config 命令 ──
 
+/// 快捷键热重载通用 helper：注销旧键 + 注册新键，失败回滚旧键。
+///
+/// `register` 是各快捷键的注册函数（如 register_clipboard_shortcut）。
+/// 收敛 set_config 中 4 处「unregister old + register new + 失败回滚」同构分支（2026-08-05）。
+fn reload_global_shortcut(
+    app_handle: &tauri::AppHandle,
+    old: &str,
+    new: &str,
+    register: fn(&tauri::AppHandle, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    if let Ok(old_sc) = old.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+        let _ = app_handle.global_shortcut().unregister(old_sc);
+    }
+    if let Err(e) = register(app_handle, new) {
+        // 注册失败：恢复旧快捷键，避免用户完全失去快捷键
+        let _ = register(app_handle, old);
+        return Err(format!("快捷键注册失败，配置未更改: {}", e));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_config(
     key: String,
@@ -162,51 +184,22 @@ pub fn set_config(
     // edit_global_shortcut 热重载：注册成功后才持久化（同 asr_shortcut 审查 Issue 3）。
     // 若先 save 再 register，注册失败时无效快捷键已写入 DB → 下次启动依然失败。
     if key == "edit_global_shortcut" && cfg.edit_global_shortcut != old_edit_global {
-        use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        if let Ok(old) = old_edit_global.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-            let _ = app_handle.global_shortcut().unregister(old);
-        }
-        if let Err(e) = crate::ui::result_window::register_edit_global_shortcut(&app_handle, &cfg.edit_global_shortcut) {
-            let _ = crate::ui::result_window::register_edit_global_shortcut(&app_handle, &old_edit_global);
-            return Err(format!("快捷键注册失败，配置未更改: {}", e));
-        }
+        reload_global_shortcut(&app_handle, &old_edit_global, &cfg.edit_global_shortcut, crate::ui::result_window::register_edit_global_shortcut)?;
     }
 
     // polish_global_shortcut 已删除（Task 2 后不再支持 polish 全局快捷键）。
 
     if key == "clipboard_shortcut" && cfg.clipboard_shortcut != old_clipboard_sc {
-        use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        if let Ok(old) = old_clipboard_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-            let _ = app_handle.global_shortcut().unregister(old);
-        }
-        if let Err(e) = crate::clipboard::clipboard_window::register_clipboard_shortcut(&app_handle, &cfg.clipboard_shortcut) {
-            // 注册失败：恢复旧快捷键，避免用户完全失去快捷键
-            let _ = crate::clipboard::clipboard_window::register_clipboard_shortcut(&app_handle, &old_clipboard_sc);
-            return Err(format!("快捷键注册失败，配置未更改: {}", e));
-        }
+        reload_global_shortcut(&app_handle, &old_clipboard_sc, &cfg.clipboard_shortcut, crate::clipboard::clipboard_window::register_clipboard_shortcut)?;
     }
 
     // paste_stack_shortcut 热重载：与 clipboard_shortcut 同模式（注销旧 + 注册新）。
     if key == "paste_stack_shortcut" && cfg.paste_stack_shortcut != old_paste_stack_sc {
-        use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        if let Ok(old) = old_paste_stack_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-            let _ = app_handle.global_shortcut().unregister(old);
-        }
-        if let Err(e) = crate::clipboard::clipboard_window::register_paste_stack_shortcut(&app_handle, &cfg.paste_stack_shortcut) {
-            let _ = crate::clipboard::clipboard_window::register_paste_stack_shortcut(&app_handle, &old_paste_stack_sc);
-            return Err(format!("快捷键注册失败，配置未更改: {}", e));
-        }
+        reload_global_shortcut(&app_handle, &old_paste_stack_sc, &cfg.paste_stack_shortcut, crate::clipboard::clipboard_window::register_paste_stack_shortcut)?;
     }
 
     if key == "screenshot_shortcut" && cfg.screenshot_shortcut != old_screenshot_sc {
-        use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        if let Ok(old) = old_screenshot_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-            let _ = app_handle.global_shortcut().unregister(old);
-        }
-        if let Err(e) = crate::record::screenshot_commands::register_screenshot_shortcut(&app_handle, &cfg.screenshot_shortcut) {
-            let _ = crate::record::screenshot_commands::register_screenshot_shortcut(&app_handle, &old_screenshot_sc);
-            return Err(format!("快捷键注册失败，配置未更改: {}", e));
-        }
+        reload_global_shortcut(&app_handle, &old_screenshot_sc, &cfg.screenshot_shortcut, crate::record::screenshot_commands::register_screenshot_shortcut)?;
     }
 
     // 录屏 toggle 快捷键热重载（仅 macOS——record_hotkey 模块 cfg-gate）。

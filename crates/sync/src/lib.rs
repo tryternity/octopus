@@ -28,8 +28,10 @@ pub mod error;
 pub mod git;
 pub mod hotword;
 pub mod outline;
+pub mod pipeline;
 pub mod privacy;
 pub mod store;
 
 pub use error::{classify_git_error, SyncError, SyncResult};
 pub use outline::{merge_outlines, Outline, OutlineEntry};
+pub use pipeline::{merge_three_way, pull_entity, MergeReport, SyncEntity};

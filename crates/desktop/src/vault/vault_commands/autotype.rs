@@ -173,7 +173,7 @@ pub fn vault_search_ciphers(
     let mut filtered: Vec<Cipher> = ciphers
         .into_iter()
         .filter(|c| {
-            if c.is_deleted {
+            if c.is_deleted > 0 {
                 return false;
             }
             // name 匹配

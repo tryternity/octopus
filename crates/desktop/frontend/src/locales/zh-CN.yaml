@@ -1087,6 +1087,10 @@ clipboard:
     text: 文本
     image: 图片
     file: 文件
+    queue: 队列
+  queue:
+    empty: 队列为空
+    clear: 清空队列
   saveImage:
     format: 格式
     quality: 质量

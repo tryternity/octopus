@@ -437,6 +437,36 @@ fn init_schema(conn: &Connection) -> Result<()> {
                      Run: rm ~/.octopus/octopus.db* (then restart app to rebuild)."
                 );
             }
+            59 => {
+                // v59→v60：vault_ciphers / vault_folders 的 is_deleted 从 bool（0/1）改为
+                // i64（0=活跃，>0=删除时刻 epoch 秒）。SQL 列类型本就是 INTEGER，bool 与 i64
+                // 存储一致——只需把存量的 is_deleted=1（软删态）刷新为当前 epoch 秒，让新的
+                // tombstone 语义生效（与 hotword_sets / clipboard_favorites 对齐）。
+                //
+                // active（is_deleted=0）行不动；软删（旧 is_deleted=1）行写当前 epoch。
+                // 纯数据迁移，无表结构变更，无破坏性。
+                let now_secs: i64 = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(1);
+                conn.execute(
+                    "UPDATE vault_ciphers SET is_deleted = ?1 WHERE is_deleted != 0",
+                    params![now_secs],
+                )
+                .context("迁移 v59→v60：vault_ciphers is_deleted→epoch")?;
+                let updated_ciphers = conn.changes();
+                conn.execute(
+                    "UPDATE vault_folders SET is_deleted = ?1 WHERE is_deleted != 0",
+                    params![now_secs],
+                )
+                .context("迁移 v59→v60：vault_folders is_deleted→epoch")?;
+                let updated_folders = conn.changes();
+                log::info!(
+                    "DB migrated v59→v60: vault is_deleted bool→i64 epoch（ciphers {} 行 / folders {} 行软删态刷新）",
+                    updated_ciphers,
+                    updated_folders
+                );
+            }
             _ => {
                 anyhow::bail!(
                     "DB schema version {} is outdated (current {}). \
@@ -457,12 +487,13 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
 /// 当前 schema 版本——db.sql 建出的库就是这个版本。
 /// 升 schema 时：改 db.sql + 改这个常量 + 改 db.sql 顶部注释。
+/// v60（2026-08-04）：vault_ciphers / vault_folders 的 is_deleted 从 bool 改 i64（0=活跃，>0=删除时刻 epoch 秒，tombstone）——与 hotword/clipboard 统一。
 /// v58（2026-08-02）：hotword_sets 加 set 级软删——is_deleted 存删除时刻 epoch 秒 + UNIQUE(name,is_deleted) 复合约束（建表复制法迁移）。
 /// v57（2026-08-01）：热词拆分单记录——hotword_words 表（每词一条，确定性 UUID v5 + 原始拼音 + 软删）+ hotword_sets DROP words_text 列。
 /// v56（2026-08-01）：方言规则 DB 化——fuzzy_dialect_rules 表 + 旧 fuzzy_dialect 开关迁移。
 /// v55（2026-08-01）：数据迁移——asr_correct 强制翻 true（让存量用户热词生效，无表结构变更）。
 /// v54（2026-07-30）：image_data 表移除 blob + image_type 列（原图改文件系统存储）。
-pub const CURRENT_SCHEMA_VERSION: u32 = 59;
+pub const CURRENT_SCHEMA_VERSION: u32 = 60;
 
 /// v28 迁移：为所有 source_type IN (0,1)（builtin+local）且 secret_key 为空的模型填充 manifest JSON。
 /// 按 domain 分发到 model_manifests 常量。
@@ -922,12 +953,86 @@ mod tests {
         let result = init_schema(&conn);
         assert!(
             result.is_err(),
-            "v54→v59 迁移应在 v58→v59 步骤 bail（破坏性变更），实际成功"
+            "v54→v60 迁移应在 v58→v59 步骤 bail（破坏性变更），实际成功"
         );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("breaking change"),
             "错误消息应含 'breaking change'，实际：{}", err_msg
+        );
+    }
+
+    /// v59→v60 迁移：vault_ciphers / vault_folders 的 is_deleted 从 bool（0/1）改 i64
+    ///（0=活跃，>0=删除时刻 epoch 秒）。存量软删行（is_deleted=1）应被刷成 epoch 秒，
+    /// active 行（is_deleted=0）不动。
+    #[test]
+    fn migrate_v59_to_v60_converts_vault_is_deleted_to_epoch() {
+        let conn = open_with_version(59, "true");
+        // 插入测试数据：1 active cipher + 1 soft-deleted cipher（旧 bool 语义 is_deleted=1），
+        // 同理 folder。
+        conn.execute(
+            "INSERT INTO vault_ciphers (id, atype, name, data, is_deleted)
+             VALUES ('c-active', 1, 'v1:n', 'v1:d', 0),
+                    ('c-deleted', 1, 'v1:n', 'v1:d', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO vault_folders (id, name, is_deleted)
+             VALUES ('f-active', 'v1:n', 0),
+                    ('f-deleted', 'v1:n', 1)",
+            [],
+        )
+        .unwrap();
+
+        init_schema(&conn).expect("v59→v60 迁移应成功（纯数据迁移，无破坏性）");
+
+        // 版本应升到 60
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 60);
+
+        // active 行 is_deleted 仍为 0
+        let active_c: i64 = conn
+            .query_row(
+                "SELECT is_deleted FROM vault_ciphers WHERE id='c-active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_c, 0, "active cipher 应保持 is_deleted=0");
+        let active_f: i64 = conn
+            .query_row(
+                "SELECT is_deleted FROM vault_folders WHERE id='f-active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_f, 0, "active folder 应保持 is_deleted=0");
+
+        // 软删行 is_deleted 应 >0（被刷成 epoch 秒，非字面量 1）
+        let deleted_c: i64 = conn
+            .query_row(
+                "SELECT is_deleted FROM vault_ciphers WHERE id='c-deleted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            deleted_c > 1,
+            "软删 cipher is_deleted 应被刷成 epoch 秒（>1），实际 {}",
+            deleted_c
+        );
+        let deleted_f: i64 = conn
+            .query_row(
+                "SELECT is_deleted FROM vault_folders WHERE id='f-deleted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            deleted_f > 1,
+            "软删 folder is_deleted 应被刷成 epoch 秒（>1），实际 {}",
+            deleted_f
         );
     }
 

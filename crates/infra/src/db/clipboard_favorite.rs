@@ -16,6 +16,14 @@ pub struct ClipboardFavorite {
     pub sync_md5: Option<String>,  // history 内容指纹（检测 history 行编辑）
 }
 
+/// clipboard favorite tombstone 保留时长（秒）——超期后 GC 硬删（防 DB + .sync 无限堆积）。
+///
+/// 对称 `HOTWORD_TOMBSTONE_RETENTION_SECS`（10 天）。clipboard 设 30 天——收藏是用户主动
+/// 收藏的内容，误删后悔窗口应比热词长。GC 触发：sync merge 入口（`merge_clipboard_favorites`
+/// 通过 `SyncEntity::purge_expired_tombstones`）按年龄过滤 + 硬删超期行。
+/// 详见 `2026-08-05-sync-entity-trait-unification-design.md` §7.2。
+pub const CLIPBOARD_TOMBSTONE_RETENTION_SECS: i64 = 30 * 86400;
+
 const COLS: &str = "history_id, is_deleted, updated_at, sync_md5";
 
 fn parse_favorite(row: &rusqlite::Row) -> rusqlite::Result<ClipboardFavorite> {
@@ -274,6 +282,59 @@ pub fn set_clipboard_is_favorite(id: &str, is_fav: bool) -> Result<()> {
     })
 }
 
+// ── tombstone GC（2026-08-05，对称 hotword GC）──软删 favorite 超期后硬删 ──
+
+/// 硬删超期 favorite tombstone——`is_deleted > 0` 且 `now - is_deleted > RETENTION`。
+///
+/// GC 范围：仅 favorite 行（`clipboard_history` 不动——history 行可能因其他原因保留）。
+/// 返回硬删的行数。`now_secs` 是当前 epoch 秒。
+///
+/// 对应 `.sync` 文件清理由调用方（`SyncEntity::purge_expired_tombstones`）负责——
+/// 本函数只管 DB，保持与 hotword `purge_expired_hotword_tombstones_at` 的职责对称
+/// （hotword 也是 DB GC，文件 GC 由 export 重建完成）。
+///
+/// 跨设备自洽：sync merge 按年龄过滤（pull 拒绝复活超期 tombstone），GC 后 export 不含
+/// 超期 tombstone → 对端 pull 时即使旧 outline 有也 skip → 收敛。
+pub fn purge_expired_clipboard_favorites(now_secs: i64) -> Result<usize> {
+    ensure_db()?;
+    with_db(|conn| purge_expired_clipboard_favorites_at(conn, now_secs))
+}
+
+/// 裸连接版（供测试直接调）。
+pub(crate) fn purge_expired_clipboard_favorites_at(
+    conn: &Connection,
+    now_secs: i64,
+) -> Result<usize> {
+    let cutoff = now_secs - CLIPBOARD_TOMBSTONE_RETENTION_SECS;
+    let n = conn.execute(
+        "DELETE FROM clipboard_favorites WHERE is_deleted > 0 AND is_deleted < ?1",
+        params![cutoff],
+    )?;
+    if n > 0 {
+        log::info!(
+            "[clipboard-gc] purged {} favorite tombstones (cutoff={})",
+            n,
+            cutoff
+        );
+    }
+    Ok(n)
+}
+
+/// 硬删单条 favorite（不限年龄）——GC 后清 .sync 文件时调用方按 id 删 DB + 文件。
+///
+/// 仅在 `SyncEntity::purge_expired_tombstones` 流程内调用（先 list 超期 id，再删 DB + 文件）。
+/// 生产代码不应直接调用——会丢失 tombstone 导致跨设备删除复活（除非已确认超期）。
+pub fn hard_delete_favorite(history_id: &str) -> Result<()> {
+    ensure_db()?;
+    with_db(|conn| {
+        conn.execute(
+            "DELETE FROM clipboard_favorites WHERE history_id = ?1",
+            params![history_id],
+        )?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,5 +440,71 @@ mod tests {
         set_sync_md5_at(&conn, "hist-5", "fingerprint").unwrap();
         let fav = load_favorite_at(&conn, "hist-5").unwrap().unwrap();
         assert_eq!(fav.sync_md5.as_deref(), Some("fingerprint"));
+    }
+
+    #[test]
+    fn purge_expired_deletes_old_tombstones_keeps_active() {
+        let conn = setup();
+        insert_history(&conn, "hist-gc-1");
+        insert_history(&conn, "hist-gc-2");
+        insert_history(&conn, "hist-gc-3");
+        // active（不应删）
+        insert_favorite_at(&conn, "hist-gc-1").unwrap();
+        // 近期 tombstone（未超期，不应删）
+        insert_favorite_at(&conn, "hist-gc-2").unwrap();
+        soft_delete_favorite_at(&conn, "hist-gc-2", 1_700_000_000).unwrap();
+        // 超期 tombstone（应删）——删除时刻比 now 早 31 天（> 30 天 retention）
+        insert_favorite_at(&conn, "hist-gc-3").unwrap();
+        let now = 1_700_000_000;
+        soft_delete_favorite_at(&conn, "hist-gc-3", now - 31 * 86400).unwrap();
+
+        let purged = purge_expired_clipboard_favorites_at(&conn, now).unwrap();
+        assert_eq!(purged, 1, "应只硬删 1 条超期 tombstone");
+
+        // active + 近期 tombstone 仍在
+        assert!(load_favorite_at(&conn, "hist-gc-1").unwrap().is_some());
+        assert!(load_favorite_at(&conn, "hist-gc-2").unwrap().is_some());
+        // 超期 tombstone 已删
+        assert!(load_favorite_at(&conn, "hist-gc-3").unwrap().is_none());
+    }
+
+    #[test]
+    fn purge_expired_boundary_not_expired() {
+        // now - deleted == retention（恰好等于）→ `>` 严格，不超期，不删
+        let conn = setup();
+        insert_history(&conn, "hist-bound");
+        insert_favorite_at(&conn, "hist-bound").unwrap();
+        let now = 1_700_000_000;
+        soft_delete_favorite_at(&conn, "hist-bound", now - CLIPBOARD_TOMBSTONE_RETENTION_SECS)
+            .unwrap();
+
+        let purged = purge_expired_clipboard_favorites_at(&conn, now).unwrap();
+        assert_eq!(purged, 0, "恰好等于 retention 不应删（严格 >）");
+        assert!(load_favorite_at(&conn, "hist-bound").unwrap().is_some());
+    }
+
+    #[test]
+    fn purge_expired_no_active_deleted() {
+        // 无 tombstone（全 active）→ purge 不报错，返 0
+        let conn = setup();
+        insert_history(&conn, "hist-active");
+        insert_favorite_at(&conn, "hist-active").unwrap();
+        let purged = purge_expired_clipboard_favorites_at(&conn, 1_700_000_000).unwrap();
+        assert_eq!(purged, 0);
+    }
+
+    #[test]
+    fn hard_delete_favorite_removes_row() {
+        let conn = setup();
+        insert_history(&conn, "hist-hd");
+        insert_favorite_at(&conn, "hist-hd").unwrap();
+        assert!(load_favorite_at(&conn, "hist-hd").unwrap().is_some());
+        // hard_delete_favorite_at（裸连接版，测试直接调）
+        conn.execute(
+            "DELETE FROM clipboard_favorites WHERE history_id = ?1",
+            params!["hist-hd"],
+        )
+        .unwrap();
+        assert!(load_favorite_at(&conn, "hist-hd").unwrap().is_none());
     }
 }

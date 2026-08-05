@@ -4,6 +4,17 @@ use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::{ClipboardHandle, ClipboardItem, QueryFilter};
 use crate::core::error_util::{e2s, e2s_ctx};
 
+/// 变更 clipboard DB 后广播 `clipboard://changed` 让浮窗 + 设置页同步刷新。
+/// 收敛 4 处 `with_db + map_err(e2s)? + emit` 同构命令（2026-08-05）。
+fn clipboard_mutate_and_broadcast<R>(
+    app_handle: &tauri::AppHandle,
+    op: impl FnOnce(&rusqlite::Connection) -> anyhow::Result<R>,
+) -> Result<R, String> {
+    let result = octopus_infra::db::with_db(op).map_err(e2s)?;
+    let _ = app_handle.emit("clipboard://changed", ());
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn query_clipboard_history(
     filter: String,
@@ -22,6 +33,22 @@ pub async fn query_clipboard_history(
                 size: size.max(1),
             };
             octopus_clipboard::store::query_history(conn, &qf)
+        })
+    })
+    .await
+    .map_err(|e| e2s_ctx("join error: {}", e))?
+    .map_err(e2s)
+}
+
+/// 按 id 查单条剪贴板历史（完整 ClipboardItem）。
+/// queue tab hover overlay 用：PasteStackItemDto 只携带 preview（前 50 字符），
+/// hover 详情需要完整 content/image/ASR → 按 history_id 查本体。
+/// 行不存在（已删）返 None，前端清 overlay。
+#[tauri::command]
+pub async fn get_clipboard_item(id: String) -> Result<Option<ClipboardItem>, String> {
+    tokio::task::spawn_blocking(move || {
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::get_item_by_id(conn, &id)
         })
     })
     .await
@@ -54,12 +81,9 @@ pub async fn delete_clipboard_item(
     id: String,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    octopus_infra::db::with_db(|conn| {
+    clipboard_mutate_and_broadcast(&app_handle, |conn| {
         octopus_clipboard::store::delete_item(conn, &id)
     })
-    .map_err(e2s)?;
-    let _ = app_handle.emit("clipboard://changed", ());
-    Ok(())
 }
 
 #[tauri::command]
@@ -67,12 +91,9 @@ pub async fn delete_clipboard_items(
     ids: Vec<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
-    let n = octopus_infra::db::with_db(|conn| {
+    clipboard_mutate_and_broadcast(&app_handle, |conn| {
         octopus_clipboard::store::delete_items(conn, &ids)
     })
-    .map_err(e2s)?;
-    let _ = app_handle.emit("clipboard://changed", ());
-    Ok(n)
 }
 
 #[tauri::command]
@@ -80,12 +101,9 @@ pub async fn clear_clipboard_history(
     keep_favorite: bool,
     app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
-    let n = octopus_infra::db::with_db(|conn| {
+    clipboard_mutate_and_broadcast(&app_handle, |conn| {
         octopus_clipboard::store::clear_history(conn, keep_favorite)
     })
-    .map_err(e2s)?;
-    let _ = app_handle.emit("clipboard://changed", ());
-    Ok(n)
 }
 
 /// 按当前 tab 类别（filter）批量清理非收藏条目。镜像 clear_clipboard_history，
@@ -96,12 +114,9 @@ pub async fn clear_clipboard_history_by_filter(
     keep_favorite: bool,
     app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
-    let n = octopus_infra::db::with_db(|conn| {
+    clipboard_mutate_and_broadcast(&app_handle, |conn| {
         octopus_clipboard::store::clear_history_by_filter(conn, &filter, keep_favorite)
     })
-    .map_err(e2s)?;
-    let _ = app_handle.emit("clipboard://changed", ());
-    Ok(n)
 }
 
 /// 按条目类型把内容写到系统剪贴板（copy / paste 共用）：
@@ -794,6 +809,63 @@ pub async fn paste_stack_status() -> Result<PasteStackStatus, String> {
 #[tauri::command]
 pub async fn clear_paste_stack() -> Result<(), String> {
     crate::clipboard::paste_stack::clear();
+    Ok(())
+}
+
+/// 队列 tab 单条目 DTO：与 paste_stack::PasteStackItem 字段一致，camelCase 序列化
+/// 给前端消费（history_id / itemType / preview）。From impl 把内部类型转成 IPC DTO。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasteStackItemDto {
+    pub history_id: String,
+    pub item_type: String,
+    pub preview: String,
+}
+impl From<crate::clipboard::paste_stack::PasteStackItem> for PasteStackItemDto {
+    fn from(item: crate::clipboard::paste_stack::PasteStackItem) -> Self {
+        Self {
+            history_id: item.history_id,
+            item_type: item.item_type,
+            preview: item.preview,
+        }
+    }
+}
+
+/// 队列 tab 列表数据：读取整个 paste stack（FIFO 顺序）。
+/// 前端切到「队列」tab 时 invoke 一次拿初始数据，后续靠
+/// `paste-stack://updated` 事件触发刷新（见 remove/move/clear/pop 各命令）。
+#[tauri::command]
+pub async fn peek_paste_stack() -> Result<Vec<PasteStackItemDto>, String> {
+    Ok(crate::clipboard::paste_stack::peek_all()
+        .into_iter()
+        .map(PasteStackItemDto::from)
+        .collect())
+}
+
+/// 删除队列指定位置条目（0 = 队首/下一个要弹出的）。
+/// emit `paste-stack://updated { remaining }` 让标题栏 badge + 队列 tab 同步刷新。
+#[tauri::command]
+pub async fn remove_from_paste_stack(
+    app_handle: tauri::AppHandle,
+    index: usize,
+) -> Result<(), String> {
+    crate::clipboard::paste_stack::remove_at(index).map_err(|e| e.to_string())?;
+    let (remaining, _) = crate::clipboard::paste_stack::status();
+    let _ = app_handle.emit("paste-stack://updated", remaining);
+    Ok(())
+}
+
+/// 拖拽重排：把 `from` 位置条目移到 `to` 位置。
+/// emit `paste-stack://updated { remaining }`（remaining 不变，仅作为前端刷新信号）。
+#[tauri::command]
+pub async fn move_paste_stack_item(
+    app_handle: tauri::AppHandle,
+    from: usize,
+    to: usize,
+) -> Result<(), String> {
+    crate::clipboard::paste_stack::move_item(from, to).map_err(|e| e.to_string())?;
+    let (remaining, _) = crate::clipboard::paste_stack::status();
+    let _ = app_handle.emit("paste-stack://updated", remaining);
     Ok(())
 }
 

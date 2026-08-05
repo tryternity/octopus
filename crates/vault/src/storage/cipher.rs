@@ -76,7 +76,7 @@ pub fn prepare_cipher_input(
         fields: enc.fields,
         password_history: enc.password_history,
         reprompt: input.reprompt.into(),
-        is_deleted: false, // 新建默认未软删（H2 修复）
+        is_deleted: 0,    // 新建默认未软删（H2 修复；v60：0=活跃）
         sync_md5: None,   // 下面算好填入
     };
     let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(&db_input);
@@ -106,7 +106,7 @@ pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()
         fields: enc.fields,
         password_history: enc.password_history,
         reprompt: input.reprompt.into(),
-        is_deleted: false, // 占位——事务内 load 后填实际值（见下）
+        is_deleted: 0,    // 占位——事务内 load 后填实际值（见下）
         sync_md5: None,
     };
     db::with_db(|conn| {
@@ -114,7 +114,7 @@ pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()
         // 事务内 load：读现有 is_deleted（H2 保留语义）
         let existing_is_deleted = load_vault_cipher_at(&tx, id)?
             .map(|row| row.is_deleted)
-            .unwrap_or(false);
+            .unwrap_or(0);
         let db_input = VaultCipherInput {
             is_deleted: existing_is_deleted, // 保留现有删除状态（H2 修复）
             ..db_input.clone()
@@ -133,10 +133,15 @@ pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()
 pub fn soft_delete(id: &str) -> Result<()> {
     db::with_db(|conn| {
         let tx = conn.unchecked_transaction()?;
-        // 1. UPDATE is_deleted = 1 + updated_at
+        // v60：is_deleted 存删除时刻 epoch 秒（与 hotword/clipboard tombstone 一致）。
+        let now_secs: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(1);
+        // 1. UPDATE is_deleted = epoch + updated_at
         tx.execute(
-            "UPDATE vault_ciphers SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?1",
-            params![id],
+            "UPDATE vault_ciphers SET is_deleted = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, now_secs],
         )?;
         // 2. 读完整 row（含新 is_deleted）算 md5
         let row = load_vault_cipher_at(&tx, id)?
@@ -275,11 +280,11 @@ mod tests {
         // 软删除 + 恢复
         soft_delete(id).expect("soft delete");
         let loaded3 = load_cipher(id, &key).expect("load").expect("should still exist (soft del)");
-        assert!(loaded3.is_deleted);
+        assert!(loaded3.is_deleted > 0);
 
         restore(id).expect("restore");
         let loaded4 = load_cipher(id, &key).expect("load").expect("should exist");
-        assert!(!loaded4.is_deleted);
+        assert_eq!(loaded4.is_deleted, 0);
 
         // 物理删除
         permanent_delete(id).expect("perm delete");
@@ -427,17 +432,17 @@ mod tests {
         // 软删
         soft_delete(id).expect("soft delete");
         let after_delete = load_cipher(id, &key).expect("load").expect("should exist");
-        assert!(after_delete.is_deleted, "软删后 is_deleted 应为 true");
+        assert!(after_delete.is_deleted > 0, "软删后 is_deleted 应 >0（tombstone）");
 
-        // 编辑保存——is_deleted 应保留（不被覆写成 false）
+        // 编辑保存——is_deleted 应保留（不被覆写成 0）
         let updated = sample_input("Edited");
         save_cipher(id, &updated, &key).expect("save after soft delete");
 
         let after_save = load_cipher(id, &key).expect("load").expect("should exist");
         assert_eq!(after_save.name, "Edited", "字段应更新");
         assert!(
-            after_save.is_deleted,
-            "H2+M-CIPHER-RMW: save_cipher 应保留软删状态，is_deleted 不应为 false（复活）"
+            after_save.is_deleted > 0,
+            "H2+M-CIPHER-RMW: save_cipher 应保留软删状态，is_deleted 不应为 0（复活）"
         );
     }
 
@@ -499,9 +504,9 @@ mod tests {
         create_cipher(id, &sample_input("ToDelete"), &key).expect("create");
 
         soft_delete(id).expect("soft delete");
-        // load 应仍能拿到（is_deleted=true）
+        // load 应仍能拿到（is_deleted>0 tombstone）
         let loaded = load_cipher(id, &key).expect("load").expect("should still exist");
-        assert!(loaded.is_deleted, "软删后 is_deleted 应为 true");
+        assert!(loaded.is_deleted > 0, "软删后 is_deleted 应 >0（tombstone）");
         // list 也仍能拿到（不过滤）
         let (all, _) = list_ciphers(&key).expect("list");
         assert!(all.iter().any(|c| c.id == id), "软删后 list 应仍包含该行");
@@ -529,8 +534,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            after_delete.is_deleted,
-            "is_deleted 应为 true"
+            after_delete.is_deleted > 0,
+            "is_deleted 应 >0（tombstone）"
         );
         assert_ne!(
             after_delete.sync_md5.as_deref().unwrap_or(""),
@@ -546,14 +551,14 @@ mod tests {
             "S1: sync_md5 应与 DB row 的实际 md5 一致（单事务原子性）"
         );
 
-        // restore 后 sync_md5 应回到接近初始值（is_deleted=false）
+        // restore 后 sync_md5 应回到接近初始值（is_deleted=0）
         restore(id).expect("restore");
         let after_restore = octopus_infra::db::load_vault_cipher(id)
             .unwrap()
             .unwrap();
-        assert!(
-            !after_restore.is_deleted,
-            "is_deleted 应回 false"
+        assert_eq!(
+            after_restore.is_deleted, 0,
+            "is_deleted 应回 0（活跃）"
         );
         // restore 后 md5 应与用 restored row 算的一致
         let restored_md5 = crate::sync::fingerprint::cipher_md5(&after_restore);
