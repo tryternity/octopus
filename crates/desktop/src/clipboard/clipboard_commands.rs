@@ -4,6 +4,17 @@ use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::{ClipboardHandle, ClipboardItem, QueryFilter};
 use crate::core::error_util::{e2s, e2s_ctx};
 
+/// 变更 clipboard DB 后广播 `clipboard://changed` 让浮窗 + 设置页同步刷新。
+/// 收敛 4 处 `with_db + map_err(e2s)? + emit` 同构命令（2026-08-05）。
+fn clipboard_mutate_and_broadcast<R>(
+    app_handle: &tauri::AppHandle,
+    op: impl FnOnce(&rusqlite::Connection) -> anyhow::Result<R>,
+) -> Result<R, String> {
+    let result = octopus_infra::db::with_db(op).map_err(e2s)?;
+    let _ = app_handle.emit("clipboard://changed", ());
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn query_clipboard_history(
     filter: String,
@@ -70,12 +81,9 @@ pub async fn delete_clipboard_item(
     id: String,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    octopus_infra::db::with_db(|conn| {
+    clipboard_mutate_and_broadcast(&app_handle, |conn| {
         octopus_clipboard::store::delete_item(conn, &id)
     })
-    .map_err(e2s)?;
-    let _ = app_handle.emit("clipboard://changed", ());
-    Ok(())
 }
 
 #[tauri::command]
@@ -83,12 +91,9 @@ pub async fn delete_clipboard_items(
     ids: Vec<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
-    let n = octopus_infra::db::with_db(|conn| {
+    clipboard_mutate_and_broadcast(&app_handle, |conn| {
         octopus_clipboard::store::delete_items(conn, &ids)
     })
-    .map_err(e2s)?;
-    let _ = app_handle.emit("clipboard://changed", ());
-    Ok(n)
 }
 
 #[tauri::command]
@@ -96,12 +101,9 @@ pub async fn clear_clipboard_history(
     keep_favorite: bool,
     app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
-    let n = octopus_infra::db::with_db(|conn| {
+    clipboard_mutate_and_broadcast(&app_handle, |conn| {
         octopus_clipboard::store::clear_history(conn, keep_favorite)
     })
-    .map_err(e2s)?;
-    let _ = app_handle.emit("clipboard://changed", ());
-    Ok(n)
 }
 
 /// 按当前 tab 类别（filter）批量清理非收藏条目。镜像 clear_clipboard_history，
@@ -112,12 +114,9 @@ pub async fn clear_clipboard_history_by_filter(
     keep_favorite: bool,
     app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
-    let n = octopus_infra::db::with_db(|conn| {
+    clipboard_mutate_and_broadcast(&app_handle, |conn| {
         octopus_clipboard::store::clear_history_by_filter(conn, &filter, keep_favorite)
     })
-    .map_err(e2s)?;
-    let _ = app_handle.emit("clipboard://changed", ());
-    Ok(n)
 }
 
 /// 按条目类型把内容写到系统剪贴板（copy / paste 共用）：

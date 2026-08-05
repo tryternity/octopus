@@ -31,7 +31,7 @@ pub fn find_matching_ciphers<'a>(
 ) -> Vec<&'a Cipher> {
     ciphers
         .iter()
-        .filter(|c| !c.is_deleted)
+        .filter(|c| c.is_deleted == 0)
         .filter(|c| matches_any_uri(url, c, equivalent_domains))
         .collect()
 }
@@ -154,7 +154,7 @@ mod tests {
             fields: vec![],
             password_history: vec![],
             reprompt: crate::types::RepromptType::None,
-            is_deleted: false,
+            is_deleted: 0,
             created_at: "2026-07-18".into(),
             updated_at: "2026-07-18".into(),
         }
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn test_skip_deleted_cipher() {
         let mut cipher = make_cipher(&[("https://example.com", None)]);
-        cipher.is_deleted = true;
+        cipher.is_deleted = 1_700_000_000; // tombstone epoch
         let url = Url::parse("https://example.com").unwrap();
         assert_eq!(
             find_matching_ciphers(&url, std::slice::from_ref(&cipher), &[]).len(),

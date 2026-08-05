@@ -179,7 +179,8 @@ pub struct Cipher {
     pub fields: Vec<Field>,
     pub password_history: Vec<PasswordHistoryEntry>,
     pub reprompt: RepromptType,
-    pub is_deleted: bool,
+    /// 软删标记（schema v60：i64，0=活跃，>0=删除时刻 epoch 秒 tombstone）。
+    pub is_deleted: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -393,7 +394,7 @@ mod tests {
             fields: enc.fields,
             password_history: enc.password_history,
             reprompt: 0,
-            is_deleted: false,
+            is_deleted: 0,
             sync_md5: None,
             created_at: "2026-07-18".into(),
             updated_at: "2026-07-18".into(),

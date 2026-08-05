@@ -17,7 +17,7 @@
 //!   （`crypto::util::base64_encode`，字符集 `A-Za-z0-9+/=`），严格不含 `|`
 //! - id / folder_id = UUID（含 `-`，不含 `|`）
 //! - favorite / atype / reprompt = bool / i64（纯数字）
-//! - is_deleted = bool（0/1，纯数字）
+//! - is_deleted = i64（0=活跃，>0=删除时刻 epoch 秒，纯数字）
 //!
 //! 字段顺序固定不可变；新增字段前必须确认其字符集不含 `|`，否则需改用
 //! 长度前缀分隔（`{len}|{value}` 重复）彻底消除歧义。回归测试见
@@ -50,7 +50,7 @@ pub fn cipher_md5(c: &VaultCipher) -> String {
         c.fields.as_deref().unwrap_or(""),
         c.password_history.as_deref().unwrap_or(""),
         c.reprompt,
-        c.is_deleted as u8,
+        c.is_deleted,
     );
     md5_hex(input.as_bytes())
 }
@@ -94,18 +94,18 @@ pub fn cipher_md5_from_input(input: &VaultCipherInput) -> String {
 ///
 /// 拼接字段顺序：`id | name | sort_order | is_deleted`
 pub fn folder_md5(f: &VaultFolder) -> String {
-    let input = format!("{}|{}|{}|{}", f.id, f.name, f.sort_order, f.is_deleted as u8);
+    let input = format!("{}|{}|{}|{}", f.id, f.name, f.sort_order, f.is_deleted);
     md5_hex(input.as_bytes())
 }
 
 /// 从 folder 基本字段算 md5（用于 insert/rename 时填 sync_md5）。
 ///
-/// folder 新建时 sort_order=0（默认）、is_deleted=false，与 row 读出一致。
+/// folder 新建时 sort_order=0（默认）、is_deleted=0，与 row 读出一致。
 /// 第八轮 P0：新增 is_deleted 参数——pull 路径需用文件中的真实 is_deleted 值算 md5，
 /// 不能硬编码 0（否则软删 folder pull 后 md5 不匹配 → sync 持续噪声 + is_deleted 丢失）。
-/// 对称 cipher_md5_from_input 的 is_deleted as u8。
-pub fn folder_md5_from_fields(id: &str, name: &str, sort_order: i64, is_deleted: bool) -> String {
-    let s = format!("{}|{}|{}|{}", id, name, sort_order, is_deleted as u8);
+/// v60：is_deleted 改 i64（0=活跃，>0=tombstone epoch），对称 cipher_md5 的 i64 直接拼接。
+pub fn folder_md5_from_fields(id: &str, name: &str, sort_order: i64, is_deleted: i64) -> String {
+    let s = format!("{}|{}|{}|{}", id, name, sort_order, is_deleted);
     md5_hex(s.as_bytes())
 }
 
@@ -125,7 +125,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: false,
+            is_deleted: 0,
             created_at: "2026-07-21 10:00:00".into(),
             updated_at: "2026-07-21 10:00:00".into(),
             sync_md5: None,
@@ -171,7 +171,7 @@ mod tests {
         c.fields = None;
         c.password_history = None;
         c.folder_id = None;
-        c.is_deleted = false;
+        c.is_deleted = 0;
         let md5_none = cipher_md5(&c);
 
         // 改回空字符串——md5 应仍相同（None 和 "" 视为等价）
@@ -186,7 +186,7 @@ mod tests {
             id: "f1".into(),
             name: "v1:name-a".into(),
             sort_order: 0,
-            is_deleted: false,
+            is_deleted: 0,
             created_at: "2026-07-21 10:00:00".into(),
             updated_at: "2026-07-21 10:00:00".into(),
             sync_md5: None,
@@ -199,9 +199,9 @@ mod tests {
         f3.sort_order = 1;
         assert_ne!(folder_md5(&f1), folder_md5(&f3));
 
-        // is_deleted 变化也应导致 md5 变化（软删传播）
+        // is_deleted 变化也应导致 md5 变化（软删传播）——v60 用 epoch 秒标记 tombstone
         let mut f4 = f1.clone();
-        f4.is_deleted = true;
+        f4.is_deleted = 1_700_000_000; // tombstone epoch
         assert_ne!(folder_md5(&f1), folder_md5(&f4));
     }
 
@@ -211,7 +211,7 @@ mod tests {
             id: "f1".into(),
             name: "v1:name".into(),
             sort_order: 0,
-            is_deleted: false,
+            is_deleted: 0,
             created_at: "2026-07-21 10:00:00".into(),
             updated_at: "2026-07-21 10:00:00".into(),
             sync_md5: None,
@@ -247,10 +247,11 @@ mod tests {
 
         // is_deleted 是末尾字段（紧邻 reprompt 数字字段）——
         // 验证它与相邻 reprompt 不会因分隔符产生歧义。
+        // v60：is_deleted 是 i64（0=活跃，>0=tombstone epoch）。
         let mut c3 = base.clone();
-        c3.is_deleted = false;
+        c3.is_deleted = 0;
         let mut c4 = base.clone();
-        c4.is_deleted = true;
+        c4.is_deleted = 1_700_000_000; // tombstone epoch
         assert_ne!(
             cipher_md5(&c3),
             cipher_md5(&c4),
@@ -272,7 +273,7 @@ mod tests {
             id: "folder-1".into(),
             name: "v1:YWJjZA==".into(), // base64，无 |
             sort_order: 0,
-            is_deleted: false,
+            is_deleted: 0,
             created_at: "2026-07-26".into(),
             updated_at: "2026-07-26".into(),
             sync_md5: None,

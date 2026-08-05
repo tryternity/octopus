@@ -105,6 +105,7 @@ pub struct PasteStackStatus {
 - 选中 ≥1 条时显示「入栈」按钮（浮动在列表底部或工具栏）
 - 点击 → `invoke("push_to_paste_stack", { ids: selectedIds })` → toast `已入栈 N 条`
 - 入栈后清空多选
+- **入栈后自动切到队列 tab**（`setFilter("queue")`）——2026-08-05 用户反馈，入栈后立即聚焦到队列 tab 看入栈结果
 
 ### 4.3 栈状态指示
 

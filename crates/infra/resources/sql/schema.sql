@@ -330,7 +330,7 @@ CREATE TABLE IF NOT EXISTS vault_ciphers (
     sync_md5            TEXT,                            -- md5 内容指纹（增量同步 diff，详见 vault::sync::fingerprint）
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
-    is_deleted          INTEGER NOT NULL DEFAULT 0,      -- 软删除（0=活跃，1=回收站）
+    is_deleted          INTEGER NOT NULL DEFAULT 0,      -- 软删除（v60：0=活跃，>0=删除时刻 epoch 秒 tombstone，与 hotword/clipboard 一致）
     FOREIGN KEY (folder_id) REFERENCES vault_folders(id) ON DELETE SET NULL
 );
 
@@ -345,7 +345,7 @@ CREATE TABLE IF NOT EXISTS vault_folders (
     sync_md5    TEXT,                             -- md5 内容指纹（增量同步 diff）
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    is_deleted  INTEGER NOT NULL DEFAULT 0      -- 软删除（0=活跃，1=回收站）
+    is_deleted  INTEGER NOT NULL DEFAULT 0      -- 软删除（v60：0=活跃，>0=删除时刻 epoch 秒 tombstone）
 );
 
 CREATE INDEX IF NOT EXISTS idx_vault_folders_active

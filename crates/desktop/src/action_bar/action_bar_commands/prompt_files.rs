@@ -108,7 +108,9 @@ pub fn open_file_in_editor(name: String, category: String, app: AppHandle) -> Re
 
     let window_label = crate::commands::compact_editor_window::WINDOW_LABEL;
     let payload = serde_json::json!({
-        "itemId": item_id,
+        // 第十九轮 P2-1：itemId 必须 string——前端 tab.itemId.slice(-5) 对 number 会
+        // TypeError → React 子树崩溃 → CompactEditor 白屏。:122 pending 路径已用 to_string()。
+        "itemId": item_id.to_string(),
         "source": "file",
         "text": text,
         "filePath": path_str,
