@@ -763,3 +763,136 @@ pub async fn save_image_dialog(
     .await
     .map_err(e2s)?
 }
+
+// ── 粘贴队列（Paste Stack）────────────────────────────────────────────
+// 设计见 docs/superpowers/specs/2026-08-05-paste-stack-design.md。
+// 内存 VecDeque（不持久化），FIFO 出栈。前端多选 → 入栈 → 切到目标 app →
+// Cmd+Shift+V 全局热键逐条弹出粘贴。
+
+/// 粘贴队列状态：剩余条数 + 下一条（栈底）内容预览（前 30 字符 + 省略号）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasteStackStatus {
+    pub remaining: usize,
+    pub next_preview: Option<String>,
+}
+
+/// 入栈：按传入顺序追加 history_id。返回栈大小（用于前端 toast「已入栈 N 条」）。
+#[tauri::command]
+pub async fn push_to_paste_stack(ids: Vec<String>) -> Result<usize, String> {
+    Ok(crate::clipboard::paste_stack::push(ids))
+}
+
+/// 查询栈状态（剩余 + 下一条预览）。前端 mount 时 poll 一次拿初始值。
+#[tauri::command]
+pub async fn paste_stack_status() -> Result<PasteStackStatus, String> {
+    let (remaining, next_preview) = crate::clipboard::paste_stack::status();
+    Ok(PasteStackStatus { remaining, next_preview })
+}
+
+/// 清空栈。
+#[tauri::command]
+pub async fn clear_paste_stack() -> Result<(), String> {
+    crate::clipboard::paste_stack::clear();
+    Ok(())
+}
+
+/// 弹出栈底 → 写剪贴板 → 恢复焦点 → 模拟 Cmd+V。
+///
+/// 与 `paste_clipboard_item`（id 来自前端参数）几乎同流程，区别：
+/// - id 来自 paste_stack::pop()（FIFO）；栈空返 `Ok(false)` 不发 Cmd+V。
+/// - 不 hide 剪贴板窗口——用户已切到目标 app（窗口此刻多半已隐藏 / docked）。
+/// - emit `paste-stack://updated { remaining }` 让前端实时刷新栈计数。
+///
+/// 返回值：`true`=成功弹出并粘贴；`false`=栈空或 DB 行不存在（不发 Cmd+V，防误粘贴残留内容）。
+#[tauri::command]
+pub async fn pop_and_paste(
+    app_handle: tauri::AppHandle,
+    handle: State<'_, Arc<ClipboardHandle>>,
+    focus: State<'_, Arc<crate::platform::focus_tracker::FocusTracker>>,
+) -> Result<bool, String> {
+    Ok(do_pop_and_paste(
+        app_handle,
+        handle.inner().clone(),
+        focus.inner().clone(),
+    ))
+}
+
+/// `pop_and_paste` 命令与粘贴队列热键共享的核心逻辑。
+///
+/// 抽出独立函数的原因：热键回调（`register_paste_stack_shortcut`）拿不到 Tauri 的
+/// `State<'_>` 注入（回调签名是 `FnMut(&AppHandle, &Shortcut, &Event)`），但能从
+/// `app.try_state` 取已 manage 的 `Arc<ClipboardHandle>` / `Arc<FocusTracker>`。
+/// 命令与热键都需要「弹栈 → 读 DB → 写剪贴板 → sleep → 还焦点 → 模拟粘贴」的相同流程，
+/// 统一在此实现避免分叉。
+///
+/// 流程：
+/// 1. `paste_stack::pop()` 拿栈底 id（FIFO）；栈空返 false。
+/// 2. 按 id 读 DB 条目；不存在则 emit 刷新计数后返 false。
+/// 3. 后台线程：写剪贴板 → emit `paste-stack://updated` → sleep 300ms → 还焦点 → 模拟 Cmd+V。
+///
+/// 返回 `true` 表示已弹出（粘贴异步进行）；`false` 表示栈空或 DB 行不存在（未动剪贴板）。
+pub(crate) fn do_pop_and_paste(
+    app_handle: tauri::AppHandle,
+    handle: Arc<ClipboardHandle>,
+    focus: Arc<crate::platform::focus_tracker::FocusTracker>,
+) -> bool {
+    // 1. 弹出栈底 history_id（FIFO）；栈空返 false 不动剪贴板。
+    let id = match crate::clipboard::paste_stack::pop() {
+        Some(id) => id,
+        None => return false,
+    };
+
+    // 2. 从 DB 按 id 读条目内容（O(1) rowid 查找）。
+    let item = match octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::get_item_by_id(conn, &id)
+    }) {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            // DB 行不存在（已删）：通知前端刷新计数后退出。
+            let (remaining, _) = crate::clipboard::paste_stack::status();
+            let _ = app_handle.emit("paste-stack://updated", remaining);
+            return false;
+        }
+        Err(e) => {
+            log::warn!("[paste-stack] 读 DB 失败，跳过粘贴：{}", e);
+            // 出错时也通知前端刷新（避免计数与实际栈不同步）。
+            let (remaining, _) = crate::clipboard::paste_stack::status();
+            let _ = app_handle.emit("paste-stack://updated", remaining);
+            return false;
+        }
+    };
+
+    // 3. 后台线程完成「写剪贴板 → 等焦点稳定 → 还焦点 → 模拟 Cmd+V」。
+    // 与 paste_clipboard_item 同模式：图片解码/PNG 编码 + 剪贴板写入 CPU/IO 密集，
+    // 不能阻塞调用方（热键回调在主线程 / 命令在 Tokio worker）；且 simulate_paste 前
+    // 需 sleep 等焦点稳定，全程放后台线程。
+    let app_clone = app_handle.clone();
+    std::thread::spawn(move || {
+        // 写剪贴板（按类型：文本/图片/文件）。失败跳过粘贴——防误粘贴剪贴板残留内容
+        // （可能是密码/token）。
+        match write_item_to_clipboard(&handle, &item) {
+            Ok(()) => {}
+            Err(e) => {
+                log::warn!("[paste-stack] 写剪贴板失败，跳过粘贴（防误粘贴残留内容）：{}", e);
+                // 写失败时仍通知前端刷新（id 已弹，计数应减 1）。
+                let (remaining, _) = crate::clipboard::paste_stack::status();
+                let _ = app_clone.emit("paste-stack://updated", remaining);
+                return;
+            }
+        }
+
+        // 通知前端栈已弹出，刷新计数。
+        let (remaining, _) = crate::clipboard::paste_stack::status();
+        let _ = app_clone.emit("paste-stack://updated", remaining);
+
+        // 等剪贴板写入落地（与 paste_clipboard_item 同 300ms）。
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // 还焦点给目标 app（用户已切走，但 osascript restore 兜底）+ 模拟 Cmd+V。
+        focus.restore_focus();
+        focus.simulate_paste();
+    });
+
+    true
+}

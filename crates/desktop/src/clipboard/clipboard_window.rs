@@ -263,6 +263,49 @@ pub fn register_clipboard_shortcut(
     Ok(())
 }
 
+/// 注册粘贴队列出栈热键（默认 Cmd+Shift+V）。与 register_clipboard_shortcut 范式一致，
+/// 只是触发动作变成 pop_and_paste：弹出栈底 → 写剪贴板 → 模拟 Cmd+V。
+///
+/// 热键回调拿到的是 `&AppHandle`，ClipboardHandle / FocusTracker 通过 `try_state` 取
+/// （managed state 在 setup/init_input 注册）。无状态时降级跳过（启动竞态：热键已注册
+/// 但 state 未 manage）。
+pub fn register_paste_stack_shortcut(
+    app: &tauri::AppHandle,
+    shortcut_str: &str,
+) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+    let shortcut: Shortcut = shortcut_str
+        .parse()
+        .map_err(|e| format!("Failed to parse paste-stack shortcut '{}': {}", shortcut_str, e))?;
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |app, _scut, event| {
+            if event.state() == ShortcutState::Pressed {
+                // 取 managed state：ClipboardHandle（init_clipboard manage）+ FocusTracker（init_input manage）。
+                // 任一缺失（启动竞态 / 配置异常）→ log 后跳过，避免热键卡死。
+                let Some(handle) = app.try_state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>()
+                    else {
+                        log::warn!("[paste-stack] ClipboardHandle 未注册，跳过出栈");
+                        return;
+                    };
+                let Some(focus) = app.try_state::<std::sync::Arc<crate::platform::focus_tracker::FocusTracker>>()
+                    else {
+                        log::warn!("[paste-stack] FocusTracker 未注册，跳过出栈");
+                        return;
+                    };
+                // 复用 clipboard_commands::do_pop_and_paste 的核心逻辑（pop + DB 读 +
+                // 写剪贴板 + emit + sleep + 模拟 Cmd+V）。热键回调同步执行——直接调内部
+                // 辅助而非 Tauri 命令层（后者是 async + State 注入，热键回调里不便走）。
+                crate::clipboard::clipboard_commands::do_pop_and_paste(
+                    app.clone(),
+                    handle.inner().clone(),
+                    focus.inner().clone(),
+                );
+            }
+        })
+        .map_err(|e| format!("Failed to register paste-stack shortcut '{}': {}", shortcut_str, e))?;
+    Ok(())
+}
+
 pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let visible = window.is_visible().unwrap_or(false);

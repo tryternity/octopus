@@ -147,6 +147,17 @@ pub fn capture_single_monitor(mon_x: i32, mon_y: i32) -> Result<ScreenCapture> {
     })
 }
 
+/// clamp 矩形坐标到 [0, full_w]×[0, full_h] 范围内（3 个裁剪函数共用）。
+/// 返回 (x, y, w, h)——均保证 x+w ≤ full_w、y+h ≤ full_h、x/y < full_w/full_h。
+/// 2026-08-05 抽取：消除 crop_region / crop_region_rgba / crop_region_rgba_direct 的 clamp 重复。
+fn clamp_rect(full_w: u32, full_h: u32, x: u32, y: u32, w: u32, h: u32) -> (u32, u32, u32, u32) {
+    let x = x.min(full_w.saturating_sub(1));
+    let y = y.min(full_h.saturating_sub(1));
+    let w = w.min(full_w - x);
+    let h = h.min(full_h - y);
+    (x, y, w, h)
+}
+
 /// 从全屏 RGBA 中裁剪矩形区域，返回 PNG bytes。
 /// 坐标为物理像素。
 ///
@@ -164,10 +175,7 @@ pub fn crop_region(
         ::image::RgbaImage::from_raw(full.width, full.height, full.rgba_bytes.clone())
             .context("Failed to create RgbaImage from full screen")?;
 
-    let x = x.min(full.width.saturating_sub(1));
-    let y = y.min(full.height.saturating_sub(1));
-    let w = w.min(full.width - x);
-    let h = h.min(full.height - y);
+    let (x, y, w, h) = clamp_rect(full.width, full.height, x, y, w, h);
 
     let cropped = ::image::imageops::crop_imm(&img, x, y, w, h).to_image();
 
@@ -196,10 +204,7 @@ pub fn crop_region_rgba(
         ::image::RgbaImage::from_raw(full.width, full.height, full.rgba_bytes.clone())
             .context("Failed to create RgbaImage from full screen")?;
 
-    let x = x.min(full.width.saturating_sub(1));
-    let y = y.min(full.height.saturating_sub(1));
-    let w = w.min(full.width - x);
-    let h = h.min(full.height - y);
+    let (x, y, w, h) = clamp_rect(full.width, full.height, x, y, w, h);
 
     Ok(::image::imageops::crop_imm(&img, x, y, w, h).to_image())
 }
@@ -224,10 +229,8 @@ pub fn crop_region_rgba_direct(
         );
     }
 
-    let x = x.min(full_width.saturating_sub(1)) as usize;
-    let y = y.min(full_height.saturating_sub(1)) as usize;
-    let w = w.min(full_width - x as u32) as usize;
-    let h = h.min(full_height - y as u32) as usize;
+    let (x, y, w, h) = clamp_rect(full_width, full_height, x, y, w, h);
+    let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
 
     let mut cropped_bytes = vec![0u8; w * h * 4];
     let full_width_usize = full_width as usize;
