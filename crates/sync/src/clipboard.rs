@@ -433,17 +433,19 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
     std::fs::create_dir_all(&clip_dir)
         .with_context(|| format!("创建 clipboard 目录失败：{}", clip_dir.display()))?;
 
-    // 清空 favorites/ 子目录（含分片子目录），保留 clipboard.key + outline.json
+    // 第二十三轮 P2-sync1（方案 B 先写后清孤儿）：原实现 remove_dir_all(fav_dir) + 重建，
+    // remove→create 间崩溃 → 残破工作区（目录被删空，git 捕获删除传播对端）。现改为只
+    // ensure fav_dir 存在（create_dir_all 幂等），写完所有文件后清孤儿（见末尾）。
+    // 任何时刻崩溃：要么旧文件还在（写未开始/部分），要么新文件已写入（孤儿残留，
+    // 下次 export 清）。永不存在「目录被删空」状态。
     let fav_dir = favorites_dir()?;
-    if fav_dir.is_dir() {
-        std::fs::remove_dir_all(&fav_dir)
-            .with_context(|| format!("清空 favorites/ 失败：{}", fav_dir.display()))?;
-    }
     std::fs::create_dir_all(&fav_dir)
-        .with_context(|| format!("重建 favorites/ 失败：{}", fav_dir.display()))?;
+        .with_context(|| format!("创建 favorites 目录失败：{}", fav_dir.display()))?;
 
-    // 每个 favorite 写文件 + 进 outline
+    // 每个 favorite 写文件 + 进 outline + 收集 keep_keys（含 active + tombstone，
+    // 两者都写文件，都需保留，孤儿清理时以此判定）
     let mut entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
+    let mut keep_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for fav in &favs {
         if fav.is_deleted > 0 {
             // tombstone——不需要 payload（内容已无意义，pull 方只看 is_deleted）。
@@ -508,7 +510,13 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
                 },
             );
         }
+        keep_keys.insert(fav.history_id.clone());
     }
+
+    // 清孤儿：扫 favorites/<2hex>/*.json，删 stem 不在 keep_keys 的文件（DB 已删/未导出
+    // 但文件残留）。孤儿不影响 merge pull（pull 按 outline 走），但会让 git 历史堆积 +
+    // 浪费磁盘。删除失败不阻断（best-effort，下次 export 再清）。
+    cleanup_orphan_favorite_files(&keep_keys)?;
 
     let outline = ClipboardOutline {
         version: 1,
@@ -516,6 +524,53 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
     };
     write_clipboard_outline(&outline)?;
     Ok(outline)
+}
+
+/// 第二十三轮 P2-sync1（方案 B）：清理 favorites/ 目录中不在 keep_keys 的孤儿 .json 文件。
+///
+/// `favorites/` 下是 `<2hex>/<uuid>.json` 两级分片结构。遍历所有分片子目录，删 stem
+/// 不在 keep_keys 的 .json 文件。非 .json 文件跳过（防御）。
+///
+/// 孤儿产生场景：① DB 删除 favorite 后未 export（下次 export 本函数清）；② 上次 export
+/// 写入新文件后崩溃，旧文件残留（自愈）。孤儿不影响正确性——merge pull 按 outline 走，
+/// 孤儿不在 outline 不会被 pull；outline 用 write_atomically 最后写，崩溃后要么旧
+/// （自愈）要么新（与文件一致）。
+fn cleanup_orphan_favorite_files(keep_keys: &std::collections::HashSet<String>) -> Result<()> {
+    let fav_dir = favorites_dir()?;
+    if !fav_dir.is_dir() {
+        return Ok(());
+    }
+    for shard_entry in std::fs::read_dir(&fav_dir)
+        .with_context(|| format!("读 favorites 目录失败：{}", fav_dir.display()))?
+    {
+        let shard_path = shard_entry?.path();
+        if !shard_path.is_dir() {
+            continue; // 非目录（如意外文件）跳过
+        }
+        for file_entry in std::fs::read_dir(&shard_path)
+            .with_context(|| format!("读分片目录失败：{}", shard_path.display()))?
+        {
+            let file_path = file_entry?.path();
+            // 只处理 .json 文件（防御：跳过 .tmp 等其他文件）
+            if file_path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            // 提取 uuid（文件名去 .json）——不在 keep_keys 即孤儿
+            if let Some(stem) = file_path.file_stem().and_then(|s| s.to_str()) {
+                if !keep_keys.contains(stem) {
+                    // 孤儿——删除失败 log warn 不阻断（best-effort）
+                    if let Err(e) = std::fs::remove_file(&file_path) {
+                        log::warn!(
+                            "[sync] 清孤儿 favorite 文件失败 {}：{}",
+                            file_path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // === Task 7: 双向 merge（DB ↔ .sync 文件）===
@@ -1381,5 +1436,42 @@ mod tests {
             "🔴 文件应保持 tombstone（不被本地 active 覆盖），实际 is_deleted={}",
             file.is_deleted
         );
+    }
+
+    /// 第二十三轮 P2-sync1（方案 B）回归：cleanup_orphan_favorite_files 清理孤儿。
+    ///
+    /// 手造一个 keep_keys + 分片子目录里塞孤儿 .json + 合法 .json → cleanup 后孤儿删除、
+    /// 合法保留。验证「先写后清孤儿」方案：新文件已写入后，旧的/残留的被清。
+    #[test]
+    fn cleanup_orphan_favorite_files_removes_stale_keeps_valid() {
+        let _guard = SyncRootGuard::new();
+        let fav_dir = favorites_dir().unwrap();
+        // 模拟 3 个文件：keep1（保留）、keep2（保留）、orphan（删除）
+        let keep_keys: std::collections::HashSet<String> =
+            ["keep1", "keep2"].iter().map(|s| s.to_string()).collect();
+        // 分片子目录（用 shard_dir 拿 <2hex>）
+        let shard1 = fav_dir.join(shard_dir("keep1"));
+        std::fs::create_dir_all(&shard1).unwrap();
+        std::fs::write(shard1.join("keep1.json"), "{}").unwrap();
+        std::fs::write(shard1.join("orphan.json"), "{}").unwrap(); // 同分片孤儿
+        let shard2 = fav_dir.join(shard_dir("keep2"));
+        std::fs::create_dir_all(&shard2).unwrap();
+        std::fs::write(shard2.join("keep2.json"), "{}").unwrap();
+
+        cleanup_orphan_favorite_files(&keep_keys).unwrap();
+
+        // keep1/keep2 保留，orphan 删除
+        assert!(shard1.join("keep1.json").exists(), "keep1 应保留");
+        assert!(shard2.join("keep2.json").exists(), "keep2 应保留");
+        assert!(!shard1.join("orphan.json").exists(), "orphan 应被清理");
+    }
+
+    /// 第二十三轮 P2-sync1（方案 B）回归：cleanup 对空目录/不存在目录不报错（幂等）。
+    #[test]
+    fn cleanup_orphan_favorite_files_empty_dir_ok() {
+        let _guard = SyncRootGuard::new();
+        // favorites/ 不存在——cleanup 应 Ok（不报错）
+        let keep_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        assert!(cleanup_orphan_favorite_files(&keep_keys).is_ok());
     }
 }

@@ -522,23 +522,24 @@ pub fn export_all_to_files(
     std::fs::create_dir_all(&root)
         .with_context(|| format!("创建 vault 目录失败：{}", root.display()))?;
 
-    // 1. 清空 ciphers/ 和 folders/（保留 .git/ + meta.json + outline.json）
+    // 第二十三轮 P2-sync1（方案 B 先写后清孤儿）：原实现 :528-533 remove_dir_all(ciphers/
+    // 和 folders/)后重建——remove 后崩溃致残破（目录被删空，git 捕获删除传播对端）。现改
+    // 为只 ensure 目录存在（create_dir_all 幂等），写完所有文件后清孤儿（见末尾）。
+    // 任何时刻崩溃：要么旧文件还在（写未开始/部分），要么新文件已写入（孤儿残留，下次
+    // export 清）。永不存在「目录被删空」状态。
     let ciphers_dir = root.join("ciphers");
     let folders_dir = root.join("folders");
-    if ciphers_dir.exists() {
-        std::fs::remove_dir_all(&ciphers_dir).context("清空 ciphers/ 失败")?;
-    }
-    if folders_dir.exists() {
-        std::fs::remove_dir_all(&folders_dir).context("清空 folders/ 失败")?;
-    }
+    std::fs::create_dir_all(&ciphers_dir).context("创建 ciphers/ 失败")?;
+    std::fs::create_dir_all(&folders_dir).context("创建 folders/ 失败")?;
 
-    // 2. 写 meta.json
+    // 写 meta.json
     let meta_file = MetaFile::from_vault_meta(meta);
     write_meta_file(&meta_file)?;
 
-    // 3. 写所有 cipher / folder 文件 + 收集 (uuid, md5)
+    // 写所有 cipher / folder 文件 + 收集 (uuid, md5) + keep_ids
     // BTreeMap 保证 outline.json 序列化顺序稳定（避免每次 sync 产生空 commit）
     let mut cipher_entries: std::collections::BTreeMap<String, OutlineEntry> = std::collections::BTreeMap::new();
+    let mut keep_cipher_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for c in ciphers {
         write_cipher_file(c)?;
         // md5 从 cipher.sync_md5 取（写命令时算好），fallback 临时算
@@ -550,9 +551,11 @@ pub fn export_all_to_files(
                 updated_ms: sync_store::iso_to_unix_ms(&c.updated_at),
             },
         );
+        keep_cipher_ids.insert(c.id.clone());
     }
 
     let mut folder_entries: std::collections::BTreeMap<String, OutlineEntry> = std::collections::BTreeMap::new();
+    let mut keep_folder_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for f in folders {
         write_folder_file(f)?;
         let md5 = f.sync_md5.clone().unwrap_or_else(|| crate::sync::fingerprint::folder_md5(f));
@@ -563,9 +566,16 @@ pub fn export_all_to_files(
                 updated_ms: sync_store::iso_to_unix_ms(&f.updated_at),
             },
         );
+        keep_folder_ids.insert(f.id.clone());
     }
 
-    // 4. 写 outline.json
+    // 清孤儿：ciphers/ 和 folders/ 都是 <2hex>/<uuid>.json 两级分片。扫分片子目录，
+    // 删 stem 不在 keep_ids 的 .json 文件。孤儿产生：① DB 删除后未 export（下次清）；
+    // ② 上次 export 写新文件后崩溃旧文件残留（自愈）。删除失败 best-effort。
+    cleanup_orphan_files(&ciphers_dir, &keep_cipher_ids, "cipher")?;
+    cleanup_orphan_files(&folders_dir, &keep_folder_ids, "folder")?;
+
+    // 写 outline.json
     let outline = Outline {
         version: 1,
         vault_version: 1, // 首次导出从 1 开始
@@ -575,6 +585,49 @@ pub fn export_all_to_files(
     write_outline_file(&outline)?;
 
     Ok(outline)
+}
+
+/// 第二十三轮 P2-sync1（方案 B）：清理分片子目录中不在 keep_ids 的孤儿 .json 文件。
+///
+/// vault 的 cipher/folder 都是 `<entity_dir>/<2hex>/<uuid>.json` 两级分片。遍历所有
+/// 分片子目录，删 stem 不在 keep_ids 的 .json。`label` 仅日志用（"cipher"/"folder"）。
+fn cleanup_orphan_files(
+    entity_dir: &std::path::Path,
+    keep_ids: &std::collections::HashSet<String>,
+    label: &str,
+) -> Result<()> {
+    if !entity_dir.is_dir() {
+        return Ok(());
+    }
+    for shard_entry in std::fs::read_dir(entity_dir)
+        .with_context(|| format!("读 {} 目录失败：{}", label, entity_dir.display()))?
+    {
+        let shard_path = shard_entry?.path();
+        if !shard_path.is_dir() {
+            continue;
+        }
+        for file_entry in std::fs::read_dir(&shard_path)
+            .with_context(|| format!("读分片目录失败：{}", shard_path.display()))?
+        {
+            let file_path = file_entry?.path();
+            if file_path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(stem) = file_path.file_stem().and_then(|s| s.to_str()) {
+                if !keep_ids.contains(stem) {
+                    if let Err(e) = std::fs::remove_file(&file_path) {
+                        log::warn!(
+                            "[vault-sync] 清孤儿 {} 文件失败 {}：{}",
+                            label,
+                            file_path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 增量导出——sync_now 用，只写真正变化的文件（不清空目录）。
@@ -1296,5 +1349,52 @@ mod tests {
             outline2.vault_version, 1,
             "无变化时 vault_version 不应递增（用户反馈：每次同步都 +1 是 bug）"
         );
+    }
+
+    /// 第二十三轮 P2-sync1（方案 B）回归：cleanup_orphan_files 清理 cipher 孤儿。
+    #[test]
+    fn cleanup_orphan_files_removes_stale_cipher() {
+        let _guard = VaultRootGuard::new();
+        let root = vault_root();
+        let ciphers_dir = root.join("ciphers");
+        // 两个分片子目录，各含 keep + orphan
+        let shard_a = ciphers_dir.join("ab");
+        std::fs::create_dir_all(&shard_a).unwrap();
+        std::fs::write(shard_a.join("abc123.json"), "{}").unwrap(); // keep（stem abc123）
+        std::fs::write(shard_a.join("ab9999.json"), "{}").unwrap(); // orphan
+        let keep: std::collections::HashSet<String> = ["abc123"].iter().map(|s| s.to_string()).collect();
+
+        cleanup_orphan_files(&ciphers_dir, &keep, "cipher").unwrap();
+
+        assert!(shard_a.join("abc123.json").exists(), "keep 应保留");
+        assert!(!shard_a.join("ab9999.json").exists(), "orphan 应清理");
+    }
+
+    /// 第二十三轮 P2-sync1（方案 B）回归：cleanup_orphan_files 空目录幂等。
+    #[test]
+    fn cleanup_orphan_files_empty_dir_ok() {
+        let _guard = VaultRootGuard::new();
+        let empty = vault_root().join("nonexistent");
+        let keep: std::collections::HashSet<String> = std::collections::HashSet::new();
+        assert!(cleanup_orphan_files(&empty, &keep, "cipher").is_ok());
+    }
+
+    /// 第二十三轮 P2-sync1（方案 B）回归：export_all_to_files 不再 remove_dir_all，
+    /// 改为先写后清孤儿——验证孤儿（DB 无但文件存在）被清。
+    #[test]
+    fn export_all_to_files_cleans_orphan_cipher_files() {
+        let _guard = VaultRootGuard::new();
+        let root = vault_root();
+        let ciphers_dir = root.join("ciphers");
+        let shard = ciphers_dir.join("ab");
+        std::fs::create_dir_all(&shard).unwrap();
+        // 预置一个孤儿（DB 无此 cipher，但文件存在）
+        std::fs::write(shard.join("orphan-cipher.json"), r#"{"id":"orphan-cipher"}"#).unwrap();
+
+        // export 空数据（无 cipher/folder）——孤儿应被清
+        let meta = sample_vault_meta();
+        let _outline = export_all_to_files(&meta, &[], &[]).unwrap();
+
+        assert!(!shard.join("orphan-cipher.json").exists(), "孤儿 cipher 应被清");
     }
 }

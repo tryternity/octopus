@@ -235,19 +235,21 @@ pub fn pull_entity<E: SyncEntity>(key: &str, report: &mut MergeReport, _now: i64
 
 // === 辅助函数 ==========================================================
 
-/// Push 单个实体（DB 行 → 写文件），成功 `pushed += 1` 返 `true`；失败 log warn +
-/// `skipped += 1` 返 `false`。返值供 md5 冲突分支决定是否额外记 `conflicts += 1`。
-fn push_or_skip<E: SyncEntity>(row: &E::Row, key: &str, report: &mut MergeReport) -> bool {
-    match E::write_file(row) {
-        Ok(()) => {
-            report.pushed += 1;
-            true
-        }
-        Err(e) => {
-            log_warn_skip::<E>(key, "push file", e, report);
-            false
-        }
-    }
+/// Push 单个实体（DB 行 → 标记需要写文件），`pushed += 1` 返 `true`。
+///
+/// 第二十三轮 P2-sync2（方案 C）：不再调 `E::write_file(row)`——merge 末尾的
+/// `E::export_all()` 会全量重建所有文件（写所有 DB 行），push 的单文件写完全被覆盖，
+/// 是冗余 IO（1000 收藏 = 1000 次无效原子写）。现 push 只记 report 计数，实际文件写入
+/// 统一由 export_all 在 merge 末尾完成。
+///
+/// **不变量**：`export_all` 必须全量重建（写所有 DB 行 + 清孤儿）。若未来改为增量，
+/// 需恢复此处的 `E::write_file(row)` 调用。
+///
+/// 返值始终 true（DB 是真相源，push 必成功——export_all 保证落盘）。返值供 md5 冲突
+/// 分支（:192-194）决定是否额外记 `conflicts += 1`。
+fn push_or_skip<E: SyncEntity>(_row: &E::Row, _key: &str, report: &mut MergeReport) -> bool {
+    report.pushed += 1;
+    true
 }
 
 /// tombstone 是否超期——`deleted_at > 0` 且 `now - deleted_at > retention_secs`。

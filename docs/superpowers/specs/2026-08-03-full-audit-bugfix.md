@@ -411,6 +411,7 @@
 | 22 | （无 commit） | merge main（`c309b085` concealed hint）+ 复审 watcher.rs，**0 修复**（审查通过） |
 | 23 | （本轮，待 commit） | 全代码审查 23 P2 复查：修 12（infra 4 事务 + record thumbnail 事务 + autotype PasswordOnly verify + cloud close catch_unwind + ocr validate 激活 + llm error body 截断 + sync thread-local clear + **scheduler hang 超时兜底** + **download Etag 注释修正** + **server spawn_blocking 超时**）+ 驳回 1（P2-ocr2 误报）+ 留后续 10 |
 | 24 | （本轮，待 commit） | 留后续项推进：修 5（spawn .expect 降级 + image size guard + WAV decode spawn_blocking + Etag dead code 清理 + WS engine 校验）+ 留后续 2（P2-srv2 共享 session 重构 + P2-d1 autotype 移线程） |
+| 25 | （本轮，待 commit） | P2-sync1/sync2 export 原子化实施：方案 B 先写后清孤儿（clipboard + hotword + vault 三处 export 去 remove_dir_all）+ 方案 C 删 push 冗余写。5 Task + 5 回归测试 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1169,8 +1170,8 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 | P2-ocr3（image 无 size guard）| 需 `ImageReader` + 维度限制 API 重构；OCR 输入受 watcher 40MB 限制兜底 | 新留后续 |
 | P2-l2（无重试退避）| 功能增强，非 bug | 不修 |
 | P2-dl1（Etag If-Range 实现）| ✅ 注释撒谎已修正（verify.rs 文档明示 Etag 当前 no-op）；**If-Range 续传校验功能性实现仍留后续** | = 第 17 轮 P2-1 |
-| P2-sync1（export 非原子清空+重建）| 需在 merge_three_way 泛型骨架内系统性改（tmp→rename 原子，或先写后清孤儿）。经评估窗口仅微秒级（remove→create 间），复杂度高，用户确认留专项。**设计 spec 已写**：[sync export 原子化设计](./2026-08-05-sync-export-atomicity-design.md)（方案 B 先写后清孤儿 + 删冗余 push 写），待实施 plan | = 第 21 轮 P2-s1 |
-| P2-sync2（merge push 写被 export 覆盖）| 同 P2-sync1；属性能问题（冗余 IO）非正确性问题，export_all 保证最终一致。**与 P2-sync1 合并修复**（见设计 spec §4.4 删 push_or_skip 的 write_file） | = 第 21 轮 P2-s2 |
+| ~~P2-sync1（export 非原子清空+重建）~~ | ✅ **第二十五轮已实施**（见 [设计 spec](./2026-08-05-sync-export-atomicity-design.md) + [实施 plan](../plans/2026-08-10-sync-export-atomicity.md)），方案 B 先写后清孤儿落地 | — |
+| ~~P2-sync2（merge push 写被 export 覆盖）~~ | ✅ **第二十五轮已实施**（pipeline push_or_skip 删 write_file），与 P2-sync1 合并修复 | — |
 
 注：P2-srv1（scheduler 无超时）**本轮已修**（见上方修复明细 §A1），从留后续移除。
 
@@ -1235,3 +1236,42 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 - `cargo build --release -p octopus-server -p octopus-cli` + 全改动 crate build —— 0 error 0 warning。
 - `cargo test`：ocr 35 / download 33 / server 4 / desktop 525 全过。
 - 第二十三轮留后续 11 项 → 本轮修 5（d3/ocr3/srv4/dl1/srv3）+ 留后续 2（srv2/d1）+ 前轮已修 4（sync1/sync2 有设计 spec / srv5 已修 / l2 不修）。
+
+## 28. 第二十五轮——P2-sync1/sync2 export 原子化实施（2026-08-10，方案 B 落地）
+
+### 触发
+
+用户指令实施 P2-sync1/sync2（第二十三轮留后续，设计 spec 已写）。按 [设计 spec](./2026-08-05-sync-export-atomicity-design.md) 方案 B（先写后清孤儿）+ 方案 C（删冗余 push 写）落地。
+
+### 实施（5 Task）
+
+#### Task 1 · clipboard export_all 先写后清孤儿
+- `export_all_favorites`（clipboard.rs:427）：删 `remove_dir_all(fav_dir) + create_dir_all` 两步，改为只 `create_dir_all(fav_dir)`（幂等 ensure）；写循环收集 `keep_keys`（active + tombstone 都写文件都保留）；末尾调 `cleanup_orphan_favorite_files(&keep_keys)`
+- 新增 `cleanup_orphan_favorite_files`：扫 `favorites/<2hex>/*.json`，删 stem 不在 keep_keys 的孤儿
+
+#### Task 2 · hotword export_all 先写后清孤儿
+- `export_all_hotwords_with`（hotword.rs:414）：删 :426-437 循环 remove_dir_all 各 set 目录；写循环收集 `keep_set_ids`（未超期 set）；末尾调 `cleanup_orphan_hotword_files`
+- 新增 `cleanup_orphan_hotword_files`：两级清理——set 级（不在 keep_set_ids 的 set 目录，含超期 tombstone set）+ word 级（存活 set 内超期 tombstone word 文件）
+
+#### Task 3 · vault export_all_to_files 先写后清孤儿
+- `export_all_to_files`（store.rs:516）：删 :528-533 `remove_dir_all(ciphers/folders)`；改为 `create_dir_all` 幂等；写循环收集 `keep_cipher_ids`/`keep_folder_ids`；末尾调 `cleanup_orphan_files` × 2
+- 新增 `cleanup_orphan_files`：通用分片清理（cipher/folder 都是 `<2hex>/<uuid>.json`，folder 也分片——纠正设计 spec §5.1 「folder 扁平」的误判）
+
+#### Task 4 · pipeline push_or_skip 删冗余 write_file
+- `push_or_skip`（pipeline.rs:240）：不调 `E::write_file(row)`，只记 `report.pushed += 1` 返 true。export_all 全量重建覆盖 push 的写入，1000 收藏省 1000 次无效原子写
+- 不变量注释：export_all 必须全量重建；若未来改增量需恢复 write_file
+
+#### Task 5 · 回归测试（5 个）
+- clipboard：`cleanup_orphan_favorite_files_removes_stale_keeps_valid`（孤儿删除 + 合法保留）+ `cleanup_orphan_favorite_files_empty_dir_ok`（空目录幂等）
+- vault：`cleanup_orphan_files_removes_stale_cipher` + `cleanup_orphan_files_empty_dir_ok` + `export_all_to_files_cleans_orphan_cipher_files`（端到端：预置孤儿 → export → 孤儿被清）
+
+### 验证
+
+- `cargo build --release -p octopus-server -p octopus-cli` —— 0 error 0 warning
+- `cargo test`：**sync 155（+2 新）** / **vault 267（+3 新）** / desktop 525 全过
+- 设计 spec 状态改「已实施」；audit spec 留后续表 P2-sync1/sync2 移除
+
+### 设计 spec 与实现的偏差
+
+- **folder 也分片**：设计 spec §5.1 称「folder 扁平 `<uuid>.json`」，实际 store.rs:105-112 folder 也是 `<2hex>/<uuid>.json` 两级分片。Task 3 用通用 `cleanup_orphan_files`（cipher + folder 共用），无需为 folder 单独写扁平遍历
+- **vault 未迁移到 trait**：设计 spec §5.1 已预见，vault 单独改 `export_all_to_files`（非 trait 路径），与 clipboard/hotword 的 trait 路径并存
