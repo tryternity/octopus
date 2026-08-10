@@ -18,13 +18,12 @@
 import { useState, useEffect, useRef } from "react";
 import type { ReactNode, MutableRefObject } from "react";
 import type { Tool } from "@/lib/annotation";
+import { PRESET_COLORS } from "@/lib/annotation";
 import { ToolPropsPopover } from "@/pages/Screenshot/ToolPropsPopover";
 import { useT } from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import type { AnnotationState } from "./useAnnotationState";
 
-// blur 渲染模式三选项（与 useAnnotationState.blurMode 联动）
-const BLUR_MODES = ["pixelate", "gaussian", "redact"] as const;
 
 export interface AnnotationToolbarProps {
   /** 注入 useAnnotationState 返回的 state/actions */
@@ -149,25 +148,6 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     showWatermark = false,
   } = props;
 
-  // ── blur 按钮 popover 子菜单状态 ──
-  // 点 blur 按钮弹出（含 3 个 blurMode 选项），选中后 setBlurMode + setTool("blur") + 关闭。
-  // 关闭时机：选中某个选项 / 点击 popover 外部（document mousedown listener）。
-  const [showBlurPopover, setShowBlurPopover] = useState(false);
-  const blurPopoverRef = useRef<HTMLDivElement | null>(null);
-  const blurBtnRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!showBlurPopover) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (blurPopoverRef.current?.contains(target)) return;
-      if (blurBtnRef.current?.contains(target)) return;
-      setShowBlurPopover(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showBlurPopover]);
-
   // ── 水印按钮 popover 输入框状态（Task 8）──
   // 水印不走 tool 选中逻辑——点击水印按钮弹输入框，输入文字 → set_config 持久化。
   // 后端 set_config 末尾统一 emit "config-changed"（settings_commands.rs:317），
@@ -175,6 +155,9 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
   // 输入留空确认 = 清除水印（set_config 空 string）。
   const [showWatermarkPopover, setShowWatermarkPopover] = useState(false);
   const [watermarkInput, setWatermarkInput] = useState("");
+  const [watermarkColor, setWatermarkColor] = useState("#ffffff");
+  const [watermarkDensity, setWatermarkDensity] = useState(0.5);
+  const [watermarkAngle, setWatermarkAngle] = useState(0);
   const watermarkPopoverRef = useRef<HTMLDivElement | null>(null);
   const watermarkBtnRef = useRef<HTMLDivElement | null>(null);
 
@@ -190,20 +173,26 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     return () => document.removeEventListener("mousedown", handler);
   }, [showWatermarkPopover]);
 
-  // 水印按钮点击：读当前 config 的水印文字预填输入框（避免每次重新输）。
+  // 水印按钮点击：读当前 config 的水印文字 + 颜色 + density + angle 预填。
   const openWatermarkPopover = () => {
     invoke<{ config: Record<string, unknown> }>("get_config")
       .then((res) => {
-        setWatermarkInput((res.config.screenshot_watermark_text as string) || "");
+        const c = res.config;
+        setWatermarkInput((c.screenshot_watermark_text as string) || "");
+        setWatermarkColor((c.screenshot_watermark_color as string) || "#ffffff");
+        setWatermarkDensity(typeof c.screenshot_watermark_density === "number" ? c.screenshot_watermark_density : 0.5);
+        setWatermarkAngle(typeof c.screenshot_watermark_angle === "number" ? c.screenshot_watermark_angle : 0);
       })
-      .catch(() => setWatermarkInput(""));
+      .catch(() => { setWatermarkInput(""); setWatermarkColor("#ffffff"); setWatermarkDensity(0.5); setWatermarkAngle(0); });
     setShowWatermarkPopover(true);
   };
 
-  // 确认：set_config（空字符串=清除水印）。失败不阻塞 UI，静默。
+  // 确认：set_config 文字 + 颜色 + density + angle（空字符串=清除水印）。失败不阻塞 UI，静默。
   const confirmWatermark = () => {
-    invoke("set_config", { key: "screenshot_watermark_text", value: watermarkInput })
-      .catch(() => {});
+    invoke("set_config", { key: "screenshot_watermark_text", value: watermarkInput }).catch(() => {});
+    invoke("set_config", { key: "screenshot_watermark_color", value: watermarkColor }).catch(() => {});
+    invoke("set_config", { key: "screenshot_watermark_density", value: watermarkDensity }).catch(() => {});
+    invoke("set_config", { key: "screenshot_watermark_angle", value: watermarkAngle }).catch(() => {});
     setShowWatermarkPopover(false);
   };
 
@@ -250,9 +239,8 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     ...(showHighlight ? [{ key: "highlight" as Tool, src: "icons/highlighter.svg", label: t("screenshot.tool.highlight") }] : []),
     { key: "text", src: "icons/text.svg", label: t("screenshot.tool.text") },
     { key: "number", src: "icons/sequence-note.svg", label: t("screenshot.tool.number") },
+    { key: "blur", src: "icons/mosaic.svg", label: t("screenshot.tool.mosaic") },
   ];
-  // blur 单独渲染：带 popover 子菜单（切换 blurMode），不复用 onToolSelect 的 popover 逻辑。
-  const blurTool = { src: "icons/mosaic.svg", label: t("screenshot.tool.mosaic") };
 
   return (
     <>
@@ -300,75 +288,6 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
           />
         ))}
 
-        {/* blur 按钮：点击弹 popover 子菜单切换 blurMode（pixelate/gaussian/redact）。
-            popover 关闭：选中选项后 / 点外部（useEffect 内 document mousedown listener）。 */}
-        <div style={{ position: "relative" }}>
-          <div ref={blurBtnRef}>
-            <ToolButton
-              active={state.tool === "blur"}
-              onClick={(e) => {
-                e.stopPropagation();
-                // 仍记录按钮中心 x，供 ToolPropsPopover 跟随
-                const rect = e.currentTarget.getBoundingClientRect();
-                state.setPopoverX(rect.left + rect.width / 2);
-                setShowBlurPopover((v) => !v);
-              }}
-              label={blurTool.label}
-              icon={<ToolIcon src={blurTool.src} alt={blurTool.label} active={state.tool === "blur"} />}
-            />
-          </div>
-          {showBlurPopover && (
-            <div
-              ref={blurPopoverRef}
-              style={{
-                position: "absolute",
-                top: "100%",
-                left: "50%",
-                transform: "translateX(-50%)",
-                marginTop: 4,
-                padding: 4,
-                background: "var(--color-surface)",
-                color: "var(--color-foreground)",
-                borderRadius: 8,
-                boxShadow: "0 8px 24px -4px rgba(0,0,0,0.2), 0 2px 8px -2px rgba(0,0,0,0.1)",
-                zIndex: 102,
-                display: "flex",
-                flexDirection: "column",
-                gap: 2,
-                minWidth: 96,
-              }}
-            >
-              {BLUR_MODES.map((m) => (
-                <button
-                  key={m}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    state.setBlurMode(m);
-                    state.setTool("blur");
-                    state.setShowPopover(false);
-                    onToolChange?.("blur");
-                    setShowBlurPopover(false);
-                  }}
-                  title={t(`screenshot.tool.blur_${m}`)}
-                  style={{
-                    padding: "5px 8px",
-                    border: "none",
-                    borderRadius: 5,
-                    background: state.blurMode === m ? "var(--color-voice)" : "transparent",
-                    color: state.blurMode === m ? "#fff" : "var(--color-foreground)",
-                    cursor: "pointer",
-                    fontSize: 11,
-                    whiteSpace: "nowrap",
-                    textAlign: "left",
-                  }}
-                >
-                  {t(`screenshot.tool.blur_${m}`)}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
         {/* 水印按钮（Task 8）：弹独立输入框，不走 tool 选中逻辑。
             输入文字 → set_config 持久化，后端 emit config-changed → 父组件 Screenshot
             监听后重读 get_config 刷新 watermarkOpts → Canvas 导出时画水印。 */}
@@ -412,7 +331,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
                   display: "flex",
                   flexDirection: "column",
                   gap: 6,
-                  minWidth: 200,
+                  minWidth: 240,
                 }}
               >
                 <input
@@ -445,6 +364,56 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
                     boxSizing: "border-box",
                   }}
                 />
+                {/* 水印颜色选择——预设色 + 调色板，同 ToolPropsPopover 风格 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  {PRESET_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      onClick={(e) => { e.stopPropagation(); setWatermarkColor(c); }}
+                      style={{
+                        width: 16, height: 16, borderRadius: 4,
+                        background: c,
+                        border: c === "#ffffff" ? "1px solid #e0e0e0" : "none",
+                        cursor: "pointer", padding: 0,
+                        opacity: watermarkColor.toLowerCase() === c.toLowerCase() ? 1 : 0.45,
+                        transform: watermarkColor.toLowerCase() === c.toLowerCase() ? "scale(1.1)" : "scale(1)",
+                      }}
+                    />
+                  ))}
+                  <label style={{ cursor: "pointer", display: "flex", alignItems: "center", flexShrink: 0, marginLeft: 2 }}>
+                    <div style={{
+                      width: 16, height: 16, borderRadius: 4,
+                      background: "conic-gradient(from 0deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)",
+                      border: "1px solid rgba(0,0,0,0.1)",
+                    }} />
+                    <input
+                      type="color"
+                      value={watermarkColor}
+                      onChange={(e) => setWatermarkColor(e.target.value)}
+                      style={{ width: 0, height: 0, opacity: 0, position: "absolute" }}
+                    />
+                  </label>
+                </div>
+                {/* 密度滑块 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 32, flexShrink: 0 }}>{t("settings.general.watermarkDensity")}</span>
+                  <input
+                    type="range" min={0} max={1} step={0.1} value={watermarkDensity}
+                    onChange={(e) => setWatermarkDensity(Number(e.target.value))}
+                    style={{ flex: 1, height: 4, cursor: "pointer" }}
+                  />
+                  <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 24, textAlign: "center" }}>{watermarkDensity.toFixed(1)}</span>
+                </div>
+                {/* 角度滑块 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 32, flexShrink: 0 }}>{t("settings.general.watermarkAngle")}</span>
+                  <input
+                    type="range" min={0} max={360} step={15} value={watermarkAngle}
+                    onChange={(e) => setWatermarkAngle(Number(e.target.value))}
+                    style={{ flex: 1, height: 4, cursor: "pointer" }}
+                  />
+                  <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 24, textAlign: "center" }}>{Math.round(watermarkAngle)}°</span>
+                </div>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -555,12 +524,15 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
           isText={state.tool === "text"}
           isNumber={state.tool === "number"}
           isShape={state.tool === "rect" || state.tool === "oval" || state.tool === "diamond"}
+          isBlur={state.tool === "blur"}
+          blurMode={state.blurMode}
           filled={state.toolFilled}
           onColorChange={state.setToolColor}
           onWidthChange={state.setToolWidth}
           onFontSizeChange={state.setToolFontSize}
           onCircleSizeChange={state.setToolCircleSize}
           onFilledChange={state.setToolFilled}
+          onBlurModeChange={state.setBlurMode}
         />
       )}
     </>

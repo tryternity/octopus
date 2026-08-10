@@ -451,12 +451,20 @@ fn apply_config_value(
         "screenshot_watermark_text" => {
             cfg.screenshot_watermark_text = value.as_str().ok_or("screenshot_watermark_text 需要字符串")?.to_string();
         }
-        "screenshot_watermark_position" => {
-            cfg.screenshot_watermark_position = value.as_str().ok_or("screenshot_watermark_position 需要字符串")?.to_string();
+        "screenshot_watermark_density" => {
+            let v = value.as_f64().ok_or("screenshot_watermark_density 需要数值")?;
+            cfg.screenshot_watermark_density = (v as f32).clamp(0.0, 1.0);
+        }
+        "screenshot_watermark_angle" => {
+            let v = value.as_f64().ok_or("screenshot_watermark_angle 需要数值")?;
+            cfg.screenshot_watermark_angle = (v as f32).clamp(0.0, 360.0);
         }
         "screenshot_watermark_opacity" => {
             let v = value.as_f64().ok_or("screenshot_watermark_opacity 需要数值")?;
             cfg.screenshot_watermark_opacity = (v as f32).clamp(0.0, 1.0);
+        }
+        "screenshot_watermark_color" => {
+            cfg.screenshot_watermark_color = value.as_str().ok_or("screenshot_watermark_color 需要字符串")?.to_string();
         }
         "screenshot_watermark_font_size" => {
             let v = value.as_i64().or_else(|| value.as_f64().map(|f| f as i64))

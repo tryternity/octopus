@@ -437,7 +437,8 @@ settings:
     watermarkHint: Empty to disable; drawn when screenshot is saved
     watermarkText: Text
     watermarkTextPlaceholder: Enter watermark (empty to disable)
-    watermarkPosition: Position
+    watermarkDensity: Density
+    watermarkAngle: Angle
     watermarkOpacity: Opacity
     watermarkFontSize: Font Size
     recordShortcut: Recording

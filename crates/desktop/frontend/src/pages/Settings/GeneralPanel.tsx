@@ -252,17 +252,45 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
                 size="sm"
               />
             </Row>
-            <Row label={t("settings.general.watermarkPosition")} effect={t("settings.effect.now")}>
-              <Select
-                value={(cfg.screenshot_watermark_position as string) || "bottom-right"}
-                onChange={(e) => setVal("screenshot_watermark_position", e.target.value)}
-              >
-                {([
-                  "top-left", "top-center", "top-right",
-                  "middle-left", "middle-center", "middle-right",
-                  "bottom-left", "bottom-center", "bottom-right",
-                ] as const).map((p) => <option key={p} value={p}>{p}</option>)}
-              </Select>
+            <Row label={t("settings.general.watermarkDensity")} effect={t("settings.effect.now")}>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.1}
+                  value={typeof cfg.screenshot_watermark_density === "number"
+                    ? cfg.screenshot_watermark_density
+                    : 0.5}
+                  onChange={(e) => setVal("screenshot_watermark_density", Number(e.target.value))}
+                  className="w-40 accent-voice"
+                />
+                <span className="w-10 text-right text-sm tabular-nums">
+                  {typeof cfg.screenshot_watermark_density === "number"
+                    ? cfg.screenshot_watermark_density.toFixed(1)
+                    : "0.5"}
+                </span>
+              </div>
+            </Row>
+            <Row label={t("settings.general.watermarkAngle")} effect={t("settings.effect.now")}>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={0}
+                  max={360}
+                  step={15}
+                  value={typeof cfg.screenshot_watermark_angle === "number"
+                    ? cfg.screenshot_watermark_angle
+                    : 0}
+                  onChange={(e) => setVal("screenshot_watermark_angle", Number(e.target.value))}
+                  className="w-40 accent-voice"
+                />
+                <span className="w-10 text-right text-sm tabular-nums">
+                  {typeof cfg.screenshot_watermark_angle === "number"
+                    ? Math.round(cfg.screenshot_watermark_angle) + "°"
+                    : "0°"}
+                </span>
+              </div>
             </Row>
             <Row label={t("settings.general.watermarkOpacity")} effect={t("settings.effect.now")}>
               <div className="flex items-center gap-3">

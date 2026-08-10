@@ -85,13 +85,19 @@ export default function Screenshot() {
           if (text) {
             setWatermarkOpts({
               text,
-              position: (cfg.screenshot_watermark_position as string) || "bottom-right",
               opacity: typeof cfg.screenshot_watermark_opacity === "number"
                 ? cfg.screenshot_watermark_opacity
                 : 0.3,
               fontSize: typeof cfg.screenshot_watermark_font_size === "number"
                 ? cfg.screenshot_watermark_font_size
                 : 24,
+              color: (cfg.screenshot_watermark_color as string) || "#ffffff",
+              density: typeof cfg.screenshot_watermark_density === "number"
+                ? cfg.screenshot_watermark_density
+                : 0.5,
+              angle: typeof cfg.screenshot_watermark_angle === "number"
+                ? cfg.screenshot_watermark_angle
+                : 0,
             });
           } else {
             setWatermarkOpts(null);
@@ -272,6 +278,15 @@ export default function Screenshot() {
       }
       // textDraft 不在 Canvas 画（DOM textarea 已显示），避免重影
 
+      // 水印实时预览——画在选区 clip 内（用 translate 平移坐标系到选区左上角，
+      // drawWatermark 的 9 格定位基于选区 w/h，不会超出选区范围）。
+      if (watermarkOpts?.text) {
+        ctx.save();
+        ctx.translate(x, y);
+        drawWatermark(ctx, w, h, watermarkOpts);
+        ctx.restore();
+      }
+
       ctx.restore();
 
       // 选区边框 + 手柄
@@ -309,11 +324,7 @@ export default function Screenshot() {
       ctx.fillRect(0, 0, cssW, cssH);
     }
 
-    // 水印实时预览（标注画布上显示，对齐导出效果）。
-    // 预览用 display canvas 的 CSS 尺寸（cssW/cssH）；导出走物理尺寸 bgW×bgH + scale。
-    if (watermarkOpts?.text) {
-      drawWatermark(ctx, cssW, cssH, watermarkOpts);
-    }
+    // 水印已移到选区 clip 内（ctx.translate + drawWatermark(ctx, w, h, ...)）
   }, [sel, mode, ready, dpr, annotation.annotations, annotation.selectedAnn, annotation.tool, textDraft, watermarkOpts]);
 
   useEffect(() => { draw(); }, [draw]);
@@ -710,9 +721,17 @@ export default function Screenshot() {
       drawAnnotationScaled(tmpCtx, ann, scale);
     }
 
-    // 水印（全局叠加层，在所有标注之后）——从 config 读，水印不进 annotations 数组
+    // 水印——限定在选区内（translate 到选区左上角 + 用选区物理尺寸定位），
+    // 这样裁切后水印在裁切图的对应 9 格位置，不会超出选区范围。
     if (watermarkOpts?.text) {
-      drawWatermark(tmpCtx, bgW, bgH, watermarkOpts);
+      const px = Math.round(sel.x * scale);
+      const py = Math.round(sel.y * scale);
+      const pw = Math.round(sel.w * scale);
+      const ph = Math.round(sel.h * scale);
+      tmpCtx.save();
+      tmpCtx.translate(px, py);
+      drawWatermark(tmpCtx, pw, ph, watermarkOpts);
+      tmpCtx.restore();
     }
 
     const px = Math.round(sel.x * scale);

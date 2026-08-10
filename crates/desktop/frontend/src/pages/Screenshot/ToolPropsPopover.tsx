@@ -2,15 +2,16 @@ import { PRESET_COLORS } from "@/lib/annotation";
 import { useT } from "@/lib/i18n";
 
 export function ToolPropsPopover({
-  x, y, color, width, fontSize, circleSize, isText, isNumber, isShape, filled, onColorChange, onWidthChange, onFontSizeChange, onCircleSizeChange, onFilledChange,
+  x, y, color, width, fontSize, circleSize, isText, isNumber, isShape, isBlur, blurMode, filled, onColorChange, onWidthChange, onFontSizeChange, onCircleSizeChange, onFilledChange, onBlurModeChange,
 }: {
   x: number; y: number;
-  color: string; width: number; fontSize: number; circleSize: number; isText: boolean; isNumber: boolean; isShape: boolean; filled: boolean;
+  color: string; width: number; fontSize: number; circleSize: number; isText: boolean; isNumber: boolean; isShape: boolean; isBlur: boolean; blurMode: "pixelate" | "gaussian" | "redact"; filled: boolean;
   onColorChange: (c: string) => void;
   onWidthChange: (w: number) => void;
   onFontSizeChange: (s: number) => void;
   onCircleSizeChange: (s: number) => void;
   onFilledChange: (f: boolean) => void;
+  onBlurModeChange: (m: "pixelate" | "gaussian" | "redact") => void;
 }) {
   const t = useT();
   const sizeValue = isText ? fontSize : isNumber ? circleSize : width;
@@ -38,7 +39,36 @@ export function ToolPropsPopover({
         width: 240,
       }}
     >
-      {/* 第一行：粗细滑轨 + 当前色（最右） */}
+      {/* blur 模式选择（仅 blur 工具显示，置顶最显眼）：Pixelate / Gaussian / Redact */}
+      {isBlur && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {(["pixelate", "gaussian", "redact"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => onBlurModeChange(m)}
+                style={{
+                  flex: 1,
+                  padding: "4px 6px",
+                  border: "none",
+                  borderRadius: 5,
+                  background: blurMode === m ? "var(--color-voice)" : "var(--color-accent, rgba(0,0,0,0.06))",
+                  color: blurMode === m ? "#fff" : "var(--color-foreground)",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 500,
+                  transition: "background 0.15s",
+                }}
+              >
+                {t(`screenshot.tool.blur_${m}`)}
+              </button>
+            ))}
+          </div>
+          <div style={{ height: 1, background: "var(--color-border)", margin: "0 -4px" }} />
+        </>
+      )}
+
+      {/* 粗细滑轨 + 当前色（最右） */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 20, fontWeight: 500, flexShrink: 0 }}>{label}</span>
         <input

@@ -445,7 +445,8 @@ settings:
     watermarkHint: 留空关闭；截图保存时绘制
     watermarkText: 文字
     watermarkTextPlaceholder: 输入水印（留空关闭）
-    watermarkPosition: 位置
+    watermarkDensity: 密度
+    watermarkAngle: 角度
     watermarkOpacity: 透明度
     watermarkFontSize: 字号
     recording: 语音识别
