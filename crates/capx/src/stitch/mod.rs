@@ -341,7 +341,11 @@ impl Stitcher {
                         return Ok(false);
                     } else {
                         // 画面在动 → 合法均匀滚动，继续
+                        // 第三十轮 F1：补 same_dy_count = 0 复位——原缺复位导致第 4 帧 :318
+                        // 永久命中（same_dy_count 恒 3）→ uniform 后每帧都被锁定，画布不再增长。
+                        // 复位后每帧重新走 stationary check（多一道防线防 uniform 误判）。
                         log::info!("[stitch] uniform scroll detected (dy={:.0}, sad={:.1}), not locking", dy_rounded, stationary_sad);
+                        self.same_dy_count = 0;
                     }
                 }
             } else {

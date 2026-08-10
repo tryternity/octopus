@@ -416,7 +416,8 @@
 | 27 | `587d16b4` | 第二十七轮报告复查：修 3（P2-3 opus_mt eos bail! + P2-1 tombstone 吞错改 warn + P3-4 谎报推送改 message）+ 留后续 4（P2-1 active 事务 / P2-2 / P3-1 / P3-3） |
 | 28 | `260ed000` | 第二十八轮并发专项复查：修 3（**P1-F1 vault meta 覆盖竞态→锁死** + P3-F5 clipboard_cleanup 取锁 + P3-LLM1 正则限定）+ 留后续 2（P2-F2 translate block_on / P2-F3 pty Mutex 跨 write） |
 | 29 | `21e70af8` | 第二十九轮数据完整性复查：修 3（P2-F1 paraformer enc_slice 越界离线+流式 + P2-F3 canvas 黑图改 Result + P3-LLM1 单候选契约闭合）+ 留后续系统性短板（P3 F-2~F-8 ONNX 边界） |
-| 29b | （本轮，待 commit） | 第二十九轮补充（代理 C 补跑）：修 3（P2-C1 md5 补 ref_data/segments/is_rich + P2-C2 voice 吞错致物理删改 fail-safe + P3-CF9 set_sync_md5 改 warn）+ 留后续 P3 群 |
+| 29b | `409291e4` | 第二十九轮补充（代理 C 补跑）：修 3（P2-C1 md5 补 ref_data/segments/is_rich + P2-C2 voice 吞错致物理删改 fail-safe + P3-CF9 set_sync_md5 改 warn）+ 留后续 P3 群 |
+| 30 | （本轮，待 commit） | 第三十轮全覆盖复查：修 3（**F1 stitch uniform scroll 永久锁定** + **L1-2 热词挖掘 ORDER BY id DESC 迁移回归** + P3 focus_tracker 重复 log）+ 留后续性能群（Zipformer clone / vault 全量 export / pipeline 双读 / hotword 全表 filter） |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1489,3 +1490,43 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 - `cargo build` clipboard/sync —— 0 error 0 warning
 - `cargo test`：clipboard 24 / sync 155 全过
+
+## 34. 第三十轮——ASR/desktop/sync 全覆盖复查（2026-08-10，修 3 + 留后续性能群）
+
+### 触发
+
+收到第三十轮全代码审查报告（3 代理覆盖 ASR 热路径 / desktop·record·pty / sync·vault·clipboard）。A 部分确认第二十九轮 6/6 修复落地。
+
+### 修复明细（3 处）
+
+#### F1 · stitch 均匀滚动第 4 帧起被永久锁定
+
+**根因**：capx stitch/mod.rs:315-351 周期性假匹配检测——连续 3 次 dy 相同时进 stationary check。uniform 分支（:342-345，画面在动→合法）**缺 same_dy_count = 0 复位**。第 3 帧 uniform 后 same_dy_count 仍=3 → 第 4 帧 :318 `same_dy_count >= 3` 命中 + :319-320 dy 匹配 → :321 return Ok(false) **永久锁定**，画布不再增长。注释 :343「not locking」与下一帧 :318 锁定矛盾。
+
+**修复**：uniform 分支末尾补 `self.same_dy_count = 0`。复位后每帧重新走 stationary check（多一道防线防 uniform 误判）。
+
+#### L1-2 · 热词挖掘 ORDER BY id DESC 迁移回归
+
+**根因**：hotword.rs:714/740 `ORDER BY id DESC`——2026-08-05 schema v59 把 clipboard_history.id 从 INTEGER 毫秒戳（有序）改 TEXT UUID v4（随机）后，`ORDER BY id DESC` 变随机字典序。热词挖掘候选取随机历史片段而非「最近输入」（INV-C1 语义破坏）。
+
+**修复**：两处改 `ORDER BY created_at DESC, id DESC`（idx_clip_created 索引现成）。注释同步更新。
+
+#### P3 尼特 · focus_tracker 重复 log
+
+**根因**：focus_tracker.rs:120 if 分支打成功日志，:124 在 if-let 外又打一遍（else 警告分支也打成功日志——误导）。
+
+**修复**：删 :124 重复 log。
+
+### 留后续（性能群，均优化非 bug）
+
+| 项 | 说明 |
+|---|---|
+| perf-1/2 Zipformer clone | 流式 Zipformer 未跟进 Paraformer 的零拷贝优化（chunk.clone ~24KB + encoder states Tensor::from_array clone）。优化路径明确（照抄 CTC/Paraformer 范式），需 z_perf 性能验证 |
+| perf-3 vault 全量 export | merge_vault 末尾无条件 export_all_to_files（1000 cipher SSD ~1s）。有意权衡（注释 :1480-1483），需重新设计 incremental_export 协作 |
+| perf-4 pipeline tombstone 双读 | :169 tombstone check read_file → :222 pull_entity 再 read_file。需缓存 file 传 pull_entity，改 trait 签名 |
+| perf-5 hotword list_db_rows 全表 | SyncEntity::list_db_rows 全表 list + 内存 filter，schema 有 idx_hotword_words_set 索引却未用。需改 trait 为带 set_id 分桶查询 |
+
+### 验证
+
+- `cargo build` capx/infra + `cargo check` desktop —— 0 error 0 warning
+- `cargo test`：capx 55 / infra 193 / desktop 525 全过

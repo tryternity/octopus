@@ -698,8 +698,11 @@ pub fn list_all_hotword_words() -> Result<Vec<HotwordWord>> {
 /// **INV-C1（热词来源不断）**：故意不过滤 `is_deleted`——软删内容仍是热词来源，
 /// 这是剪贴板软删/回收站功能的核心目的。用户把文本删进回收站后，这里仍能读到它，
 /// 热词挖掘继续工作。只有永久删除（`DELETE FROM`）才会让行真正消失、挖不到。
-/// `ORDER BY id DESC LIMIT N` 降序取最新 N 条，软删内容 id 不变（软删只改 is_deleted），
-/// 活跃和软删混在同一条时间线，不会互相挤占名额。
+/// `ORDER BY created_at DESC, id DESC LIMIT N` 降序取最新 N 条（第三十轮 L1-2 修复：
+/// 原 `ORDER BY id DESC` 在 id 是 INTEGER 毫秒戳时有序，但 2026-08-05 schema v59
+/// 把 id 改 TEXT UUID v4 后变随机字典序——热词挖掘取随机非最新。改 created_at 排序，
+/// idx_clip_created 索引现成）。
+/// 软删内容 created_at 不变（软删只改 is_deleted），活跃和软删混在同一条时间线。
 /// 内部：取最近 limit 条 clipboard_history 的 content（按 item_type 过滤）。
 /// `item_type_filter` — WHERE 子句的 item_type 条件（如 `"IN ('voice','text','ocr')"` 或 `"= 'voice'"`）。
 /// **故意不过滤 is_deleted**（INV-C1：软删内容仍是热词来源）。
@@ -711,7 +714,7 @@ fn list_recent_content_at(
     let sql = format!(
         "SELECT content FROM clipboard_history
          WHERE item_type {filter} AND content IS NOT NULL AND content != ''
-         ORDER BY id DESC LIMIT ?1",
+         ORDER BY created_at DESC, id DESC LIMIT ?1",
         filter = item_type_filter
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -737,7 +740,7 @@ pub fn list_recent_edited_segments(limit: i64) -> Result<Vec<String>> {
         let mut stmt = conn.prepare(
             "SELECT segments FROM clipboard_history
              WHERE item_type = 'voice' AND segments IS NOT NULL AND segments != ''
-             ORDER BY id DESC LIMIT ?1",
+             ORDER BY created_at DESC, id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit], |r| r.get::<_, String>(0))?;
         let mut list = Vec::new();

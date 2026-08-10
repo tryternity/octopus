@@ -121,7 +121,7 @@ pub fn activate_cached_app() {
     } else {
         log::warn!("[focus] cached pid={} not found (process exited?)", pid);
     }
-    log::info!("[focus] activated cached app pid={}", pid);
+    // 第三十轮 P3：删 :124 重复 log（if-let 外，else 分支也打成功日志——误导）
     // 给窗口一点时间成为 key window
     std::thread::sleep(std::time::Duration::from_millis(100));
 }
