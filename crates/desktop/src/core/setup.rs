@@ -212,8 +212,27 @@ impl<'a> AppSetup<'a> {
             // 热词 tombstone GC（2026-08-02）：每日硬删超期（>10 天）软删 set/词 +
             // export 重建清 .sync。跨设备自洽——merge 按年龄过滤防复活。详见
             // docs/superpowers/specs/2026-08-02-hotword-tombstone-gc.md。
+            //
+            // 第二十六轮 P2-c4：取 SYNC_LOCK 防 GC 与 sync_now 并发——sync_now 持
+            // SYNC_LOCK 内部调 merge_hotwords/export_all，GC 不取锁并发时可能：sync
+            // export 读 DB（含 set X）→ GC purge set X → sync 基于旧快照写 set X 文件
+            // → 下次 sync 把 X 当新增拉回 → 已删 set 复活。vault feature 下取
+            // try_sync_lock（无 vault 时无 sync_now，无并发，不需锁）。
             scheduler.register_task("hotword_tombstone_gc", 86400, std::sync::Arc::new(|| {
                 std::thread::spawn(|| {
+                    // vault feature：取 SYNC_LOCK，锁忙则跳过本次 GC（下次 scheduler tick 再试）
+                    #[cfg(feature = "vault")]
+                    {
+                        let _guard = match octopus_vault::sync::engine::try_sync_lock() {
+                            Ok(g) => g,
+                            Err(_) => {
+                                log::info!("[hotword-gc] SYNC_LOCK 忙（sync 进行中），跳过本次 GC");
+                                return;
+                            }
+                        };
+                        // guard 在作用域内持有
+                    }
+
                     let now_secs = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs() as i64)

@@ -982,9 +982,21 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
     let latest_sets = db::list_all_hotword_sets()?;
     for set in &latest_sets {
         set_thread_set_id(&set.id);
+        // 第二十六轮 P3（对称第二十三轮 clipboard P3-sync1）：RAII guard 保 ? 早返回也 clear
+        let _guard = SetIdGuard;
         merge_three_way::<HotwordWordEntity>(&mut report, now)?;
     }
     clear_thread_set_id();
+
+    // ── 第二十六轮 P3：thread-local set_id RAII guard ──
+    /// drop 时清 thread-local set_id，保证 merge_three_way `?` 早返回时也 clear
+    ///（对齐 clipboard.rs ClipboardKeyGuard 范式）。
+    struct SetIdGuard;
+    impl Drop for SetIdGuard {
+        fn drop(&mut self) {
+            clear_thread_set_id();
+        }
+    }
 
     // 阶段 3：从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）。
     // 必须在两层 merge 都收敛后调一次——export_all_hotwords 会清空所有 set 目录，提前调会丢词。

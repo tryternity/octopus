@@ -412,6 +412,7 @@
 | 23 | （本轮，待 commit） | 全代码审查 23 P2 复查：修 12（infra 4 事务 + record thumbnail 事务 + autotype PasswordOnly verify + cloud close catch_unwind + ocr validate 激活 + llm error body 截断 + sync thread-local clear + **scheduler hang 超时兜底** + **download Etag 注释修正** + **server spawn_blocking 超时**）+ 驳回 1（P2-ocr2 误报）+ 留后续 10 |
 | 24 | （本轮，待 commit） | 留后续项推进：修 5（spawn .expect 降级 + image size guard + WAV decode spawn_blocking + Etag dead code 清理 + WS engine 校验）+ 留后续 2（P2-srv2 共享 session 重构 + P2-d1 autotype 移线程） |
 | 25 | （本轮，待 commit） | P2-sync1/sync2 export 原子化实施：方案 B 先写后清孤儿（clipboard + hotword + vault 三处 export 去 remove_dir_all）+ 方案 C 删 push 冗余写。5 Task + 5 回归测试 |
+| 26 | （本轮，待 commit） | 第二十四轮报告复查：修 5（**P1-1 cloud 编译 regression** + P2-c4 hotword GC 取锁 + P2-c5 vault meta 加锁 + P2-c2 ocr TOCTOU + P3 hotword thread-local/pty 中毒）+ 留后续 2（P2-c1/c3）+ 接受 P2-l3 半修反馈 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1275,3 +1276,53 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 - **folder 也分片**：设计 spec §5.1 称「folder 扁平 `<uuid>.json`」，实际 store.rs:105-112 folder 也是 `<2hex>/<uuid>.json` 两级分片。Task 3 用通用 `cleanup_orphan_files`（cipher + folder 共用），无需为 folder 单独写扁平遍历
 - **vault 未迁移到 trait**：设计 spec §5.1 已预见，vault 单独改 `export_all_to_files`（非 trait 路径），与 clipboard/hotword 的 trait 路径并存
+
+## 29. 第二十六轮——第二十四轮全代码审查报告复查（2026-08-10，修 5 + 留后续 2 + 接受反馈 1）
+
+### 触发
+
+收到第二十四轮全代码审查报告（1 P1 + 5 P2 + ~13 P3，前端 TS / Rust panic / 并发 3 代理）。报告头号发现是 **P1 regression——第二十三轮 P2-d4 修复（我的 commit `4478f38d`）引入 cloud feature 编译失败**。报告自省：「上轮复查只 Read 代码标 ✅ 未 cargo check」。
+
+### 🔴 P1-1 · lifecycle cloud 编译失败（我引入的 regression）✅ 已修
+
+**核实**：`cargo check -p octopus-desktop --features "cloud,embedded,vault"` → `error[E0277]: Result<..., ...>` is not a future（铁证）。
+
+**根因**：第二十三轮 P2-d4 我用 `std::panic::catch_unwind(AssertUnwindSafe(|| async {...}))`——catch_unwind 返 `Result<{async block}, _>`，`.await` 作用在 Result 上非法。cloud feature 分支潜伏至今（默认 features 不编译此分支）。
+
+**修复**：改用 `futures_util::FutureExt::catch_unwind`（直接作用在 Future 上）。match 拆两层（原三层 Result 简化）。
+
+**教训**：修复涉及条件编译/feature 的代码，**必须用对应 feature 跑 cargo check**，不能只用默认 features。我之前 `cargo build | tail` 且只用默认 features 验证——P2-6 教训的延伸。
+
+### 🟠 P2 复查结论
+
+| 项 | 复查结论 | 处理 |
+|---|---|---|
+| **P2-c1**（record 持锁跨 await :287-293）| ✅ CONFIRMED | **留后续**——b"stop\n" 5 字节 << 64KB pipe 缓冲，正常零延迟；触发需 helper hung（octopus 自有 binary 极罕见）；此段有 3 处历史血泪修复（stop 卡 Stopping 系列），改动风险高。报告自己降 P2 conf 55 |
+| **P2-c2**（ocr TOCTOU :146-166）| ✅ CONFIRMED | **已修**——`check_and_release_if_idle` inner.lock() 后加一行 double-checked is_idle（经典双重检查锁定，对齐 :206-207 注释意图） |
+| **P2-c3**（download 同步 IO :599-695）| ✅ CONFIRMED | **留后续**——async fn 内同步文件 IO（std::fs write/seek/flush）阻塞 tokio worker。SSD 场景 write_all <1ms 影响小；完整修法（tokio::fs 重构 ~100 行流式下载）复杂度高，易回归。下载是低频操作非持续热路径 |
+| **P2-c4**（hotword GC 不取 SYNC_LOCK :215-233）| ✅ CONFIRMED | **已修**——GC 入口加 `#[cfg(feature="vault")] try_sync_lock()`（锁忙跳过本次 GC，下次 tick 再试）。防 GC purge 与 sync_now export 并发→已删 set 复活 |
+| **P2-c5**（vault meta 绕 META_WRITE_LOCK :528/953/1441）| ✅ CONFIRMED | **已修**——三处 `db::upsert_vault_meta` 改 `save_vault_meta`（后者内含 acquire_meta_write_lock）。防 sync 进行中（持 SYNC_LOCK）与 change_master_password（持 META_WRITE_LOCK）meta 写交错→security_stamp/app_key_sync_enc 回滚 |
+
+### 🟡 P2-l3 半修反馈（接受，注释诚实化）
+
+报告指出我上轮 P2-l3 是半修——`truncate_error_body` 只截断 message 不防 OOM（`response.text()` 仍全量读内存），注释自称"避免全量入内存"与实现矛盾。
+
+**反馈接受**：注释确实是误导（我上轮教训没吸取好）。修正注释——明示 `response.text()` 仍全量读，OOM 修复（streaming + 上限分块）留 P3。实际威胁低：LLM provider 是用户自配 API，GB 级 body 需主动作恶。
+
+### 🟡 P3 择要修复（2 处，对称/便宜）
+
+- **hotword thread-local set_id 缺 RAII**（:984-987）：对称第二十三轮 clipboard P3-sync1——`merge_three_way?` 早返回时跳过 clear_thread_set_id。加 `SetIdGuard`（RAII Drop 清）
+- **pty wait_timeout 中毒不对称**（session.rs:285）：`:285 .unwrap()` 改 `.unwrap_or_else(|e| e.into_inner())`，对称同文件 :280/:291/:333 的中毒处理
+
+### 留后续（3 项，均经评估）
+
+| 项 | 原因 |
+|---|---|
+| P2-c1（record 持锁跨 await）| helper hung 极罕见 + 血泪修复多，改动风险高 |
+| P2-c3（download 同步 IO）| SSD 影响小 + tokio::fs 重构复杂，低频非热路径 |
+| P2-l3（LLM response OOM）| 用户自配 provider 威胁低 + streaming 重构复杂 |
+
+### 验证
+
+- `cargo check -p octopus-desktop --features "cloud,embedded,vault"`（cloud 路径）+ `--features "remote-ws,embedded,vault"` + `--features "remote-grpc,embedded,vault"` + 默认 —— **全 feature 组合编译通过**（吸取 P1 教训，关键路径必跑多 feature）
+- `cargo test`：vault 267 / ocr 35 / llm 14 / sync 155 / pty 32 / desktop 525 全过

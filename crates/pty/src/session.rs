@@ -282,7 +282,11 @@ where
                         if done_f.load(Ordering::Acquire) {
                             return;
                         }
-                        let (next, _) = cv.wait_timeout(g, FLUSH_MAX_IDLE).unwrap();
+                        // 第二十六轮 P3：对称 :280/:291 的 unwrap_or_else(|e| e.into_inner())
+                        // 处理中毒（原 unwrap 在 Mutex 中毒时 panic，与其他 4 处不对称）。
+                        let (next, _) = cv
+                            .wait_timeout(g, FLUSH_MAX_IDLE)
+                            .unwrap_or_else(|e| e.into_inner());
                         g = next;
                     }
                 }

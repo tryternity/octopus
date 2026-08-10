@@ -36,6 +36,7 @@ use octopus_sync::store::{iso_to_unix_ms, now_secs};
 use zeroize::Zeroizing;
 
 use crate::crypto::kdf::Argon2Params;
+use crate::storage::meta::save_vault_meta;
 use crate::sync::fingerprint;
 use crate::sync::store;
 
@@ -525,7 +526,7 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
         public_key: None,
         protected_private_key: None,
     };
-    db::upsert_vault_meta(&meta_input).map_err(SyncError::Other)?;
+    save_vault_meta(&meta_input).map_err(SyncError::Other)?;
 
     // 3. 读所有 cipher/folder 文件 → upsert SQLite
     let (ciphers, folders) = store::import_all_from_files()?;
@@ -950,7 +951,7 @@ pub fn resolve_with_remote(password: Zeroizing<String>) -> Result<(), SyncError>
         public_key: pub_key,
         protected_private_key: priv_key,
     };
-    db::upsert_vault_meta(&meta_input).map_err(SyncError::Other)?;
+    save_vault_meta(&meta_input).map_err(SyncError::Other)?;
     log::info!("[sync] resolve_with_remote 完成——本地 vault_meta 已用远程覆盖");
     Ok(())
 }
@@ -1438,7 +1439,7 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
             public_key: pub_key,
             protected_private_key: priv_key,
         };
-        db::upsert_vault_meta(&meta_input).map_err(SyncError::Other)?;
+        save_vault_meta(&meta_input).map_err(SyncError::Other)?;
     }
 
     // === 阶段 E：写 outline + meta（从 DB 最新状态重建——merge 完后 DB 即单一真相源）===

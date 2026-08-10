@@ -148,6 +148,14 @@ impl OcrEngine {
             return;
         }
         let mut inner = self.inner.lock();
+        // 第二十六轮 P2-c2（double-checked locking）：:147 检查 is_idle 后等 inner 锁，
+        // 若 OCR 推理正在跑（run_ocr :217 持锁 + :207 刷新 last_used=now），守护线程等
+        // 锁到 OCR 完成。拿到锁时 last_used 已是刚刷新的 now，is_idle 应返 false——但
+        // 原实现不再复查直接 unload 刚用完的模型。复查消除 TOCTOU（对齐 :206-207 注释
+        // "防守护线程在重载期间误判 idle" 的意图）。
+        if !Self::is_idle(&self.last_used.lock()) {
+            return;
+        }
         if let Some(backend) = inner.as_mut() {
             backend.unload(); // PP-OCR drop RapidOcr → 释放 ort session + mmap 权重
             *inner = None;    // drop Box<dyn OcrBackend>

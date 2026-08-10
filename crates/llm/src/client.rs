@@ -14,12 +14,15 @@ static HTTP_CLIENT: Lazy<reqwest::blocking::Client> = Lazy::new(|| {
         .expect("failed to build LLM HTTP client")
 });
 
-/// 第二十二轮 P2-l1/P2-l3：读取错误响应 body 并截断——
-/// - **P2-l1（信息泄漏）**：某些 provider 4xx body 会 echo 请求头（含 `Authorization: Bearer ...`）
-///   或 stack trace，整 body 进 bail message → toast/日志泄漏。截断到 500 字符（足够诊断
-///   HTTP 错误，不会完整暴露 echo 的敏感头）。
-/// - **P2-l3（OOM）**：恶意/异常 server 返回超大 body，截断避免全量入内存。
-///   LLM provider 响应体通常 <100KB（错误信息），500 字符覆盖典型 JSON error。
+/// 第二十二轮 P2-l1 / 第二十六轮 P2-l3 复查：读取错误响应 body 并截断——
+/// - **P2-l1（信息泄漏，已修）**：某些 provider 4xx body 会 echo 请求头（含
+///   `Authorization: Bearer ...`）或 stack trace，整 body 进 bail message → toast/日志
+///   泄漏。截断到 500 字符（足够诊断 HTTP 错误，不会完整暴露 echo 的敏感头）。
+/// - **P2-l3（OOM，留后续 P3）**：`response.text()`（:25）仍全量读内存——截断只省
+///   message 不防 OOM。原注释自称"避免全量入内存"与实现矛盾（第二十六轮纠正）。实际
+///   威胁低：LLM provider 是用户自配 API（OpenAI/DeepSeek/Ollama），非不可信外部服务，
+///   GB 级 body 需 provider 主动作恶。完整修复需 reqwest streaming + 上限分块读，复杂度
+///   超出收益，留 P3。
 const ERROR_BODY_MAX_CHARS: usize = 500;
 fn read_error_body(response: reqwest::blocking::Response) -> String {
     let text = response.text().unwrap_or_default();

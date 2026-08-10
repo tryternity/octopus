@@ -114,18 +114,29 @@ pub(crate) fn handle_toggle(
                         // 超时不兜 panic，panic 终止 task → tx.send 永不执行 → stage 永久卡
                         // CloudClosing。对齐 polish.rs:112 / paste.rs:102 范式。panic 后仍 send
                         // Err，让 handler 能 finalize_cloud 收尾（无标点补全）。
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| async {
-                            tokio::time::timeout(
-                                std::time::Duration::from_secs(30),
-                                handle.close_async(),
-                            )
-                            .await
-                        }))
+                        //
+                        // 第二十六轮 P1-1（regression 修复）：原用 std::panic::catch_unwind 包
+                        // async block——catch_unwind 返 Result<{async block}, _>，.await 作用在
+                        // Result 上非法（cloud feature 编译失败）。改用 FutureExt::catch_unwind
+                        // 直接作用在 Future 上（返 Future<Output=Result<F::Output, _>>）。
+                        use futures_util::FutureExt;
+                        let result = std::panic::AssertUnwindSafe(tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            handle.close_async(),
+                        ))
+                        .catch_unwind()
                         .await;
+                        // result: Result<Result<Result<String, anyhow::Error>, Elapsed>, Box<dyn Any+Send>>
                         let text_result = match result {
-                            Ok(Ok(Ok(text))) => Ok(text),
-                            Ok(Ok(Err(e))) => Err(e.to_string()),
-                            Ok(Err(_)) => Err("cloud close timeout (30s)".to_string()),
+                            // 未 panic
+                            Ok(timeout_result) => match timeout_result {
+                                Ok(close_result) => match close_result {
+                                    Ok(text) => Ok(text),
+                                    Err(e) => Err(e.to_string()),
+                                },
+                                Err(_) => Err("cloud close timeout (30s)".to_string()),
+                            },
+                            // panic
                             Err(_) => Err("cloud close panic".to_string()),
                         };
                         let _ = tx_clone.send(Command::CloudStreamingDone {
