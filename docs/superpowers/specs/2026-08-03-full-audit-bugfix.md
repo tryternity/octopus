@@ -414,7 +414,8 @@
 | 25 | （本轮，待 commit） | P2-sync1/sync2 export 原子化实施：方案 B 先写后清孤儿（clipboard + hotword + vault 三处 export 去 remove_dir_all）+ 方案 C 删 push 冗余写。5 Task + 5 回归测试 |
 | 26 | `968a6f3e` | 第二十四轮报告复查：修 5（**P1-1 cloud 编译 regression** + P2-c4 hotword GC 取锁 + P2-c5 vault meta 加锁 + P2-c2 ocr TOCTOU + P3 hotword thread-local/pty 中毒）+ 留后续 2（P2-c1/c3）+ 接受 P2-l3 半修反馈 |
 | 27 | `587d16b4` | 第二十七轮报告复查：修 3（P2-3 opus_mt eos bail! + P2-1 tombstone 吞错改 warn + P3-4 谎报推送改 message）+ 留后续 4（P2-1 active 事务 / P2-2 / P3-1 / P3-3） |
-| 28 | （本轮，待 commit） | 第二十八轮并发专项复查：修 3（**P1-F1 vault meta 覆盖竞态→锁死** + P3-F5 clipboard_cleanup 取锁 + P3-LLM1 正则限定）+ 留后续 2（P2-F2 translate block_on / P2-F3 pty Mutex 跨 write） |
+| 28 | `260ed000` | 第二十八轮并发专项复查：修 3（**P1-F1 vault meta 覆盖竞态→锁死** + P3-F5 clipboard_cleanup 取锁 + P3-LLM1 正则限定）+ 留后续 2（P2-F2 translate block_on / P2-F3 pty Mutex 跨 write） |
+| 29 | （本轮，待 commit） | 第二十九轮数据完整性复查：修 3（P2-F1 paraformer enc_slice 越界离线+流式 + P2-F3 canvas 黑图改 Result + P3-LLM1 单候选契约闭合）+ 留后续系统性短板（P3 F-2~F-8 ONNX 边界） |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1407,3 +1408,42 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 - `cargo check` vault + desktop（vault feature）—— 0 error 0 warning
 - `cargo test`：vault 267 / llm 14 全过
+
+## 32. 第二十九轮——数据完整性/数值边界专项复查（2026-08-10，修 3 + 留后续系统性短板）
+
+### 触发
+
+收到第二十九轮全代码审查报告（数据完整性 + 数值/索引边界 + 字符串/编码安全 + 资源泄漏，4 代理 fan-out 其中 2 个 429 失败由报告者补审）。A 部分确认第二十八轮 3/3 修复落地。
+
+### 修复明细（3 处）
+
+#### P2-F1 · paraformer enc_slice 越界（离线漏保护 + 流式循环越界）
+
+**根因**：
+- 离线 paraformer.rs:169 `enc_tensor.slice(s![0, ..enc_len_scalar, ..])`——enc_len_scalar 来自 ONNX 标量输出，正常 == dim1，但模型损坏/int8 异常时 enc_len_scalar > dim1 → slice 越界 panic。流式版 :608 有 `.min(enc_dim1)` 保护但**修复不完整**——:618 循环 `for i in 0..enc_len` 仍用原始 enc_len，循环到 `i >= enc_dim1` 时 enc_data 越界 panic。
+
+**修复**：3 处（离线 1 + 流式 2）统一 `let effective_enc_len = enc_len.min(enc_tensor.shape()[1]);`，slice 和循环都用 effective_enc_len。
+
+#### P2-F3 · canvas 数据不一致静默返 1×1 黑图
+
+**根因**：capx stitch/mod.rs canvas() :485 + into_canvas() :512 的 `from_raw` 返 None（canvas_buf.len() != w*h*4，数据严重损坏）时，仅 log error + 返 `RgbaImage::new(1, 1)`（1×1 黑图）。调用方（scroll.rs:748/789）拿到后继续编码/入库/剪贴板——用户得空白图且根因被掩盖。
+
+**修复**：canvas() / into_canvas() 改返 `Result`，数据损坏时 `Err` 传播。scroll.rs 两处 match——Err 时 log error + emit `scroll://error` 事件 + return（中止截图流程，不再掩盖）。
+
+#### P3-LLM1 契约闭合 · 单候选标记漏清
+
+**根因**：上轮 P3-LLM1 修复（正则要求含 `|`）引入契约脆弱性——单候选 `vec!["词"]` 经 prompt.rs:124 `cands.join("|")` 产生无 `|` 的 `<词>`，新正则无法清理。当前被 corrector 「>1 候选才 push」隐式挡住，但无编译期保证。
+
+**修复**：prompt.rs:122 注入点闭合——`if cands.len() >= 2 { 包裹<> } else { 原样 push }`。单候选不包裹（无需 LLM 选），契约在注入点显式闭合。
+
+### 留后续（系统性短板）
+
+| 项 | 原因 |
+|---|---|
+| **P3 F-2~F-8**（ONNX 输出异常 panic）| 6+ 处 ASR 引擎的 argmax/切片无边界检查（qwen3 空 logits / CTC greedy offset 切片 / whisper usize 下溢 / vad 无长度校验 / opus_mt+m2m100 logits offset）。正常模型不触发，异常模型（损坏/int8/ORT 版本差异）才 panic。系统性改造（try_extract_tensor + is_empty bail + offset+len<=buf.len() bail 统一模式）工作量大，留专项 |
+| **P3 F4-F8 capx**（u32 乘法溢出 / GrayBuf 无 bounds / 除零）| 当前调用方安全，理论边界加固 |
+
+### 验证
+
+- `cargo build` asr-local/capx + `cargo check` desktop —— 0 error 0 warning
+- `cargo test`：asr-local 170 / capx 55 / llm 14 / desktop 525 全过

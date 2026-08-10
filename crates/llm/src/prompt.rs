@@ -120,8 +120,15 @@ pub(crate) fn regions_prompt(
         if r.preserve {
             body.push_str(&format!("{{{}}}", r.text));
         } else if let Some(ref cands) = r.candidates {
-            // 热词候选：<候选1|候选2|候选3>
-            body.push_str(&format!("<{}>", cands.join("|")));
+            if cands.len() >= 2 {
+                // 热词多候选：<候选1|候选2|候选3>（LLM 选一个）
+                // 第二十九轮 P3-LLM1 契约闭合：单候选不包裹 <>（无需 LLM 选，原样 push
+                // 文本）——避免 strip_edited_markers 正则（要求含 |）无法清单候选残留 <词>。
+                body.push_str(&format!("<{}>", cands.join("|")));
+            } else {
+                // 单候选或空——原样 push（单候选不需 LLM 选择）
+                body.push_str(cands.first().map(|s| s.as_str()).unwrap_or(""));
+            }
         } else {
             body.push_str(&r.text);
         }
