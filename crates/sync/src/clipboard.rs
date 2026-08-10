@@ -681,8 +681,15 @@ fn pull_favorite(fav: &octopus_infra::db::ClipboardFavorite) -> Result<bool> {
                 };
                 octopus_infra::db::upsert_favorite_sync(&tombstone_fav)?;
                 // history 行可能存在且 is_favorite=1（favorites 表记录丢了但 history 标记还在）
-                // ——幂等清掉，不存在则 no-op
-                let _ = octopus_infra::db::set_clipboard_is_favorite(history_id, false);
+                // ——幂等清掉，不存在则 no-op。第二十七轮 P2-1：原 let _ = 吞错，现 log warn
+                // （不阻断——favorite tombstone 已写入，history.is_favorite 残留不影响 sync 正确性，
+                // 下次 export 会基于 favorite 表重建，UI 列表取 favorite 表为准）。
+                if let Err(e) = octopus_infra::db::set_clipboard_is_favorite(history_id, false) {
+                    log::warn!(
+                        "[sync] 收藏 pull: {} tombstone 后清 history.is_favorite 失败（不阻断）：{}",
+                        history_id, e
+                    );
+                }
                 log::debug!("[sync] 收藏 pull: {} DB 无 → INSERT tombstone + 清 history.is_favorite", history_id);
                 Ok(true)
             }

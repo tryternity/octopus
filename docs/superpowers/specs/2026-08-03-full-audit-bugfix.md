@@ -412,7 +412,8 @@
 | 23 | （本轮，待 commit） | 全代码审查 23 P2 复查：修 12（infra 4 事务 + record thumbnail 事务 + autotype PasswordOnly verify + cloud close catch_unwind + ocr validate 激活 + llm error body 截断 + sync thread-local clear + **scheduler hang 超时兜底** + **download Etag 注释修正** + **server spawn_blocking 超时**）+ 驳回 1（P2-ocr2 误报）+ 留后续 10 |
 | 24 | （本轮，待 commit） | 留后续项推进：修 5（spawn .expect 降级 + image size guard + WAV decode spawn_blocking + Etag dead code 清理 + WS engine 校验）+ 留后续 2（P2-srv2 共享 session 重构 + P2-d1 autotype 移线程） |
 | 25 | （本轮，待 commit） | P2-sync1/sync2 export 原子化实施：方案 B 先写后清孤儿（clipboard + hotword + vault 三处 export 去 remove_dir_all）+ 方案 C 删 push 冗余写。5 Task + 5 回归测试 |
-| 26 | （本轮，待 commit） | 第二十四轮报告复查：修 5（**P1-1 cloud 编译 regression** + P2-c4 hotword GC 取锁 + P2-c5 vault meta 加锁 + P2-c2 ocr TOCTOU + P3 hotword thread-local/pty 中毒）+ 留后续 2（P2-c1/c3）+ 接受 P2-l3 半修反馈 |
+| 26 | `968a6f3e` | 第二十四轮报告复查：修 5（**P1-1 cloud 编译 regression** + P2-c4 hotword GC 取锁 + P2-c5 vault meta 加锁 + P2-c2 ocr TOCTOU + P3 hotword thread-local/pty 中毒）+ 留后续 2（P2-c1/c3）+ 接受 P2-l3 半修反馈 |
+| 27 | （本轮，待 commit） | 第二十七轮报告复查：修 3（P2-3 opus_mt eos bail! + P2-1 tombstone 吞错改 warn + P3-4 谎报推送改 message）+ 留后续 4（P2-1 active 事务 / P2-2 / P3-1 / P3-3） |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1326,3 +1327,45 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 - `cargo check -p octopus-desktop --features "cloud,embedded,vault"`（cloud 路径）+ `--features "remote-ws,embedded,vault"` + `--features "remote-grpc,embedded,vault"` + 默认 —— **全 feature 组合编译通过**（吸取 P1 教训，关键路径必跑多 feature）
 - `cargo test`：vault 267 / ocr 35 / llm 14 / sync 155 / pty 32 / desktop 525 全过
+
+## 30. 第二十七轮——全代码审查报告复查（2026-08-10，修 3 + 留后续 4）
+
+### 触发
+
+收到第二十七轮全代码审查报告（3 P2 + 8 P3，错误处理/状态一致性专项）。A 部分确认第二十六轮 6/6 修复落地（P1-1 真编译验证）。
+
+### 修复明细（3 处）
+
+#### P2-3 · opus_mt eos_token_id unwrap_or(0)
+
+**根因**：`opus_mt.rs:71` `eos_token_id` 缺字段 → `unwrap_or(0)`，:75 else 分支也 eos=0。token 0 通常是 pad/BOS——若首步 argmax 恰为 0 → :158 `if next_token == eos_id { break }` 立即 break 返空串；若 0 不被选中 → 跑满 MAX_DECODER_LENGTH=512 输出垃圾。无错误信号。
+
+**修复**：缺 eos_token_id 时 `bail!`（模型必需元数据，缺即不可用），而非危险默认 0。else 分支（无 generation_config.json）也 bail!（opus-mt 标准模型必有此文件）。
+
+#### P2-1（部分）· pull_favorite tombstone 吞错
+
+**根因**：clipboard.rs:685 `let _ = set_clipboard_is_favorite(history_id, false)` 静默吞错。
+
+**修复**：改 `if let Err(e) = ... log::warn`（不阻断——favorite tombstone 已写入，history.is_favorite 残留不影响 sync 正确性，UI 取 favorite 表为准）。
+
+**注**：P2-1 的 active 分支三步无事务（:715/:722/:723）确认成立但**留后续**——三步跨模块调 with_db 函数（upsert_history / upsert_favorite_sync / set_clipboard_is_favorite），包事务需三个 `_at` 版本 + pull_favorite 重构为单 with_db 闭包，中等重构。触发需 ②成功③失败 精确交错 + busy 超时罕见。
+
+#### P3-4 · sync_now 谎报「已推送到远程」
+
+**根因**：vault engine.rs :827 `push_errors.is_empty()` 为 true 有两种情况：①所有 remote 成功；②remotes 为空（git_remote_list 失败或真无 remote）→ for 不执行 → push_errors 空。情况②时仍报「已推送到远程」，用户误以为有云端备份。
+
+**修复**：记 `remotes_was_empty` bool，message 区分——remotes 空 + push_errors 空 → 「本地已保存，未推送（无 remote 配置或 git remote list 失败）」。
+
+### 留后续（4 项）
+
+| 项 | 原因 |
+|---|---|
+| **P2-1 active 事务**（pull_favorite 三步无事务）| 跨模块 with_db 函数包事务需三 `_at` 版本 + 重构 pull_favorite，中等改动。触发需精确交错 + busy 超时罕见 |
+| **P2-2**（sync_now merge 失败仍 commit+push）| 设计权衡——vault 优先不应被 hotword 拖累（:789 注释）。merge 失败后工作树是「部分新部分旧」（非数据丢失），第三设备下次 sync 收敛（merge 幂等）。更好方案是分离 vault/hotword git commit，大重构 |
+| **P3-1**（pipeline 读失败 tombstone 误判）| :169-180 读失败→unwrap_or(false) 视为非 tombstone，push 分支（现 export_all）可能覆盖远程 tombstone。触发需读失败+时间戳方向+第三设备三条件叠加。修法（读失败 skip 整个 key）改控制流影响面大 |
+| **P3-3**（now_secs unwrap_or(0)）| 时钟异常（早于 1970）主线不可触发，纯理论加固。6 处改 unwrap_or(1) 价值极低 |
+
+### 验证
+
+- `cargo build` translation/vault/sync —— 0 error 0 warning
+- `cargo test`：translation 25 / vault 267 / sync 155 全过

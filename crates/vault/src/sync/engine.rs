@@ -802,9 +802,12 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     // 首次推送用 -u 设 upstream；后续普通 push
     // #4 修复：push 失败累计到 push_errors，不再静默 log::warn! 后谎报「已推送」
     let mut push_errors: Vec<(String, String)> = Vec::new();
+    // 第二十七轮 P3-4：记 remotes 是否为空，message 区分「已推送」vs「未推送（无 remote）」
+    let remotes_was_empty;
     {
         let remotes = git::git_remote_list(&root).unwrap_or_default();
-        if remotes.is_empty() {
+        remotes_was_empty = remotes.is_empty();
+        if remotes_was_empty {
             log::warn!("[sync] 无 remote 配置——跳过 push");
         }
         for (name, _url) in &remotes {
@@ -824,7 +827,18 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     }
 
     // message 措辞根据 push_errors / skipped 分支（#4——不再无条件「已推送到远程」）
-    let message = if push_errors.is_empty() {
+    // 第二十七轮 P3-4：remotes 为空（git remote list 失败或真无 remote）时原仍报
+    // 「已推送到远程」——用户误以为有云端备份实际没有（安全语义错误）。现区分。
+    let message = if remotes_was_empty && push_errors.is_empty() {
+        if is_first_push {
+            "首次同步：本地已保存，未推送（无 remote 配置或 git remote list 失败）".to_string()
+        } else {
+            format!(
+                "同步完成（本地）：vault 拉取 {} 条/推送 {} 条，热词拉取 {} 条/推送 {} 条，剪贴板收藏拉取 {} 条/推送 {} 条——未推送（无 remote）",
+                pulled, pushed, hotwords_pulled, hotwords_pushed, clipboard_pulled, clipboard_pushed
+            )
+        }
+    } else if push_errors.is_empty() {
         if is_first_push {
             "首次同步完成，已推送到远程".to_string()
         } else {
