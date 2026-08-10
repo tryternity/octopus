@@ -402,13 +402,23 @@ pub fn delete_favorite_file(uuid: &str) -> Result<()> {
 /// 单比 history_id 无法发现内容变化。本函数对内容字段取指纹——outline diff + 冲突比对
 /// 用它检测「同一 history_id 的内容是否变了」。
 fn history_row_md5(row: &HistoryRowJson) -> String {
+    // 第二十九轮补充 P2-C1：原 md5 只含 4 字段（id/item_type/content/meta_info），漏
+    // ref_data/segments/is_rich。Image/File 的 content 恒空（实际内容在 ref_data），
+    // voice 的 segments（润色/编辑段模型）——这些字段变化时 md5 不变 → outline 不 diff
+    // → sync 不 push → 远端拿不到新内容，静默数据不一致。补全 3 字段。
+    //
+    // 注：补字段后所有已 sync 设备的 md5 会变（新增字段参与计算），首次 sync 触发全量
+    // conflict（md5 不等）→ 走「DB 赢」push 分支 → 最终收敛。非数据丢失，一次性全量 push。
     md5_hex(
         format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}",
             row.id,
             row.item_type,
             row.content,
-            row.meta_info.as_deref().unwrap_or("")
+            row.ref_data.as_deref().unwrap_or(""),
+            row.meta_info.as_deref().unwrap_or(""),
+            row.is_rich,
+            row.segments.as_deref().unwrap_or(""),
         )
         .as_bytes(),
     )
@@ -470,7 +480,12 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
                 created_at: String::new(),
                 segments: None,
             });
-            let _ = octopus_infra::db::set_sync_md5(&fav.history_id, &md5);
+            // 第二十九轮补充 P3-CF9：原 let _ = 吞 DB 写错，改 log warn（不阻断——
+            // md5 未回写 DB 会导致下次 merge 误判 conflict 做无效 push + 日志噪声，
+            // 但不影响正确性，DB 是真相源 export 会重算）。
+            if let Err(e) = octopus_infra::db::set_sync_md5(&fav.history_id, &md5) {
+                log::warn!("[sync] 收藏 export set_sync_md5 失败（不阻断）：{}", e);
+            }
             entries.insert(
                 fav.history_id.clone(),
                 OutlineEntry {
@@ -500,7 +515,12 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
 
             let md5 = history_row_md5(&payload.history_row);
             // export 后把磁盘指纹写回 DB——下次 merge 据此比对冲突（DB md5 vs outline md5）。
-            let _ = octopus_infra::db::set_sync_md5(&fav.history_id, &md5);
+            // 第二十九轮补充 P3-CF9：原 let _ = 吞 DB 写错，改 log warn（不阻断——
+            // md5 未回写 DB 会导致下次 merge 误判 conflict 做无效 push + 日志噪声，
+            // 但不影响正确性，DB 是真相源 export 会重算）。
+            if let Err(e) = octopus_infra::db::set_sync_md5(&fav.history_id, &md5) {
+                log::warn!("[sync] 收藏 export set_sync_md5 失败（不阻断）：{}", e);
+            }
 
             entries.insert(
                 fav.history_id.clone(),

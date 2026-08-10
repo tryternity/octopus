@@ -415,7 +415,8 @@
 | 26 | `968a6f3e` | 第二十四轮报告复查：修 5（**P1-1 cloud 编译 regression** + P2-c4 hotword GC 取锁 + P2-c5 vault meta 加锁 + P2-c2 ocr TOCTOU + P3 hotword thread-local/pty 中毒）+ 留后续 2（P2-c1/c3）+ 接受 P2-l3 半修反馈 |
 | 27 | `587d16b4` | 第二十七轮报告复查：修 3（P2-3 opus_mt eos bail! + P2-1 tombstone 吞错改 warn + P3-4 谎报推送改 message）+ 留后续 4（P2-1 active 事务 / P2-2 / P3-1 / P3-3） |
 | 28 | `260ed000` | 第二十八轮并发专项复查：修 3（**P1-F1 vault meta 覆盖竞态→锁死** + P3-F5 clipboard_cleanup 取锁 + P3-LLM1 正则限定）+ 留后续 2（P2-F2 translate block_on / P2-F3 pty Mutex 跨 write） |
-| 29 | （本轮，待 commit） | 第二十九轮数据完整性复查：修 3（P2-F1 paraformer enc_slice 越界离线+流式 + P2-F3 canvas 黑图改 Result + P3-LLM1 单候选契约闭合）+ 留后续系统性短板（P3 F-2~F-8 ONNX 边界） |
+| 29 | `21e70af8` | 第二十九轮数据完整性复查：修 3（P2-F1 paraformer enc_slice 越界离线+流式 + P2-F3 canvas 黑图改 Result + P3-LLM1 单候选契约闭合）+ 留后续系统性短板（P3 F-2~F-8 ONNX 边界） |
+| 29b | （本轮，待 commit） | 第二十九轮补充（代理 C 补跑）：修 3（P2-C1 md5 补 ref_data/segments/is_rich + P2-C2 voice 吞错致物理删改 fail-safe + P3-CF9 set_sync_md5 改 warn）+ 留后续 P3 群 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1447,3 +1448,44 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 - `cargo build` asr-local/capx + `cargo check` desktop —— 0 error 0 warning
 - `cargo test`：asr-local 170 / capx 55 / llm 14 / desktop 525 全过
+
+## 33. 第二十九轮补充——代理 C 补跑复查（clipboard/sync/vault 编码与完整性，修 3 + 留后续）
+
+### 触发
+
+第二十九轮报告的代理 C（clipboard/sync/vault 编码与完整性）补跑成功。2 P2 + 7 P3。整合优先级 1/4/5（P2-F1/P2-F3/P3-LLM1）上轮已修，本轮处理 2/3/6（P2-C1/P2-C2 + C-F9）。
+
+### 修复明细（3 处）
+
+#### P2-C1 · history_row_md5 漏 ref_data/segments/is_rich
+
+**根因**：clipboard.rs:404 md5 只含 4 字段（id/item_type/content/meta_info），漏 ref_data/segments/is_rich。Image/File 的 content 恒空（实际内容在 ref_data），voice 的 segments（润色/编辑段模型）——这些字段变化时 md5 不变 → outline 不 diff → sync 不 push → 远端拿不到新内容，静默数据不一致。
+
+**修复**：md5 补 ref_data + is_rich + segments（7 字段拼接）。注：补字段后已 sync 设备 md5 全变 → 首次 sync 触发全量 conflict（DB 赢 push）→ 最终收敛，非数据丢失。
+
+#### P2-C2 · is_voice_worth_keeping 吞 DB 错误致 voice 物理删
+
+**根因**：clipboard store.rs:316 `unwrap_or(false)` 把 DB 错误（锁竞争/IO/损坏）并入 false → delete_item 走 permanent_delete_item → voice 永久删除（不可恢复，失去 bigram 语料）。删除操作应 fail-safe。
+
+**修复**：match 区分——`QueryReturnedNoRows` → false（行不存在，物理删合理）；其他 DB 错误 → log warn + true（保守软删，宁可多保留）。delete_item + delete_items 两调用点都受益。
+
+#### P3-CF9 · set_sync_md5 吞 DB 写错
+
+**根因**：clipboard.rs:483/513 `let _ = set_sync_md5(...)` 吞错。失败 → 文件 md5 已新但 DB 旧 → 下次 merge 误判 conflict（无效 push + 日志噪声，不影响正确性）。
+
+**修复**：改 `if let Err(e) = ... log::warn`（对齐 P2-1 tombstone 分支 :685 的范式）。
+
+### 留后续（P3 群）
+
+| 项 | 原因 |
+|---|---|
+| C-F3（iso_to_unix_ms parse 失败默认 1970）| 负时间戳排序异常，正常 ISO 不触发 |
+| C-F4（时钟异常 unwrap_or(0)）| 同上轮 P3-3，主线不可触发 |
+| C-F5（LIKE 未转义 %/_）| <3 字符回退路径，触发需搜极短含通配符词（罕见） |
+| C-F6/C-F7（.ok()/filter_map 吞错无日志）| 观测性改进，不影响正确性 |
+| C-F8（序列化 unwrap_or_default 空串）| 序列化失败极罕见 |
+
+### 验证
+
+- `cargo build` clipboard/sync —— 0 error 0 warning
+- `cargo test`：clipboard 24 / sync 155 全过
