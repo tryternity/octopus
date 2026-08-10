@@ -269,14 +269,19 @@ pub fn polish_regions(
 ///
 /// 仅去包裹标记的括号，不影响用户文本里的字面 `{`/`}`/`<`/`>`（代码/数学/HTML）——
 /// 那些场景下括号是无修饰的散字符，不构成 `{...}`/`<...>` 的配对标记。
-/// 正则要求内部无嵌套 `{}`/`<>`（标记格式契约），字面文本里的孤立括号不受影响。
+///
+/// 第二十八轮 P3-LLM1：RE_HOTWORDS_MARKER 原为 `<[^<>]*>`（匹配任意 `<...>`），会误删
+/// `<div>` / `a<b` / 代码 `i<5 && j>0` 等。改为 `<[^<>|]*\|[^<>]*>` ——要求内部含至少一个
+/// `|`（hotwords 多候选分隔符），单候选 `<词>` 不匹配（LLM 应已选定无残留标记）。
+/// 这排除了 HTML 标签（无 `|`）和代码比较（无 `|`），仅清多候选残留 `<cand1|cand2>`。
+/// 注：单候选场景 LLM 返回的是选定词本身（无 `<>` 包裹），不需此正则清理。
 ///
 /// 第六轮 L1-b：两个 regex 预编译为 static Lazy（原每次 polish_regions 调用都
 /// Regex::new×2，中间润色 mode=2 停顿驱动频繁触发，热路径不必要开销）。
 static RE_EDITED_MARKER: Lazy<regex::Regex> =
     Lazy::new(|| regex::Regex::new(r"\{([^{}]*)\}").unwrap());
 static RE_HOTWORDS_MARKER: Lazy<regex::Regex> =
-    Lazy::new(|| regex::Regex::new(r"<[^<>]*>").unwrap());
+    Lazy::new(|| regex::Regex::new(r"<[^<>|]*\|[^<>]*>").unwrap());
 
 fn strip_edited_markers(text: &str) -> String {
     // {word} → word（edited 语境标记，内部不含嵌套 {}）

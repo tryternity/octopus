@@ -413,7 +413,8 @@
 | 24 | （本轮，待 commit） | 留后续项推进：修 5（spawn .expect 降级 + image size guard + WAV decode spawn_blocking + Etag dead code 清理 + WS engine 校验）+ 留后续 2（P2-srv2 共享 session 重构 + P2-d1 autotype 移线程） |
 | 25 | （本轮，待 commit） | P2-sync1/sync2 export 原子化实施：方案 B 先写后清孤儿（clipboard + hotword + vault 三处 export 去 remove_dir_all）+ 方案 C 删 push 冗余写。5 Task + 5 回归测试 |
 | 26 | `968a6f3e` | 第二十四轮报告复查：修 5（**P1-1 cloud 编译 regression** + P2-c4 hotword GC 取锁 + P2-c5 vault meta 加锁 + P2-c2 ocr TOCTOU + P3 hotword thread-local/pty 中毒）+ 留后续 2（P2-c1/c3）+ 接受 P2-l3 半修反馈 |
-| 27 | （本轮，待 commit） | 第二十七轮报告复查：修 3（P2-3 opus_mt eos bail! + P2-1 tombstone 吞错改 warn + P3-4 谎报推送改 message）+ 留后续 4（P2-1 active 事务 / P2-2 / P3-1 / P3-3） |
+| 27 | `587d16b4` | 第二十七轮报告复查：修 3（P2-3 opus_mt eos bail! + P2-1 tombstone 吞错改 warn + P3-4 谎报推送改 message）+ 留后续 4（P2-1 active 事务 / P2-2 / P3-1 / P3-3） |
+| 28 | （本轮，待 commit） | 第二十八轮并发专项复查：修 3（**P1-F1 vault meta 覆盖竞态→锁死** + P3-F5 clipboard_cleanup 取锁 + P3-LLM1 正则限定）+ 留后续 2（P2-F2 translate block_on / P2-F3 pty Mutex 跨 write） |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1369,3 +1370,40 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 - `cargo build` translation/vault/sync —— 0 error 0 warning
 - `cargo test`：translation 25 / vault 267 / sync 155 全过
+
+## 31. 第二十八轮——并发/锁/竞态专项审查复查（2026-08-10，修 3 + 留后续 2）
+
+### 触发
+
+收到第二十八轮全代码审查报告（并发/锁/竞态专项，1 P1 + 2 P2 + 5 P3 + 9 低置信度）。A 部分确认第二十七轮 3/3 修复落地。
+
+### 🔴 P1-F1 · vault meta 覆盖竞态——改密被 sync 旧值覆盖→永久锁死 ✅ 已修
+
+**逐行核实**（报告置信度 88，亲自 Read 确认触发链）：
+1. sync merge_vault 阶段 A :1342 `db::load_vault_meta()` 读 local_meta（stamp=S0）——短读不持锁
+2. 期间用户改密（unlock.rs :286 持 META_WRITE_LOCK RMW）→ DB stamp S0→S1 + 新 protected_key K1
+3. sync 阶段 stamp 校验 :1372——local(S0) vs 远程(S0) 通过（不读 DB 当前 S1）
+4. 阶段 D :1442-1456 用远程值（S0/K0）`save_vault_meta` 覆盖 DB（已 S1/K1）→ 回退 → **新密码失效，永久锁死**
+
+**为什么上轮 P2-c5 挡不住**：P2-c5 让 sync 写走 save_vault_meta（持 META_WRITE_LOCK），但 change 的 _guard 只在函数内持有；sync 阶段 A 读 + 阶段 D 写是两次独立短锁，中间不持外层锁——sync 基于阶段 A 旧快照 + 远程值覆盖 change 新值。
+
+**修复**（方向 2——写前重读 stamp 校验）：阶段 D 写前 :1418 重读 DB 当前 meta，若 stamp 与阶段 A 快照不同 → 期间有 change → bail（用户重试 sync）。不长时间持锁（方向 1 的 merge_vault 整段持 META_WRITE_LOCK 会阻塞所有 meta 写数秒）。
+
+**注**：resolve_with_remote/local 同型但不加保护——它们是前台用户主动操作（输密码等结果），用户不会同时改密（两 modal 互斥）。
+
+### 🟠 P2 留后续（2 项）
+
+| 项 | 原因 |
+|---|---|
+| **P2-F2**（block_on(do_translate) 同步阻塞 coordinator）| :103 block_on 在 coordinator 线程同步等 LLM 翻译（云端 2-10s），期间 ESC/Toggle 无响应。修复需新 Translating stage + Command::TranslateDone（架构改动大）。触发场景是录音停后的翻译等待（非交互中），回报有限 |
+| **P2-F3**（pty_write 持 std Mutex 跨 write_all）| :102 持锁跨 write_all，PTY stdin 写满时阻塞。与 P2-c1（record 同型）一并设计（owned handle 锁外 write）。触发需用户灌满 PTY stdin，且不卡 tokio runtime（spawn_blocking 隔离） |
+
+### 🟡 P3 修复（2 处）
+
+- **P3-F5**（clipboard_cleanup 漏取 SYNC_LOCK）：对称第二十六轮 P2-c4 hotword GC——clipboard_cleanup 任务加 `#[cfg(feature="vault")] try_sync_lock()`（锁忙跳过），防 cleanup 物理删 history 行与 sync set_clipboard_is_favorite(true) 竞态
+- **P3-LLM1**（strip_edited_markers 正则过宽）：`<[^<>]*>` 匹配任意 `<...>`，误删 `<div>` / `a<b` / 代码 `i<5`。改为 `<[^<>|]*\|[^<>]*>` ——要求内部含 `|`（hotwords 多候选分隔符），排除 HTML/代码。单候选场景 LLM 返回选定词本身（无 `<>` 包裹），不需此正则
+
+### 验证
+
+- `cargo check` vault + desktop（vault feature）—— 0 error 0 warning
+- `cargo test`：vault 267 / llm 14 全过

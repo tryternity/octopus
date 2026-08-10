@@ -162,6 +162,22 @@ impl<'a> AppSetup<'a> {
         {
             let mut scheduler = octopus_scheduler::Scheduler::new();
             scheduler.register_task("clipboard_cleanup", 600, std::sync::Arc::new(|| {
+                // 第二十八轮 P3-F5（对称第二十六轮 P2-c4 hotword GC）：取 SYNC_LOCK 防
+                // cleanup 物理删 history 行与 sync set_clipboard_is_favorite(true) 竞态。
+                // vault feature 下取 try_sync_lock（锁忙跳过，下次 tick 再试）；无 vault 时
+                // 无 sync_now 并发（sync_now 在 vault crate），不需锁。
+                #[cfg(feature = "vault")]
+                {
+                    let _guard = match octopus_vault::sync::engine::try_sync_lock() {
+                        Ok(g) => g,
+                        Err(_) => {
+                            log::info!("[clipboard-cleanup] SYNC_LOCK 忙（sync 进行中），跳过本次清理");
+                            return;
+                        }
+                    };
+                    // guard 持有期间执行 cleanup
+                }
+
                 let cfg = octopus_infra::config::load_config().unwrap_or_default();
                 let max_age = cfg.clipboard_max_age_days as u32;
                 let max_items = cfg.clipboard_max_items as u32;

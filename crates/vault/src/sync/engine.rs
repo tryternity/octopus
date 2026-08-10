@@ -1409,6 +1409,25 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
 
     // === 阶段 D：merge meta（meta upsert + app_key local_enc 清空）===
     if let Some(mf) = meta_file {
+        // 第二十八轮 P1-F1（vault meta 覆盖竞态）：阶段 A :1342 读 local_meta（stamp=S0）
+        // 后，期间用户可能改密（unlock.rs :334 stamp S0→S1 + 新 protected_key K1）。
+        // 阶段 D 若直接用远程值（S0/K0）覆盖 DB（已 S1/K1）→ 新密码失效 → 永久锁死。
+        // 写前重读 DB 当前 meta，stamp 与阶段 A 快照不同 → 期间有 change → bail（用户重试 sync）。
+        // 注：save_vault_meta 的 META_WRITE_LOCK 挡不住此竞态——change 的 _guard 只在函数内
+        // 持有，sync 阶段 A 读 + 阶段 D 写是两次独立短锁，中间不持外层锁。
+        if let Some(ref snapshot) = local_meta {
+            let current_meta = db::load_vault_meta().map_err(SyncError::Other)?;
+            if let Some(ref current) = current_meta {
+                if current.security_stamp != snapshot.security_stamp {
+                    return Err(SyncError::Other(anyhow::anyhow!(
+                        "vault meta security_stamp 在 sync 期间变化（阶段 A={} → 当前={}）——\
+                         可能有改密操作并发，放弃本次 meta 覆盖防数据锁死，请重试 sync",
+                        snapshot.security_stamp, current.security_stamp
+                    )));
+                }
+            }
+        }
+
         let f = mf.to_sync_fields()?;
         let _strict_params = Argon2Params::from_i64_strict(
             f.kdf_iterations,
