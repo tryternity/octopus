@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
 import {
   drawAnnotation,
-  drawMosaic,
+  drawBlur,
   hitTestAnnotationPrecise,
 } from "@/lib/annotation";
 import { useAnnotationState, useAnnotationInteraction } from "@/components/Annotation";
@@ -495,12 +495,12 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     c.width = natW; c.height = natH;
     const ctx = c.getContext("2d")!;
     ctx.drawImage(img, 0, 0, natW, natH);
-    // 先处理 blur（像素马赛克降采样），再画其他标注
+    // 先处理 blur（像素马赛克/高斯/黑条），再画其他标注
     for (const ann of annotations) {
-      if (ann.type === "blur") drawMosaic(ctx, ann);
+      if (ann.type === "blur") drawBlur(ctx, ann);
     }
     for (const ann of annotations) {
-      if (ann.type === "blur") continue; // blur 已由 drawMosaic 处理，跳过避免色块叠加两次
+      if (ann.type === "blur") continue; // blur 已由 drawBlur 处理，跳过避免色块叠加两次
       drawAnnotation(ctx, ann);
     }
     const blob: Blob = await new Promise((resolve, reject) => c.toBlob((b) => b ? resolve(b) : reject("toBlob failed"), "image/png"));

@@ -4,7 +4,7 @@ import { invoke } from "@/lib/tauri";
 import { invoke as rawInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { type Annotation, drawAnnotation, drawAnnotationScaled, drawMosaic, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
+import { type Annotation, drawAnnotation, drawAnnotationScaled, drawBlur, annBounds, hitTestAnnotationPrecise, drawWatermark, type WatermarkOpts } from "@/lib/annotation";
 import { ToolButton } from "./ToolButton";
 import { ScrollPreview } from "./ScrollPreview";
 import { useAnnotationState, AnnotationToolbar, computeToolbarPosition, computeToolbarCenterX, TOOLBAR_H } from "@/components/Annotation";
@@ -69,6 +69,52 @@ export default function Screenshot() {
   // 二维码识别：就地白卡展示结果（null=不显示，string[]=结果，识别中由 qrScanning 区分）
   const [qrScanning, setQrScanning] = useState(false);
   const [qrResult, setQrResult] = useState<string[] | null>(null);
+
+  // 水印配置——从 get_config 读（Task 8）。
+  // config-changed 监听：AnnotationToolbar 水印按钮 set_config 后后端 emit config-changed
+  // （settings_commands.rs:317 set_config 末尾统一 emit），此处重读刷新。
+  // 与 Terminal/index.tsx L94-114 字体配置读取同范式（mount + config-changed 都重读）。
+  // 注：AppConfig 无 #[serde(rename_all)]，config JSON 字段为 snake_case（非 brief 写的 camelCase）。
+  const [watermarkOpts, setWatermarkOpts] = useState<WatermarkOpts | null>(null);
+  useEffect(() => {
+    const loadWatermark = () => {
+      invoke<{ config: Record<string, unknown> }>("get_config")
+        .then((res) => {
+          const cfg = res.config;
+          const text = cfg.screenshot_watermark_text as string | undefined;
+          if (text) {
+            setWatermarkOpts({
+              text,
+              opacity: typeof cfg.screenshot_watermark_opacity === "number"
+                ? cfg.screenshot_watermark_opacity
+                : 0.3,
+              fontSize: typeof cfg.screenshot_watermark_font_size === "number"
+                ? cfg.screenshot_watermark_font_size
+                : 24,
+              color: (cfg.screenshot_watermark_color as string) || "#ffffff",
+              density: typeof cfg.screenshot_watermark_density === "number"
+                ? cfg.screenshot_watermark_density
+                : 0.5,
+              angle: typeof cfg.screenshot_watermark_angle === "number"
+                ? cfg.screenshot_watermark_angle
+                : 0,
+            });
+          } else {
+            setWatermarkOpts(null);
+          }
+        })
+        .catch(() => {
+          // screenshot 窗口理论上已注册 get_config（invoke_handler.rs:49 全局注册）；
+          // 失败时静默——保持无水印状态，不阻塞截图流程。
+        });
+    };
+    loadWatermark();
+    let unlisten: (() => void) | null = null;
+    listen("config-changed", loadWatermark)
+      .then((fn) => { unlisten = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); };
+  }, []);
 
   // 工具栏实际宽度（useLayoutEffect 测量，用于 X 方向 clamp 防止跑出屏幕）
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -232,6 +278,15 @@ export default function Screenshot() {
       }
       // textDraft 不在 Canvas 画（DOM textarea 已显示），避免重影
 
+      // 水印实时预览——画在选区 clip 内（用 translate 平移坐标系到选区左上角，
+      // drawWatermark 的 9 格定位基于选区 w/h，不会超出选区范围）。
+      if (watermarkOpts?.text) {
+        ctx.save();
+        ctx.translate(x, y);
+        drawWatermark(ctx, w, h, watermarkOpts);
+        ctx.restore();
+      }
+
       ctx.restore();
 
       // 选区边框 + 手柄
@@ -268,7 +323,9 @@ export default function Screenshot() {
     } else {
       ctx.fillRect(0, 0, cssW, cssH);
     }
-  }, [sel, mode, ready, dpr, annotation.annotations, annotation.selectedAnn, annotation.tool, textDraft]);
+
+    // 水印已移到选区 clip 内（ctx.translate + drawWatermark(ctx, w, h, ...)）
+  }, [sel, mode, ready, dpr, annotation.annotations, annotation.selectedAnn, annotation.tool, textDraft, watermarkOpts]);
 
   useEffect(() => { draw(); }, [draw]);
 
@@ -632,6 +689,8 @@ export default function Screenshot() {
     invoke("stop_scroll_recording").catch(() => {});
   }
 
+  // watermarkOpts 由组件上方 useEffect 从 get_config 读取（Task 8），config-changed 时刷新。
+
   async function composeAndCropBytes(): Promise<ArrayBuffer | null> {
     // 2026-07-20 perf：bg 现在是 ImageBitmap（直接 RGBA），优先用它；
     // bgImgRef 仅 legacy 兜底（理论上不再被设置）。
@@ -653,13 +712,26 @@ export default function Screenshot() {
     tmpCanvas.height = bgH;
     const tmpCtx = tmpCanvas.getContext("2d")!;
     tmpCtx.drawImage(bg, 0, 0);
-    // 先处理 blur（像素马赛克降采样），再画其他标注
+    // 先处理 blur（像素马赛克/高斯/黑条），再画其他标注
     for (const ann of allAnns) {
-      if (ann.type === "blur") drawMosaic(tmpCtx, ann, scale);
+      if (ann.type === "blur") drawBlur(tmpCtx, ann, scale);
     }
     for (const ann of allAnns) {
-      if (ann.type === "blur") continue; // blur 已由 drawMosaic 处理，跳过避免色块叠加两次
+      if (ann.type === "blur") continue; // blur 已由 drawBlur 处理，跳过避免色块叠加两次
       drawAnnotationScaled(tmpCtx, ann, scale);
+    }
+
+    // 水印——限定在选区内（translate 到选区左上角 + 用选区物理尺寸定位），
+    // 这样裁切后水印在裁切图的对应 9 格位置，不会超出选区范围。
+    if (watermarkOpts?.text) {
+      const px = Math.round(sel.x * scale);
+      const py = Math.round(sel.y * scale);
+      const pw = Math.round(sel.w * scale);
+      const ph = Math.round(sel.h * scale);
+      tmpCtx.save();
+      tmpCtx.translate(px, py);
+      drawWatermark(tmpCtx, pw, ph, watermarkOpts);
+      tmpCtx.restore();
     }
 
     const px = Math.round(sel.x * scale);
@@ -916,6 +988,8 @@ export default function Screenshot() {
           popoverY={mode === "selected" ? popoverY : undefined}
           // popover X：跟随按钮中心（state.popoverX），未点按钮时 fallback 到选区中心
           popoverX={annotation.popoverX || (sel.x + sel.w / 2)}
+          // 水印按钮仅截图工具栏显示（录屏无水印功能，Task 8）
+          showWatermark={true}
         >
           {/* divider + OCR + QR（截图独有） */}
           <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />

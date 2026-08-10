@@ -17,7 +17,7 @@
 //   - passthrough 切换（RecordAnnotation）
 //   - 文字输入 textarea 浮层（两边差异较大）
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { Annotation, Tool } from "@/lib/annotation";
 import { hitTestAnnotationPrecise } from "@/lib/annotation";
 
@@ -36,6 +36,9 @@ export interface AnnotationState {
   toolFontSize: number;
   setToolFontSize: (n: number) => void;
   toolFontSizeRef: React.MutableRefObject<number>;
+  blurMode: "pixelate" | "gaussian" | "redact";
+  setBlurMode: (m: "pixelate" | "gaussian" | "redact") => void;
+  blurModeRef: React.MutableRefObject<"pixelate" | "gaussian" | "redact">;
   toolFilled: boolean;
   setToolFilled: (f: boolean) => void;
   toolFilledRef: React.MutableRefObject<boolean>;
@@ -91,6 +94,15 @@ export function useAnnotationState(): AnnotationState {
     setToolFontSizeState(s);
   };
 
+  // blur 渲染模式：pixelate（默认）/ gaussian / redact
+  // —— AnnotationToolbar popover 切换，addAnnotation 时写入 blur 标注。
+  const [blurMode, setBlurModeState] = useState<"pixelate" | "gaussian" | "redact">("pixelate");
+  const blurModeRef = useRef<"pixelate" | "gaussian" | "redact">("pixelate");
+  const setBlurMode = useCallback((m: "pixelate" | "gaussian" | "redact") => {
+    blurModeRef.current = m;
+    setBlurModeState(m);
+  }, []);
+
   const [toolFilled, setToolFilledState] = useState(false);
   const toolFilledRef = useRef(false);
   const setToolFilled = (f: boolean) => {
@@ -131,6 +143,10 @@ export function useAnnotationState(): AnnotationState {
 
   // ── add / undo / redo ─────────────────────
   const addAnnotation = (ann: Annotation) => {
+    // blur 标注补 blurMode（调用方未必传，用当前 tool state 兜底）
+    if (ann.type === "blur" && !ann.blurMode) {
+      ann.blurMode = blurModeRef.current;
+    }
     redoStackRef.current = [];
     setRedoAvailable(false);
     setAnnotations((prev) => [...prev, ann]);
@@ -206,6 +222,9 @@ export function useAnnotationState(): AnnotationState {
     toolFontSize,
     setToolFontSize,
     toolFontSizeRef,
+    blurMode,
+    setBlurMode,
+    blurModeRef,
     toolFilled,
     setToolFilled,
     toolFilledRef,

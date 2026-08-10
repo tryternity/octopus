@@ -432,6 +432,15 @@ settings:
     vaultAutotypeShortcutHint: Press this key on a browser login page to auto-fill passwords
     screenshotShortcut: Screenshot
     screenshotShortcutHint: Capture screen region and recognize text
+    # Screenshot watermark card (Task 9): text / 9-grid position / opacity / font size
+    watermark: Screenshot Watermark
+    watermarkHint: Empty to disable; drawn when screenshot is saved
+    watermarkText: Text
+    watermarkTextPlaceholder: Enter watermark (empty to disable)
+    watermarkDensity: Density
+    watermarkAngle: Angle
+    watermarkOpacity: Opacity
+    watermarkFontSize: Font Size
     recordShortcut: Recording
     recordShortcutHint: Show config float; pause/resume while recording; press ESC to stop
     recording: Voice Recognition
@@ -1018,11 +1027,15 @@ screenshot:
     text: Text
     number: Number
     mosaic: Mosaic
+    blur_pixelate: Pixelate
+    blur_gaussian: Gaussian
+    blur_redact: Redact
     eraser: Eraser
     undo: Undo
     redo: Redo
     clearAll: Clear All
     qrcode: QR Code
+    watermark: Watermark
   scrollShot: Scroll Capture
   saveToFile: Save to File
   confirm: Confirm
@@ -1038,6 +1051,9 @@ screenshot:
     circle: Circle
     thickness: Thickness
     solidFill: Solid Fill
+  watermark:
+    placeholder: Enter watermark text (empty to clear)
+    confirm: Confirm
 
 # ════════ Clipboard ════════
 clipboard:

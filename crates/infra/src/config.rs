@@ -199,6 +199,30 @@ pub struct AppConfig {
     #[serde(default = "default_screenshot_shortcut")]
     pub screenshot_shortcut: String,
 
+    /// 截图水印文字。空字符串=不加水印。默认 ""。
+    #[serde(default = "default_screenshot_watermark_text")]
+    pub screenshot_watermark_text: String,
+
+    /// 截图水印平铺密度 0.0-1.0。0=单个居中，1=排满。默认 0.5。
+    #[serde(default = "default_screenshot_watermark_density")]
+    pub screenshot_watermark_density: f32,
+
+    /// 截图水印旋转角度 0-360。默认 0。
+    #[serde(default = "default_screenshot_watermark_angle")]
+    pub screenshot_watermark_angle: f32,
+
+    /// 截图水印透明度 0.0-1.0。默认 0.3。
+    #[serde(default = "default_screenshot_watermark_opacity")]
+    pub screenshot_watermark_opacity: f32,
+
+    /// 截图水印字号（逻辑像素）。默认 24。
+    #[serde(default = "default_screenshot_watermark_font_size")]
+    pub screenshot_watermark_font_size: u32,
+
+    /// 截图水印颜色（CSS hex）。默认 "#ffffff"（白）。
+    #[serde(default = "default_screenshot_watermark_color")]
+    pub screenshot_watermark_color: String,
+
     /// 录屏 toggle 快捷键（弹配置浮窗 / 暂停 / 恢复）。默认 "CmdOrCtrl+Shift+R"。
     /// 仅 macOS 实际使用（record_hotkey 模块 cfg-gate），其他平台仅落库不消费。
     ///
@@ -333,6 +357,24 @@ fn default_action_bar_search_engine() -> String {
 fn default_screenshot_shortcut() -> String {
     "CmdOrCtrl+Shift+X".into()
 }
+fn default_screenshot_watermark_text() -> String {
+    String::new()
+}
+fn default_screenshot_watermark_density() -> f32 {
+    0.5
+}
+fn default_screenshot_watermark_angle() -> f32 {
+    0.0
+}
+fn default_screenshot_watermark_opacity() -> f32 {
+    0.3
+}
+fn default_screenshot_watermark_font_size() -> u32 {
+    24
+}
+fn default_screenshot_watermark_color() -> String {
+    "#ffffff".to_string()
+}
 fn default_record_shortcut() -> String {
     "CmdOrCtrl+Shift+R".into()
 }
@@ -393,6 +435,12 @@ impl Default for AppConfig {
             action_bar_shortcut: default_action_bar_shortcut(),
             action_bar_search_engine: default_action_bar_search_engine(),
             screenshot_shortcut: default_screenshot_shortcut(),
+            screenshot_watermark_text: default_screenshot_watermark_text(),
+            screenshot_watermark_density: default_screenshot_watermark_density(),
+            screenshot_watermark_angle: default_screenshot_watermark_angle(),
+            screenshot_watermark_opacity: default_screenshot_watermark_opacity(),
+            screenshot_watermark_font_size: default_screenshot_watermark_font_size(),
+            screenshot_watermark_color: default_screenshot_watermark_color(),
             record_shortcut: default_record_shortcut(),
             vault_autotype_shortcut: default_vault_autotype_shortcut(),
             vault_lock_timeout_secs: default_vault_lock_timeout_secs(),

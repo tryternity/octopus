@@ -440,6 +440,15 @@ settings:
     recordShortcut: 录屏
     recordShortcutHint: 弹出配置浮窗选源后开始；录制中按此键暂停/恢复；停止按 ESC
     screenshotShortcutHint: 截取屏幕区域并识别文字
+    # 截图水印卡片（Task 9）：文字 / 9 格位置 / 透明度 / 字号
+    watermark: 截图水印
+    watermarkHint: 留空关闭；截图保存时绘制
+    watermarkText: 文字
+    watermarkTextPlaceholder: 输入水印（留空关闭）
+    watermarkDensity: 密度
+    watermarkAngle: 角度
+    watermarkOpacity: 透明度
+    watermarkFontSize: 字号
     recording: 语音识别
     recogLang: 识别语言
     recogAuto: 自动
@@ -1027,11 +1036,15 @@ screenshot:
     text: 文字
     number: 序号
     mosaic: 马赛克
+    blur_pixelate: 像素化
+    blur_gaussian: 高斯模糊
+    blur_redact: 黑条遮挡
     eraser: 橡皮擦
     undo: 撤销
     redo: 重做
     clearAll: 清空标注
     qrcode: 二维码
+    watermark: 水印
   scrollShot: 滚动截图
   saveToFile: 保存到文件
   confirm: 确认
@@ -1048,6 +1061,9 @@ screenshot:
     circle: 圆圈
     thickness: 粗细
     solidFill: 实心填充
+  watermark:
+    placeholder: 输入水印文字（留空清除）
+    confirm: 确认
 
 # ════════ Clipboard 剪贴板 ════════
 clipboard:

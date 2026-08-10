@@ -19,6 +19,7 @@ export interface Annotation {
   circleSize?: number;
   textWidth?: number; // 文本最大宽度（自然像素），不折行时省略
   filled?: boolean; // rect/oval/diamond 是否实心填充
+  blurMode?: "pixelate" | "gaussian" | "redact"; // 仅 type="blur" 时有意义，默认 "pixelate"（老数据兼容）
 }
 
 const HIT_DIST = 8;
@@ -135,20 +136,37 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
     const bw = Math.abs(ann.x2 - ann.x1);
     const bh = Math.abs(ann.y2 - ann.y1);
     if (bw < 2 || bh < 2) return;
-    const opacity = ((lw || 5) / 10) * 0.85 + 0.1;
-    const cell = Math.max(8, Math.min(bw, bh) / 8);
-    const cols = Math.ceil(bw / cell);
-    const rows = Math.ceil(bh / cell);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const hash = (c * 73856093 ^ r * 19349663) >>> 0;
-        const variance = ((hash % 100) - 50) / 200;
-        ctx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
-        ctx.fillStyle = color;
-        ctx.fillRect(bx + c * cell, by + r * cell, cell, cell);
+    const mode = ann.blurMode ?? "pixelate";
+    if (mode === "redact") {
+      // 黑条预览：半透明黑色矩形（接近最终效果）
+      ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+      ctx.fillRect(bx, by, bw, bh);
+    } else if (mode === "gaussian") {
+      // 高斯预览：半透明灰色矩形 + 虚线边框（表示「将模糊」，不实时算 blur 避免卡顿）
+      ctx.fillStyle = "rgba(128, 128, 128, 0.5)";
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = "rgba(128, 128, 128, 0.8)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.setLineDash([]);
+    } else {
+      // pixelate 预览：色块网格（保留原有视觉）
+      const opacity = ((lw || 5) / 10) * 0.85 + 0.1;
+      const cell = Math.max(8, Math.min(bw, bh) / 8);
+      const cols = Math.ceil(bw / cell);
+      const rows = Math.ceil(bh / cell);
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const hash = (c * 73856093 ^ r * 19349663) >>> 0;
+          const variance = ((hash % 100) - 50) / 200;
+          ctx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
+          ctx.fillStyle = color;
+          ctx.fillRect(bx + c * cell, by + r * cell, cell, cell);
+        }
       }
+      ctx.globalAlpha = 1;
     }
-    ctx.globalAlpha = 1;
     return;
   }
 }
@@ -296,20 +314,34 @@ export function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotat
     const bw = Math.abs(ann.x2 - ann.x1) * scale;
     const bh = Math.abs(ann.y2 - ann.y1) * scale;
     if (bw < 2 || bh < 2) return;
-    const opacity = ((lw || 5) / 10) * 0.85 + 0.1;
-    const cell = Math.max(8, Math.min(bw, bh) / 8);
-    const cols = Math.ceil(bw / cell);
-    const rows = Math.ceil(bh / cell);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const hash = (c * 73856093 ^ r * 19349663) >>> 0;
-        const variance = ((hash % 100) - 50) / 200;
-        ctx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
-        ctx.fillStyle = color;
-        ctx.fillRect(bx + c * cell, by + r * cell, cell, cell);
+    const mode = ann.blurMode ?? "pixelate";
+    if (mode === "redact") {
+      ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+      ctx.fillRect(bx, by, bw, bh);
+    } else if (mode === "gaussian") {
+      ctx.fillStyle = "rgba(128, 128, 128, 0.5)";
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = "rgba(128, 128, 128, 0.8)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.setLineDash([]);
+    } else {
+      const opacity = ((lw || 5) / 10) * 0.85 + 0.1;
+      const cell = Math.max(8, Math.min(bw, bh) / 8);
+      const cols = Math.ceil(bw / cell);
+      const rows = Math.ceil(bh / cell);
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const hash = (c * 73856093 ^ r * 19349663) >>> 0;
+          const variance = ((hash % 100) - 50) / 200;
+          ctx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
+          ctx.fillStyle = color;
+          ctx.fillRect(bx + c * cell, by + r * cell, cell, cell);
+        }
       }
+      ctx.globalAlpha = 1;
     }
-    ctx.globalAlpha = 1;
   }
 }
 
@@ -350,6 +382,166 @@ export function drawMosaic(ctx: CanvasRenderingContext2D, ann: Annotation, scale
     }
   }
   ctx.globalAlpha = 1;
+}
+
+/**
+ * 高斯模糊（Stackblur 算法——纯 JS 像素操作，不依赖 ctx.filter）。
+ *
+ * ctx.filter='blur' 在 WKWebView 上对 canvas 自身 drawImage 不可靠（自画自未定义行为），
+ * 改用 stackblur 算法直接操作 ImageData，跨平台稳定。
+ * 算法参考：Mario Klingemann 的 Stackblur，O(n) 复杂度。
+ */
+export function drawGaussian(ctx: CanvasRenderingContext2D, ann: Annotation, scale: number = 1) {
+  const bx = Math.round(Math.min(ann.x1, ann.x2) * scale);
+  const by = Math.round(Math.min(ann.y1, ann.y2) * scale);
+  const bw = Math.round(Math.abs(ann.x2 - ann.x1) * scale);
+  const bh = Math.round(Math.abs(ann.y2 - ann.y1) * scale);
+  if (bw < 2 || bh < 2) return;
+  const radius = Math.max(4, (ann.lineWidth || 3) * 3);
+  // 1. 取选区像素
+  const imageData = ctx.getImageData(bx, by, bw, bh);
+  // 2. Stackblur
+  stackBlurRGBA(imageData.data, bw, bh, radius);
+  // 3. 画回原 canvas（clip 限定选区边界）
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(bx, by, bw, bh);
+  ctx.clip();
+  ctx.putImageData(imageData, bx, by);
+  ctx.restore();
+}
+
+/// Stackblur RGBA（Mario Klingemann 算法，O(n)）。
+/// 原理：用 3 个栈（R/G/B）做水平 + 垂直两趟模糊，每趟用滑动窗口累加。
+function stackBlurRGBA(pixels: Uint8ClampedArray, w: number, h: number, radius: number) {
+  if (radius < 1) return;
+  const div = radius * 2 + 1;
+  const w4 = w * 4;
+  const widthMinus1 = w - 1;
+  const heightMinus1 = h - 1;
+  const radiusPlus1 = radius + 1;
+
+  const temp = new Uint8ClampedArray(pixels.length);
+
+  // 水平模糊 → temp
+  for (let y = 0; y < h; y++) {
+    let sumR = 0, sumG = 0, sumB = 0, sumA = 0;
+    const yOffset = y * w4;
+    // 初始窗口（第一个像素重复 radius+1 次 + 后续 radius 个像素各 1 次）
+    for (let i = -radius; i <= radius; i++) {
+      const idx = yOffset + (Math.min(widthMinus1, Math.max(0, i)) * 4);
+      sumR += pixels[idx]; sumG += pixels[idx + 1]; sumB += pixels[idx + 2]; sumA += pixels[idx + 3];
+    }
+    for (let x = 0; x < w; x++) {
+      const outIdx = yOffset + x * 4;
+      temp[outIdx] = sumR / div;
+      temp[outIdx + 1] = sumG / div;
+      temp[outIdx + 2] = sumB / div;
+      temp[outIdx + 3] = sumA / div;
+      // 滑动窗口：减左边出窗 + 加右边入窗
+      const leftIdx = yOffset + (Math.max(0, x - radius) * 4);
+      const rightIdx = yOffset + (Math.min(widthMinus1, x + radiusPlus1) * 4);
+      sumR += pixels[rightIdx] - pixels[leftIdx];
+      sumG += pixels[rightIdx + 1] - pixels[leftIdx + 1];
+      sumB += pixels[rightIdx + 2] - pixels[leftIdx + 2];
+      sumA += pixels[rightIdx + 3] - pixels[leftIdx + 3];
+    }
+  }
+
+  // 垂直模糊 temp → pixels
+  for (let x = 0; x < w; x++) {
+    let sumR = 0, sumG = 0, sumB = 0, sumA = 0;
+    const x4 = x * 4;
+    for (let i = -radius; i <= radius; i++) {
+      const idx = Math.min(heightMinus1, Math.max(0, i)) * w4 + x4;
+      sumR += temp[idx]; sumG += temp[idx + 1]; sumB += temp[idx + 2]; sumA += temp[idx + 3];
+    }
+    for (let y = 0; y < h; y++) {
+      const outIdx = y * w4 + x4;
+      pixels[outIdx] = sumR / div;
+      pixels[outIdx + 1] = sumG / div;
+      pixels[outIdx + 2] = sumB / div;
+      pixels[outIdx + 3] = sumA / div;
+      const topIdx = Math.max(0, y - radius) * w4 + x4;
+      const botIdx = Math.min(heightMinus1, y + radiusPlus1) * w4 + x4;
+      sumR += temp[botIdx] - temp[topIdx];
+      sumG += temp[botIdx + 1] - temp[topIdx + 1];
+      sumB += temp[botIdx + 2] - temp[topIdx + 2];
+      sumA += temp[botIdx + 3] - temp[topIdx + 3];
+    }
+  }
+}
+
+/**
+ * 纯黑遮挡（Redact）——正式文档完全遮挡敏感信息。
+ */
+export function drawRedact(ctx: CanvasRenderingContext2D, ann: Annotation, scale: number = 1) {
+  const bx = Math.round(Math.min(ann.x1, ann.x2) * scale);
+  const by = Math.round(Math.min(ann.y1, ann.y2) * scale);
+  const bw = Math.round(Math.abs(ann.x2 - ann.x1) * scale);
+  const bh = Math.round(Math.abs(ann.y2 - ann.y1) * scale);
+  if (bw < 2 || bh < 2) return;
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(bx, by, bw, bh);
+}
+
+/**
+ * blur 标注分发器——根据 ann.blurMode 调对应函数。
+ * 调用方（composeAndCropBytes / ImagePreview / RecordAnnotation）统一用此入口，
+ * 替换原直接调 drawMosaic 的 3 处调用点。
+ */
+export function drawBlur(ctx: CanvasRenderingContext2D, ann: Annotation, scale: number = 1) {
+  switch (ann.blurMode ?? "pixelate") {
+    case "gaussian": drawGaussian(ctx, ann, scale); break;
+    case "redact":   drawRedact(ctx, ann, scale);   break;
+    default:         drawMosaic(ctx, ann, scale);   break;
+  }
+}
+
+export interface WatermarkOpts {
+  text: string;
+  opacity: number;       // 0-1
+  fontSize: number;
+  color?: string;        // 默认 "#ffffff"
+  density: number;       // 0-1，控制平铺密度（0=单个居中，1=排满）
+  angle: number;         // 旋转角度 0-360
+}
+
+/**
+ * 截图水印——平铺模式。按 density 控制间距，angle 控制旋转角度。
+ * 不进 annotations 数组（全局叠加层，config 驱动）。
+ *
+ * 算法：以 canvas 中心为原点旋转坐标系，在旋转后的网格上平铺水印文字。
+ * density 0 = 网格间距很大（只显示 1 个居中水印）；density 1 = 紧密排列排满。
+ */
+export function drawWatermark(ctx: CanvasRenderingContext2D, canvasW: number, canvasH: number, opts: WatermarkOpts) {
+  if (!opts.text) return;
+  const cx = canvasW / 2;
+  const cy = canvasH / 2;
+  ctx.save();
+  // 移到中心 + 旋转
+  ctx.translate(cx, cy);
+  ctx.rotate((opts.angle * Math.PI) / 180);
+  ctx.globalAlpha = Math.max(0, Math.min(1, opts.opacity));
+  ctx.fillStyle = opts.color ?? "#ffffff";
+  ctx.font = `${opts.fontSize}px -apple-system, system-ui, sans-serif`;
+  // 测量单个水印尺寸
+  const tw = ctx.measureText(opts.text).width;
+  const th = opts.fontSize;
+  // 网格间距：density 0 = 很大间距（只 1 个），density 1 = 紧贴
+  // 间距范围：tw*8（最稀疏）→ tw*1.5（最密集），垂直间距同理用 th 倍数
+  const gapX = tw + tw * (1 - opts.density) * 6 + th * 0.5;
+  const gapY = th + th * (1 - opts.density) * 4 + th * 0.5;
+  // 旋转后需要覆盖更大的范围才能填满 canvas（对角线长度）
+  const diag = Math.sqrt(canvasW * canvasW + canvasH * canvasH);
+  const halfDiag = diag / 2;
+  // 在旋转坐标系下平铺
+  for (let y = -halfDiag; y <= halfDiag; y += gapY) {
+    for (let x = -halfDiag; x <= halfDiag; x += gapX) {
+      ctx.fillText(opts.text, x, y + th);
+    }
+  }
+  ctx.restore();
 }
 
 export function annBounds(ann: Annotation): { x: number; y: number; w: number; h: number } {

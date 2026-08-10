@@ -15,11 +15,15 @@
 //   - 不同工具：切换 + 弹出 popover + 记录按钮中心 x（popover 跟随）
 //   - 末尾调 onToolChange(t) 让业务侧做透传
 
+import { useState, useEffect, useRef } from "react";
 import type { ReactNode, MutableRefObject } from "react";
 import type { Tool } from "@/lib/annotation";
+import { PRESET_COLORS } from "@/lib/annotation";
 import { ToolPropsPopover } from "@/pages/Screenshot/ToolPropsPopover";
 import { useT } from "@/lib/i18n";
+import { invoke } from "@/lib/tauri";
 import type { AnnotationState } from "./useAnnotationState";
+
 
 export interface AnnotationToolbarProps {
   /** 注入 useAnnotationState 返回的 state/actions */
@@ -65,6 +69,13 @@ export interface AnnotationToolbarProps {
 
   /** 是否显示 highlight 工具按钮（默认 true） */
   showHighlight?: boolean;
+
+  /**
+   * 是否显示水印按钮（默认 false）。
+   * 水印按钮不走 tool 选中逻辑，点击弹独立输入框（Task 8）。
+   * 截图工具栏传 true（需 config 水印），录屏不传 / 传 false。
+   */
+  showWatermark?: boolean;
 }
 
 // ── 内联 ToolButton（原 pages/Screenshot/ToolButton.tsx，19 行 dumb component）──
@@ -134,7 +145,56 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     children,
     visible = true,
     showHighlight = true,
+    showWatermark = false,
   } = props;
+
+  // ── 水印按钮 popover 输入框状态（Task 8）──
+  // 水印不走 tool 选中逻辑——点击水印按钮弹输入框，输入文字 → set_config 持久化。
+  // 后端 set_config 末尾统一 emit "config-changed"（settings_commands.rs:317），
+  // 父组件（Screenshot）监听 config-changed 重读 get_config 刷新 watermarkOpts → Canvas 重画。
+  // 输入留空确认 = 清除水印（set_config 空 string）。
+  const [showWatermarkPopover, setShowWatermarkPopover] = useState(false);
+  const [watermarkInput, setWatermarkInput] = useState("");
+  const [watermarkColor, setWatermarkColor] = useState("#ffffff");
+  const [watermarkDensity, setWatermarkDensity] = useState(0.5);
+  const [watermarkAngle, setWatermarkAngle] = useState(0);
+  const watermarkPopoverRef = useRef<HTMLDivElement | null>(null);
+  const watermarkBtnRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!showWatermarkPopover) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (watermarkPopoverRef.current?.contains(target)) return;
+      if (watermarkBtnRef.current?.contains(target)) return;
+      setShowWatermarkPopover(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showWatermarkPopover]);
+
+  // 水印按钮点击：读当前 config 的水印文字 + 颜色 + density + angle 预填。
+  const openWatermarkPopover = () => {
+    invoke<{ config: Record<string, unknown> }>("get_config")
+      .then((res) => {
+        const c = res.config;
+        setWatermarkInput((c.screenshot_watermark_text as string) || "");
+        setWatermarkColor((c.screenshot_watermark_color as string) || "#ffffff");
+        setWatermarkDensity(typeof c.screenshot_watermark_density === "number" ? c.screenshot_watermark_density : 0.5);
+        setWatermarkAngle(typeof c.screenshot_watermark_angle === "number" ? c.screenshot_watermark_angle : 0);
+      })
+      .catch(() => { setWatermarkInput(""); setWatermarkColor("#ffffff"); setWatermarkDensity(0.5); setWatermarkAngle(0); });
+    setShowWatermarkPopover(true);
+  };
+
+  // 确认：set_config 文字 + 颜色 + density + angle（空字符串=清除水印）。失败不阻塞 UI，静默。
+  const confirmWatermark = () => {
+    invoke("set_config", { key: "screenshot_watermark_text", value: watermarkInput }).catch(() => {});
+    invoke("set_config", { key: "screenshot_watermark_color", value: watermarkColor }).catch(() => {});
+    invoke("set_config", { key: "screenshot_watermark_density", value: watermarkDensity }).catch(() => {});
+    invoke("set_config", { key: "screenshot_watermark_angle", value: watermarkAngle }).catch(() => {});
+    setShowWatermarkPopover(false);
+  };
 
   if (!visible) return null;
 
@@ -228,6 +288,155 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
           />
         ))}
 
+        {/* 水印按钮（Task 8）：弹独立输入框，不走 tool 选中逻辑。
+            输入文字 → set_config 持久化，后端 emit config-changed → 父组件 Screenshot
+            监听后重读 get_config 刷新 watermarkOpts → Canvas 导出时画水印。 */}
+        {showWatermark && (
+          <div style={{ position: "relative" }}>
+            <div ref={watermarkBtnRef}>
+              <ToolButton
+                active={false}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (showWatermarkPopover) {
+                    setShowWatermarkPopover(false);
+                  } else {
+                    openWatermarkPopover();
+                  }
+                }}
+                label={t("screenshot.tool.watermark")}
+                icon={<img
+                  src="icons/text.svg"
+                  alt={t("screenshot.tool.watermark")}
+                  className="w-[18px] h-[18px]"
+                  style={{ filter: "var(--icon-filter)" }}
+                />}
+              />
+            </div>
+            {showWatermarkPopover && (
+              <div
+                ref={watermarkPopoverRef}
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  marginTop: 4,
+                  padding: 8,
+                  background: "var(--color-surface)",
+                  color: "var(--color-foreground)",
+                  borderRadius: 8,
+                  boxShadow: "0 8px 24px -4px rgba(0,0,0,0.2), 0 2px 8px -2px rgba(0,0,0,0.1)",
+                  zIndex: 102,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  minWidth: 240,
+                }}
+              >
+                <input
+                  type="text"
+                  value={watermarkInput}
+                  onChange={(e) => setWatermarkInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      confirmWatermark();
+                    } else if (e.key === "Escape") {
+                      setShowWatermarkPopover(false);
+                    }
+                  }}
+                  placeholder={t("screenshot.watermark.placeholder")}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoFocus
+                  style={{
+                    padding: "5px 8px",
+                    border: "1px solid var(--color-border)",
+                    borderRadius: 5,
+                    background: "var(--color-bg, transparent)",
+                    color: "var(--color-foreground)",
+                    fontSize: 13,
+                    outline: "none",
+                    width: "100%",
+                    boxSizing: "border-box",
+                  }}
+                />
+                {/* 水印颜色选择——预设色 + 调色板，同 ToolPropsPopover 风格 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  {PRESET_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      onClick={(e) => { e.stopPropagation(); setWatermarkColor(c); }}
+                      style={{
+                        width: 16, height: 16, borderRadius: 4,
+                        background: c,
+                        border: c === "#ffffff" ? "1px solid #e0e0e0" : "none",
+                        cursor: "pointer", padding: 0,
+                        opacity: watermarkColor.toLowerCase() === c.toLowerCase() ? 1 : 0.45,
+                        transform: watermarkColor.toLowerCase() === c.toLowerCase() ? "scale(1.1)" : "scale(1)",
+                      }}
+                    />
+                  ))}
+                  <label style={{ cursor: "pointer", display: "flex", alignItems: "center", flexShrink: 0, marginLeft: 2 }}>
+                    <div style={{
+                      width: 16, height: 16, borderRadius: 4,
+                      background: "conic-gradient(from 0deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)",
+                      border: "1px solid rgba(0,0,0,0.1)",
+                    }} />
+                    <input
+                      type="color"
+                      value={watermarkColor}
+                      onChange={(e) => setWatermarkColor(e.target.value)}
+                      style={{ width: 0, height: 0, opacity: 0, position: "absolute" }}
+                    />
+                  </label>
+                </div>
+                {/* 密度滑块 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 32, flexShrink: 0 }}>{t("settings.general.watermarkDensity")}</span>
+                  <input
+                    type="range" min={0} max={1} step={0.1} value={watermarkDensity}
+                    onChange={(e) => setWatermarkDensity(Number(e.target.value))}
+                    style={{ flex: 1, height: 4, cursor: "pointer" }}
+                  />
+                  <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 24, textAlign: "center" }}>{watermarkDensity.toFixed(1)}</span>
+                </div>
+                {/* 角度滑块 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 32, flexShrink: 0 }}>{t("settings.general.watermarkAngle")}</span>
+                  <input
+                    type="range" min={0} max={360} step={15} value={watermarkAngle}
+                    onChange={(e) => setWatermarkAngle(Number(e.target.value))}
+                    style={{ flex: 1, height: 4, cursor: "pointer" }}
+                  />
+                  <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 24, textAlign: "center" }}>{Math.round(watermarkAngle)}°</span>
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    confirmWatermark();
+                  }}
+                  style={{
+                    padding: "5px 8px",
+                    border: "none",
+                    borderRadius: 5,
+                    background: "var(--color-voice)",
+                    color: "#fff",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 500,
+                  }}
+                >
+                  {t("screenshot.watermark.confirm")}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 橡皮擦：不弹 popover，直接切工具 */}
         <ToolButton
           active={state.tool === "eraser"}
@@ -315,12 +524,15 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
           isText={state.tool === "text"}
           isNumber={state.tool === "number"}
           isShape={state.tool === "rect" || state.tool === "oval" || state.tool === "diamond"}
+          isBlur={state.tool === "blur"}
+          blurMode={state.blurMode}
           filled={state.toolFilled}
           onColorChange={state.setToolColor}
           onWidthChange={state.setToolWidth}
           onFontSizeChange={state.setToolFontSize}
           onCircleSizeChange={state.setToolCircleSize}
           onFilledChange={state.setToolFilled}
+          onBlurModeChange={state.setBlurMode}
         />
       )}
     </>
