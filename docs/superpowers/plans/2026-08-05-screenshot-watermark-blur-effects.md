@@ -59,6 +59,13 @@
 - Task 8: brief casing 错（camelCase→实际 snake_case）
 - Final: plan 遗漏 apply_config_value 分发器 + 画布预览
 
+**e2e 后续修复（2026-08-10，subagent-driven 之后手动修复）**：
+- blurMode popover 重构：独立 blurPopover 导致 color/width 消失 → blurMode 移进 ToolPropsPopover（blur 按钮走标准 onToolSelect）
+- Gaussian 算法换 Stackblur：ctx.filter 自画自在 WKWebView 导出时不生效 → 纯 JS 像素操作（getImageData + stackBlurRGBA + putImageData）
+- 水印重构为平铺模式：废弃 9 格定位（position），改 density + angle 平铺（config 删 position 加 density/angle/color）
+- 水印限定选区内：translate 到选区 + 用选区尺寸定位（不再全屏坐标）
+- 模糊预览区分 blurMode：drawAnnotation blur 分支按 blurMode 显示不同预览（pixelate 色块网格 / gaussian 半透明灰 / redact 半透明黑）
+
 ---
 
 ## Phase 1：模糊效果（Gaussian + Redact）

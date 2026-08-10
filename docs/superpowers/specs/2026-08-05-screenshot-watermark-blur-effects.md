@@ -31,17 +31,20 @@ octopus 截图标注的 `blur` 工具目前只有一种效果——**像素化�
 
 ### 2.1 工具交互
 
-现有 `blur` 工具按钮（`AnnotationToolbar.tsx`）点击后弹 **popover 子菜单**，切换 3 种效果：
+`blur` 工具按钮和其他标注工具（rect/pen/text 等）一样走标准 `onToolSelect`——点击选中 blur 工具 + 弹 `ToolPropsPopover`。blurMode 切换**在 ToolPropsPopover 内**（置顶一行 3 按钮），与 color/width 在同一浮层：
 
 ```
-点 blur 按钮 → popover:
-  ○ Pixelate（现有马赛克，默认）
-  ○ Gaussian（高斯模糊）
-  ○ Redact（纯黑遮挡）
-选中后 popover 关闭，blur 工具保持选中
+ToolPropsPopover（blur 工具选中时）:
+  [Pixelate | Gaussian | Redact]    ← blurMode 三按钮（置顶最显眼）
+  ─────────────────────────────
+  粗细滑轨 ────────── 12  ●(色)
+  ─────────────────────────────
+  预设色 ●●●●●●● 🎨
 ```
 
-切换不影响已绘制的 blur 标注（每个 blur 标注独立记录自己的 blurMode）。
+切换 blurMode 不影响已绘制的 blur 标注（每个 blur 标注独立记录自己的 blurMode）。
+
+**设计教训**：初版用独立 blurPopover（点 blur 按钮弹子菜单选 blurMode），导致 color/width 选择器消失（两套互斥浮层）。最终 blurMode 移进 ToolPropsPopover 统一管理。
 
 ### 2.2 数据结构
 
@@ -103,15 +106,16 @@ export function drawBlur(ctx: CanvasRenderingContext2D, ann: Annotation, scale: 
 
 **替换点**：现有 3 处调用 `drawMosaic` 的地方（`pages/Screenshot/index.tsx:657-663` / `pages/ImagePreview/index.tsx:500-503` / `pages/RecordAnnotation/index.tsx:340`）改为调 `drawBlur` 分发器。
 
-### 2.4 Gaussian 的 WKWebView 风险 + fallback
+### 2.4 Gaussian 模糊算法——Stackblur（2026-08-10 最终定案）
 
-`ctx.filter = 'blur(Npx)'` 在 WKWebView 上支持但性能可能不如原生。**e2e 验证策略**：
+**初版用 `ctx.filter='blur(Npx)'`**，但 e2e 发现最终截图导出时 Gaussian 区域无效果。根因：`ctx.drawImage(ctx.canvas, ...)` 从 canvas 画到自身是**未定义行为**，WKWebView 下 filter 对自画自不生效。试过临时 canvas 中转方案（先把选区复制到 tmp canvas，tmp 上 apply filter 再 drawImage 回来）——tmp canvas 自画自同样不生效。
 
-1. 先用 `ctx.filter` 实现（最简单，~10 行）
-2. e2e 测试截图时画 gaussian blur 区域，确认：
-   - 视觉上真的模糊了（不是空白/原图）
-   - 性能可接受（拖拽绘制不卡，大区域 < 100ms）
-3. **若 `ctx.filter` 不可用或性能差**：fallback 手写 **stackblur 算法**（~50 行，纯 JS，不依赖任何库）——stackblur 是业界经典快速高斯近似算法，PixPin/CleanShot 前端也用类似方案
+**最终方案：Stackblur 算法**（纯 JS 像素操作，不依赖 ctx.filter）：
+1. `ctx.getImageData(bx, by, bw, bh)` 取选区像素
+2. `stackBlurRGBA(pixels, w, h, radius)` 两趟滑动窗口模糊（水平 + 垂直），O(n) 复杂度
+3. `ctx.putImageData(imageData, bx, by)` 写回（clip 限定选区边界）
+
+跨平台稳定，不依赖 ctx.filter 的不确定性。radius 由 `ann.lineWidth * 3` 控制。
 
 ### 2.5 预览态（拖拽绘制时）
 
@@ -125,63 +129,68 @@ export function drawBlur(ctx: CanvasRenderingContext2D, ann: Annotation, scale: 
 ### 3.1 交互流程
 
 ```
-工具栏点「水印」按钮 → 弹输入框（文本内容）
-  ↓ 输入 "© 2026 wudarui" + 确认
-  ↓ 写入 config.screenshot_watermark_text + 触发 canvas 重绘
-  ↓ 导出时 drawWatermark 自动叠加到配置的位置
+工具栏点「水印」按钮 → 弹浮层（文字输入 + 颜色 + 密度 + 角度）
+  ↓ 输入文字 + 调 density/angle/color + 确认
+  ↓ set_config 4 字段 + 触发 canvas 重绘
+  ↓ 导出时 drawWatermark 按平铺模式叠加到选区内
 ```
 
-- 输入框为空时确认 = 清除水印（`screenshot_watermark_text = ""`）
-- 输入框用 `<input>` + autoCapitalize="off"（对齐 AGENTS.md 禁自动大写规范）
+浮层布局：
+```
+[输入框：水印文字]
+[●●●●●●● 🎨]          ← 颜色选择（预设色 + 调色板）
+[密度 ──●── 0.5]       ← density slider（0=稀疏，1=排满）
+[角度 ──●── 0°]        ← angle slider（0-360°，step 15°）
+[确认按钮]
+```
+
+- 输入框为空时确认 = 清除水印
+- 输入框 autoCapitalize="off"（对齐 AGENTS.md 规范）
 
 ### 3.2 配置项（新增到 AppConfig）
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `screenshot_watermark_text` | String | `""` | 水印文字，空=不加水印 |
-| `screenshot_watermark_position` | String | `"bottom-right"` | 9 格位置：`top-left`/`top-center`/`top-right`/`middle-left`/`middle-center`/`middle-right`/`bottom-left`/`bottom-center`/`bottom-right` |
+| `screenshot_watermark_density` | f32 | `0.5` | 平铺密度 0.0-1.0（0=单个居中，1=排满） |
+| `screenshot_watermark_angle` | f32 | `0.0` | 旋转角度 0-360° |
 | `screenshot_watermark_opacity` | f32 | `0.3` | 透明度 0.0-1.0 |
 | `screenshot_watermark_font_size` | u32 | `24` | 字号（逻辑像素） |
+| `screenshot_watermark_color` | String | `"#ffffff"` | 水印颜色（CSS hex） |
 
-**⚠️ `apply_config_value` 分发器同步**：`crates/desktop/src/commands/settings_commands.rs::apply_config_value` 是 config 字段写入的 match 分发器。新增 4 个水印字段必须在这里加对应 match arm（text/position 走 `value.as_str()`，opacity `value.as_f64()` + clamp 0.0-1.0，font_size `value.as_i64()` + max(1)），否则 `set_config("screenshot_watermark_*")` 走 `_ => Err("未知配置字段")` 静默失败。（final review 发现 plan 初版遗漏此点，已修 `312816cd`）
+**⚠️ `apply_config_value` 分发器同步**：`crates/desktop/src/commands/settings_commands.rs::apply_config_value` 是 config 字段写入的 match 分发器。新增水印字段必须在这里加对应 match arm（text/color 走 `value.as_str()`，density/angle/opacity `value.as_f64()` + clamp，font_size `value.as_i64()` + max(1)），否则 `set_config` 走 `_ => Err("未知配置字段")` 静默失败。
 
-### 3.3 渲染
+**设计演进**：初版用 9 格定位（`screenshot_watermark_position`），2026-08-10 改为平铺模式后废弃 position，加 density + angle。
 
-`lib/annotation.ts` 新增 `drawWatermark`：
+### 3.3 渲染——平铺模式
+
+`lib/annotation.ts` 的 `drawWatermark` 按**平铺算法**渲染（非 9 格单水印）：
 
 ```ts
 export interface WatermarkOpts {
   text: string;
-  position: string;      // 9 格
   opacity: number;       // 0-1
   fontSize: number;
   color?: string;        // 默认 "#ffffff"
+  density: number;       // 0-1，控制平铺密度
+  angle: number;         // 旋转角度 0-360
 }
 
-export function drawWatermark(ctx: CanvasRenderingContext2D, canvasW: number, canvasH: number, opts: WatermarkOpts) {
-  if (!opts.text) return;
-  const margin = 16;
-  ctx.save();
-  ctx.globalAlpha = Math.max(0, Math.min(1, opts.opacity));
-  ctx.fillStyle = opts.color ?? "#ffffff";
-  ctx.font = `${opts.fontSize}px -apple-system, system-ui, sans-serif`;
-  const metrics = ctx.measureText(opts.text);
-  const tw = metrics.width;
-  const th = opts.fontSize;
-  // 9 格定位——正向 includes 匹配（不用反向排除，避免 top-center 等 4 格失效）
-  const pos = opts.position;
-  let x: number;
-  if (pos.includes("center"))      x = (canvasW - tw) / 2;
-  else if (pos.includes("right"))  x = canvasW - tw - margin;
-  else                              x = margin;  // left 或默认
-  let y: number;
-  if (pos.includes("middle"))      y = (canvasH - th) / 2;
-  else if (pos.includes("bottom")) y = canvasH - th - margin;
-  else                              y = margin;  // top 或默认
-  ctx.fillText(opts.text, x, y + th);  // y+th 因为 fillText 基线在文字底部
-  ctx.restore();
+export function drawWatermark(ctx, canvasW, canvasH, opts) {
+  // 1. 以 canvas 中心为原点旋转坐标系
+  ctx.translate(cx, cy);
+  ctx.rotate(opts.angle * Math.PI / 180);
+  // 2. 网格间距由 density 控制（density 大=间距小=密集）
+  const gapX = tw + tw * (1 - density) * 6 + th * 0.5;
+  const gapY = th + th * (1 - density) * 4 + th * 0.5;
+  // 3. 在旋转坐标系下平铺（覆盖范围 = 对角线长度，保证旋转后填满）
+  for (y = -halfDiag; y <= halfDiag; y += gapY)
+    for (x = -halfDiag; x <= halfDiag; x += gapX)
+      ctx.fillText(text, x, y + th);
 }
 ```
+
+**水印限定在选区内**：draw 函数在选区 clip 内调 drawWatermark（`ctx.translate(sel.x, sel.y)` + `drawWatermark(ctx, sel.w, sel.h, opts)`），导出时同样 translate 到选区物理坐标 + 用选区物理尺寸。水印不会超出选区范围。
 
 **调用点**：`composeAndCropBytes`（`pages/Screenshot/index.tsx:635-677`）在所有标注绘制完、裁切前调用：
 
