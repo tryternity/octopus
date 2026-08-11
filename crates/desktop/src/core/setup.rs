@@ -161,7 +161,23 @@ impl<'a> AppSetup<'a> {
         //   已在 delete_item / clear_history 等入口实时 enforce（2026-07-29），无需后台任务。
         {
             let mut scheduler = octopus_scheduler::Scheduler::new();
-            scheduler.register_task("clipboard_cleanup", 600, Box::new(|| {
+            scheduler.register_task("clipboard_cleanup", 600, std::sync::Arc::new(|| {
+                // 第二十八轮 P3-F5（对称第二十六轮 P2-c4 hotword GC）：取 SYNC_LOCK 防
+                // cleanup 物理删 history 行与 sync set_clipboard_is_favorite(true) 竞态。
+                // vault feature 下取 try_sync_lock（锁忙跳过，下次 tick 再试）；无 vault 时
+                // 无 sync_now 并发（sync_now 在 vault crate），不需锁。
+                #[cfg(feature = "vault")]
+                {
+                    let _guard = match octopus_vault::sync::engine::try_sync_lock() {
+                        Ok(g) => g,
+                        Err(_) => {
+                            log::info!("[clipboard-cleanup] SYNC_LOCK 忙（sync 进行中），跳过本次清理");
+                            return;
+                        }
+                    };
+                    // guard 持有期间执行 cleanup
+                }
+
                 let cfg = octopus_infra::config::load_config().unwrap_or_default();
                 let max_age = cfg.clipboard_max_age_days as u32;
                 let max_items = cfg.clipboard_max_items as u32;
@@ -177,7 +193,7 @@ impl<'a> AppSetup<'a> {
             // sync_now 是阻塞操作（10-30s），起子线程避免阻塞 scheduler tick。
             // 结果存 last_auto_sync.json，SyncPanel 展示，不弹 toast。
             #[cfg(feature = "vault")]
-            scheduler.register_task("vault_sync", 3600, Box::new(|| {
+            scheduler.register_task("vault_sync", 3600, std::sync::Arc::new(|| {
                 std::thread::spawn(|| {
                     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
                     match octopus_vault::sync::sync_now() {
@@ -206,14 +222,33 @@ impl<'a> AppSetup<'a> {
             }));
             // bigram 上下文索引：扫历史 voice 文本建字级 bigram 频次表，
             // 供 corrector 多命中排序的上下文打分。轻量任务（几十 ms），不受 CPU 空闲检查。
-            scheduler.register_task_skip_idle("bigram_index", 600, Box::new(|| {
+            scheduler.register_task_skip_idle("bigram_index", 600, std::sync::Arc::new(|| {
                 octopus_asr_local::corrector::reload_bigrams();
             }));
             // 热词 tombstone GC（2026-08-02）：每日硬删超期（>10 天）软删 set/词 +
             // export 重建清 .sync。跨设备自洽——merge 按年龄过滤防复活。详见
             // docs/superpowers/specs/2026-08-02-hotword-tombstone-gc.md。
-            scheduler.register_task("hotword_tombstone_gc", 86400, Box::new(|| {
+            //
+            // 第二十六轮 P2-c4：取 SYNC_LOCK 防 GC 与 sync_now 并发——sync_now 持
+            // SYNC_LOCK 内部调 merge_hotwords/export_all，GC 不取锁并发时可能：sync
+            // export 读 DB（含 set X）→ GC purge set X → sync 基于旧快照写 set X 文件
+            // → 下次 sync 把 X 当新增拉回 → 已删 set 复活。vault feature 下取
+            // try_sync_lock（无 vault 时无 sync_now，无并发，不需锁）。
+            scheduler.register_task("hotword_tombstone_gc", 86400, std::sync::Arc::new(|| {
                 std::thread::spawn(|| {
+                    // vault feature：取 SYNC_LOCK，锁忙则跳过本次 GC（下次 scheduler tick 再试）
+                    #[cfg(feature = "vault")]
+                    {
+                        let _guard = match octopus_vault::sync::engine::try_sync_lock() {
+                            Ok(g) => g,
+                            Err(_) => {
+                                log::info!("[hotword-gc] SYNC_LOCK 忙（sync 进行中），跳过本次 GC");
+                                return;
+                            }
+                        };
+                        // guard 在作用域内持有
+                    }
+
                     let now_secs = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs() as i64)
@@ -363,13 +398,17 @@ impl<'a> AppSetup<'a> {
 
             // 启动后台 worker：watcher 回调只 enqueue（<1μs），编码/入库在 worker 异步做。
             // 避免 watcher 线程被 WebP 编码 + DB 写阻塞（连续复制时延迟入库）。
+            // 第二十三轮 P2-d3：start_clipboard_worker 返 Result——spawn 失败不 panic，
+            // log 后继续（剪贴板功能降级，其他功能不受影响）。
             let emit_handle = app_handle_for_watcher.clone();
-            crate::clipboard::clipboard_queue::start_clipboard_worker(
+            if let Err(e) = crate::clipboard::clipboard_queue::start_clipboard_worker(
                 clipboard_handle.clone(),
                 Arc::new(move || {
                     let _ = emit_handle.emit("clipboard://changed", ());
                 }),
-            );
+            ) {
+                log::error!("[setup] clipboard worker 启动失败（剪贴板历史将不记录）: {}", e);
+            }
 
             match octopus_clipboard::ClipboardWatcher::start(clipboard_handle.clone(), move || {
                 // 旧代码：直接在 watcher 线程同步处理（阻塞）

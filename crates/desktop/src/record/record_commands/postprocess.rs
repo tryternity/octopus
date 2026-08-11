@@ -511,12 +511,23 @@ async fn generate_subtitle_inner(
     log::info!("[subtitle] step7 拿到 active engine");
     let cfg = octopus_asr_local::pipeline::PipelineConfig::from_app_config("zh");
 
-    // 8. ASR 带时间戳转写（同步阻塞 CPU 密集——但 engine.transcribe 内部已并发，
-    //    且通常总耗时 < ffmpeg；为简化暂不再 spawn_blocking，如发现卡 UI 再包）。
+    // 8. ASR 带时间戳转写（同步阻塞 CPU 密集——第三十二轮 P2-5：原注释「通常 < ffmpeg
+    //    暂不 spawn_blocking」但长录屏 ASR 可远超 ffmpeg（几十秒），阻塞 tokio worker。
+    //    包 spawn_blocking 对齐 :490 ffmpeg 范式）。
     log::info!("[subtitle] step8 开始 ASR transcribe（这一步可能耗时几十秒）...");
+    let engine_clone = engine.clone();
+    let pcm_clone = pcm.clone();
     let mut timestamped =
-        octopus_asr_local::pipeline::transcribe_segments_with_timestamps(engine.as_ref(), &pcm, &cfg)
-            .map_err(|e| format!("ASR 失败: {e}"))?;
+        tokio::task::spawn_blocking(move || {
+            octopus_asr_local::pipeline::transcribe_segments_with_timestamps(
+                engine_clone.as_ref(),
+                &pcm_clone,
+                &cfg,
+            )
+        })
+        .await
+        .map_err(|e| format!("ASR task failed: {e}"))?
+        .map_err(|e| format!("ASR 失败: {e}"))?;
     log::info!("[subtitle] step8 ASR 完成 segments={}", timestamped.len());
 
     // 8.5. LLM 润色（可选，polish=Some 时触发）

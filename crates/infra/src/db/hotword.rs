@@ -184,17 +184,21 @@ pub(crate) fn delete_hotword_set_at(conn: &Connection, id: &str) -> Result<()> {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or(1); // 第三十三轮 P2-4：时钟异常时 is_deleted=1（非 0=活跃），至少触发软删
+    // 第二十二轮 P2-i1：两步 UPDATE 包 unchecked_transaction。原先 autocommit 下第一条
+    // （词软删）成功、第二条（set 软删）失败 → 词全软删但 set 仍活跃 = 空词典（sync 推送
+    // 出去对端拿到矛盾状态）。对齐 insert_vault_ciphers_batch 范式（vault.rs:327）。
+    let tx = conn.unchecked_transaction()?;
     // 级联软删词记录（保持原硬删行为：删词典=清空其词）。词级 tombstone 也参与 sync 传播。
     // is_deleted 用 now_secs（与 set 一致：删除时刻 epoch 秒）——非字面量 1（1=1970-01-01，
     // GC 当日硬删 + sync 过滤→词 tombstone 不传播→对端复活词）。R4-2。
-    conn.execute(
+    tx.execute(
         "UPDATE hotword_words SET is_deleted=?2, updated_at=datetime('now')
          WHERE set_id=?1 AND is_deleted=0",
         params![id, now_secs],
     )?;
     // 软删词典：is_deleted=删除时刻 epoch 秒，updated_at 刷新（merge 方向判定用）
-    let n = conn.execute(
+    let n = tx.execute(
         "UPDATE hotword_sets SET is_deleted=?2, updated_at=datetime('now')
          WHERE id=?1 AND is_deleted=0",
         params![id, now_secs],
@@ -202,6 +206,7 @@ pub(crate) fn delete_hotword_set_at(conn: &Connection, id: &str) -> Result<()> {
     if n == 0 {
         anyhow::bail!("热词版本不存在");
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -212,8 +217,13 @@ pub(crate) fn delete_hotword_set_at(conn: &Connection, id: &str) -> Result<()> {
 pub fn hard_delete_hotword_set(id: &str) -> Result<()> {
     ensure_db()?;
     with_db(|conn| {
-        conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
-        conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+        // 第三十三轮补充 P2：两步 DELETE 包事务——第一步成功第二步失败→空词典。
+        // 对齐 delete_hotword_set_at / purge_expired_hotword_tombstones_at 范式。
+        // 注：注释说「仅测试用」但 pub fn（可见性公开），事务保安全。
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
+        tx.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+        tx.commit()?;
         Ok(())
     })
 }
@@ -239,33 +249,38 @@ pub(crate) fn purge_expired_hotword_tombstones_at(
 ) -> Result<usize> {
     let cutoff = now_secs - HOTWORD_TOMBSTONE_RETENTION_SECS;
     let mut purged_sets = 0usize;
+    // 第三十三轮补充 P2：所有 DELETE 包 unchecked_transaction——GC 涉及多表多步
+    // （words + sets + hits），任一失败致部分 GC 留脏。对齐 delete_hotword_set_at :191
+    // 的 unchecked_transaction 范式（同文件已修的 P2-i1/i2）。
+    let tx = conn.unchecked_transaction()?;
     // 1. 超期 set tombstone：先收集 id（连带删词 + hits），再硬删
     let expired_set_ids: Vec<String> = {
-        let mut stmt = conn.prepare(
+        let mut stmt = tx.prepare(
             "SELECT id FROM hotword_sets WHERE is_deleted > 0 AND is_deleted < ?1",
         )?;
         let rows = stmt.query_map(params![cutoff], |r| r.get::<_, String>(0))?;
         rows.filter_map(|r| r.ok()).collect()
     };
     for id in &expired_set_ids {
-        conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
-        conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+        tx.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
+        tx.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
         purged_sets += 1;
     }
     // 2. 超期 word tombstone（活跃词典里的软删词）——is_deleted>0 且超期
     let word_cutoff = cutoff; // 同阈值
-    let n = conn.execute(
+    let n = tx.execute(
         "DELETE FROM hotword_words WHERE is_deleted > 0 AND is_deleted < ?1",
         params![word_cutoff],
     )?;
     // 3. hotword_hits 孤儿清理：词在所有活跃词典（is_deleted=0 的 hotword_words）消失 → 命中清零。
     //    放在删 word tombstone 之后——保证超期硬删的词的 hits 也被清。hits 不参与 sync，
     //    各机独立按本地活跃词集合判定孤儿，无跨设备复活问题。详见 tombstone-gc spec §5。
-    let orphan_hits = conn.execute(
+    let orphan_hits = tx.execute(
         "DELETE FROM hotword_hits WHERE word NOT IN \
          (SELECT word FROM hotword_words WHERE is_deleted = 0)",
         [],
     )?;
+    tx.commit()?;
     if purged_sets > 0 || n > 0 || orphan_hits > 0 {
         log::info!(
             "[hotword-gc] purged {} set tombstones + {} word tombstones + {} orphan hits (cutoff={})",
@@ -573,7 +588,7 @@ pub(crate) fn remove_word_from_set_at(conn: &Connection, set_id: &str, word: &st
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or(1); // 第三十三轮 P2-4
     conn.execute(
         "UPDATE hotword_words SET is_deleted=?3, updated_at=datetime('now')
          WHERE set_id=?1 AND word=?2 AND is_deleted=0",
@@ -596,7 +611,7 @@ pub(crate) fn set_words_in_set_at(
     let unique: std::collections::HashSet<&str> = words.iter().map(|s| s.as_str()).collect();
     // 覆盖语义容量校验（2026-08-03 fix）：最终活跃词数 = unique.len()
     // （不在新列表的旧词会被软删）。旧实现误用 `ensure_within_capacity`（追加语义，
-    // 叠加 cur）—— 2000 词覆盖导入 2500（最终 2500 < 3000 合法）会被误拒。
+    // 叠加 cur）—— 2000 词词典覆盖导入 2500（最终 2500 < 3000 合法）会被误拒。
     // 覆盖语义下旧词会被软删，cur 不参与最终计数，直接判 unique.len() 是否超上限。
     if unique.len() > HOTWORD_SET_MAX_WORDS {
         anyhow::bail!(
@@ -608,11 +623,15 @@ pub(crate) fn set_words_in_set_at(
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or(1); // 第三十三轮 P2-4
+    // 第二十二轮 P2-i2：SELECT + 批量软删 + 批量 upsert 包 unchecked_transaction。原先
+    // autocommit 下 2500 词中途失败 → 半更新脏状态（部分词软删、部分新词未导入）。
+    // 对齐 P2-i1 + insert_vault_ciphers_batch 范式。
+    let tx = conn.unchecked_transaction()?;
     // 软删不在新列表的活跃词——逐词算 is_deleted=now_secs 的 md5（需读 pinyin）
     let to_remove: Vec<(String, String)> = {
         let json_list = serde_json::to_string(&unique.iter().collect::<Vec<_>>())?;
-        let mut stmt = conn.prepare(
+        let mut stmt = tx.prepare(
             "SELECT word, pinyin FROM hotword_words
              WHERE set_id=?1 AND is_deleted=0 AND word NOT IN (SELECT value FROM json_each(?2))",
         )?;
@@ -622,7 +641,7 @@ pub(crate) fn set_words_in_set_at(
         rows.filter_map(|r| r.ok()).collect()
     };
     for (word, _pinyin) in &to_remove {
-        conn.execute(
+        tx.execute(
             "UPDATE hotword_words SET is_deleted=?3, updated_at=datetime('now')
              WHERE set_id=?1 AND word=?2 AND is_deleted=0",
             params![set_id, word, now_secs],
@@ -632,7 +651,7 @@ pub(crate) fn set_words_in_set_at(
     for word in &unique {
         let id = crate::hotword_text::hotword_word_uuid(set_id, word);
         let pinyin = crate::hotword_text::word_plain_pinyins(word).join(" ");
-        conn.execute(
+        tx.execute(
             "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted)
              VALUES (?1, ?2, ?3, ?4, 0)
              ON CONFLICT(set_id, word) DO UPDATE SET
@@ -640,6 +659,7 @@ pub(crate) fn set_words_in_set_at(
             params![id, set_id, word, pinyin],
         )?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -688,8 +708,11 @@ pub fn list_all_hotword_words() -> Result<Vec<HotwordWord>> {
 /// **INV-C1（热词来源不断）**：故意不过滤 `is_deleted`——软删内容仍是热词来源，
 /// 这是剪贴板软删/回收站功能的核心目的。用户把文本删进回收站后，这里仍能读到它，
 /// 热词挖掘继续工作。只有永久删除（`DELETE FROM`）才会让行真正消失、挖不到。
-/// `ORDER BY id DESC LIMIT N` 降序取最新 N 条，软删内容 id 不变（软删只改 is_deleted），
-/// 活跃和软删混在同一条时间线，不会互相挤占名额。
+/// `ORDER BY created_at DESC, id DESC LIMIT N` 降序取最新 N 条（第三十轮 L1-2 修复：
+/// 原 `ORDER BY id DESC` 在 id 是 INTEGER 毫秒戳时有序，但 2026-08-05 schema v59
+/// 把 id 改 TEXT UUID v4 后变随机字典序——热词挖掘取随机非最新。改 created_at 排序，
+/// idx_clip_created 索引现成）。
+/// 软删内容 created_at 不变（软删只改 is_deleted），活跃和软删混在同一条时间线。
 /// 内部：取最近 limit 条 clipboard_history 的 content（按 item_type 过滤）。
 /// `item_type_filter` — WHERE 子句的 item_type 条件（如 `"IN ('voice','text','ocr')"` 或 `"= 'voice'"`）。
 /// **故意不过滤 is_deleted**（INV-C1：软删内容仍是热词来源）。
@@ -701,7 +724,7 @@ fn list_recent_content_at(
     let sql = format!(
         "SELECT content FROM clipboard_history
          WHERE item_type {filter} AND content IS NOT NULL AND content != ''
-         ORDER BY id DESC LIMIT ?1",
+         ORDER BY created_at DESC, id DESC LIMIT ?1",
         filter = item_type_filter
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -727,7 +750,7 @@ pub fn list_recent_edited_segments(limit: i64) -> Result<Vec<String>> {
         let mut stmt = conn.prepare(
             "SELECT segments FROM clipboard_history
              WHERE item_type = 'voice' AND segments IS NOT NULL AND segments != ''
-             ORDER BY id DESC LIMIT ?1",
+             ORDER BY created_at DESC, id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit], |r| r.get::<_, String>(0))?;
         let mut list = Vec::new();
@@ -1463,5 +1486,78 @@ mod tests {
         // 「苹果」在 set-B 仍活跃 → hits 保留，hit_count 不变
         let hits = list_hotword_hits_at(&conn).unwrap();
         assert_eq!(hits.get("苹果"), Some(&2i64), "跨 set 同词在任一活跃 set 存在 → 命中保留");
+    }
+
+    /// 第二十二轮 P2-i1 回归：delete_hotword_set_at 在 set 不存在（bail）时，
+    /// 前序 UPDATE（词软删）必须被事务回滚——不能留下「词全软删但 set 仍活跃」的空词典。
+    #[test]
+    fn delete_hotword_set_at_rolls_back_words_when_set_missing() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+
+        let id = "test-uuid-rollback-set";
+        insert_hotword_set_at(&conn, id, "回滚测试").unwrap();
+        add_word_to_set_at(&conn, id, "苹果").unwrap();
+        add_word_to_set_at(&conn, id, "香蕉").unwrap();
+        // 再造一个「幽灵 set id」——DB 无此 set，但词挂在它名下（模拟 set 已被外部删、词残留）
+        let ghost = "test-uuid-ghost-set";
+        conn.execute(
+            "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted)
+             VALUES ('w-ghost-1', ?1, '幽灵词', 'you ling ci', 0)",
+            params![ghost],
+        ).unwrap();
+
+        // delete 不存在的 set → bail（n==0）。事务回滚：幽灵词不应被软删。
+        let err = delete_hotword_set_at(&conn, ghost);
+        assert!(err.is_err(), "删除不存在的 set 应 bail");
+
+        // 幽灵词必须仍活跃（事务回滚保护）
+        let ghost_word = conn.query_row(
+            "SELECT is_deleted FROM hotword_words WHERE id='w-ghost-1'",
+            [],
+            |r| r.get::<_, i64>(0),
+        ).unwrap();
+        assert_eq!(ghost_word, 0, "事务回滚：bail 前的词软删必须被撤销，词仍活跃");
+
+        // 对照组：删存在的 set → 词 + set 都软删（成功路径）
+        delete_hotword_set_at(&conn, id).unwrap();
+        let set_row = conn.query_row(
+            "SELECT is_deleted FROM hotword_sets WHERE id=?1",
+            params![id],
+            |r| r.get::<_, i64>(0),
+        ).unwrap();
+        assert!(set_row > 0, "成功路径：set 被软删");
+        let apple = get_hotword_word_at(&conn, id, "苹果").unwrap().unwrap();
+        assert!(apple.is_deleted > 0, "成功路径：词被级联软删");
+    }
+
+    /// 第二十二轮 P2-i2 回归：set_words_in_set_at 覆盖导入失败（超容量）时，
+    /// 不应留下半更新状态——bail 发生在事务开启前，DB 不变。
+    /// （注：真正的"中途 SQL 失败回滚"由 rusqlite 事务语义保证，此处覆盖 bail 路径 +
+    /// 成功路径状态一致性。）
+    #[test]
+    fn set_words_in_set_at_over_capacity_leaves_db_unchanged() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+
+        let id = "test-uuid-cap-set";
+        insert_hotword_set_at(&conn, id, "容量测试").unwrap();
+        add_word_to_set_at(&conn, id, "原词1").unwrap();
+        add_word_to_set_at(&conn, id, "原词2").unwrap();
+
+        // 超容量 bail（HOTWORD_SET_MAX_WORDS + 1 个词）
+        let too_many: Vec<String> = (0..=HOTWORD_SET_MAX_WORDS)
+            .map(|i| format!("词{}", i))
+            .collect();
+        let err = set_words_in_set_at(&conn, id, &too_many);
+        assert!(err.is_err(), "超容量应 bail");
+
+        // bail 后原词必须仍活跃（事务保证：bail 在 tx 开启前，DB 完全不变）
+        let words = list_words_in_set_at(&conn, id).unwrap();
+        assert_eq!(words.len(), 2, "超容量 bail 后原词不动");
+        assert!(words.iter().any(|w| w.word == "原词1"));
+        assert!(words.iter().any(|w| w.word == "原词2"));
     }
 }

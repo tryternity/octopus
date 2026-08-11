@@ -36,6 +36,7 @@ use octopus_sync::store::{iso_to_unix_ms, now_secs};
 use zeroize::Zeroizing;
 
 use crate::crypto::kdf::Argon2Params;
+use crate::storage::meta::save_vault_meta;
 use crate::sync::fingerprint;
 use crate::sync::store;
 
@@ -525,7 +526,7 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
         public_key: None,
         protected_private_key: None,
     };
-    db::upsert_vault_meta(&meta_input).map_err(SyncError::Other)?;
+    save_vault_meta(&meta_input).map_err(SyncError::Other)?;
 
     // 3. 读所有 cipher/folder 文件 → upsert SQLite
     let (ciphers, folders) = store::import_all_from_files()?;
@@ -801,9 +802,12 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     // 首次推送用 -u 设 upstream；后续普通 push
     // #4 修复：push 失败累计到 push_errors，不再静默 log::warn! 后谎报「已推送」
     let mut push_errors: Vec<(String, String)> = Vec::new();
+    // 第二十七轮 P3-4：记 remotes 是否为空，message 区分「已推送」vs「未推送（无 remote）」
+    let remotes_was_empty;
     {
         let remotes = git::git_remote_list(&root).unwrap_or_default();
-        if remotes.is_empty() {
+        remotes_was_empty = remotes.is_empty();
+        if remotes_was_empty {
             log::warn!("[sync] 无 remote 配置——跳过 push");
         }
         for (name, _url) in &remotes {
@@ -823,7 +827,18 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     }
 
     // message 措辞根据 push_errors / skipped 分支（#4——不再无条件「已推送到远程」）
-    let message = if push_errors.is_empty() {
+    // 第二十七轮 P3-4：remotes 为空（git remote list 失败或真无 remote）时原仍报
+    // 「已推送到远程」——用户误以为有云端备份实际没有（安全语义错误）。现区分。
+    let message = if remotes_was_empty && push_errors.is_empty() {
+        if is_first_push {
+            "首次同步：本地已保存，未推送（无 remote 配置或 git remote list 失败）".to_string()
+        } else {
+            format!(
+                "同步完成（本地）：vault 拉取 {} 条/推送 {} 条，热词拉取 {} 条/推送 {} 条，剪贴板收藏拉取 {} 条/推送 {} 条——未推送（无 remote）",
+                pulled, pushed, hotwords_pulled, hotwords_pushed, clipboard_pulled, clipboard_pushed
+            )
+        }
+    } else if push_errors.is_empty() {
         if is_first_push {
             "首次同步完成，已推送到远程".to_string()
         } else {
@@ -950,7 +965,7 @@ pub fn resolve_with_remote(password: Zeroizing<String>) -> Result<(), SyncError>
         public_key: pub_key,
         protected_private_key: priv_key,
     };
-    db::upsert_vault_meta(&meta_input).map_err(SyncError::Other)?;
+    save_vault_meta(&meta_input).map_err(SyncError::Other)?;
     log::info!("[sync] resolve_with_remote 完成——本地 vault_meta 已用远程覆盖");
     Ok(())
 }
@@ -1394,6 +1409,25 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
 
     // === 阶段 D：merge meta（meta upsert + app_key local_enc 清空）===
     if let Some(mf) = meta_file {
+        // 第二十八轮 P1-F1（vault meta 覆盖竞态）：阶段 A :1342 读 local_meta（stamp=S0）
+        // 后，期间用户可能改密（unlock.rs :334 stamp S0→S1 + 新 protected_key K1）。
+        // 阶段 D 若直接用远程值（S0/K0）覆盖 DB（已 S1/K1）→ 新密码失效 → 永久锁死。
+        // 写前重读 DB 当前 meta，stamp 与阶段 A 快照不同 → 期间有 change → bail（用户重试 sync）。
+        // 注：save_vault_meta 的 META_WRITE_LOCK 挡不住此竞态——change 的 _guard 只在函数内
+        // 持有，sync 阶段 A 读 + 阶段 D 写是两次独立短锁，中间不持外层锁。
+        if let Some(ref snapshot) = local_meta {
+            let current_meta = db::load_vault_meta().map_err(SyncError::Other)?;
+            if let Some(ref current) = current_meta {
+                if current.security_stamp != snapshot.security_stamp {
+                    return Err(SyncError::Other(anyhow::anyhow!(
+                        "vault meta security_stamp 在 sync 期间变化（阶段 A={} → 当前={}）——\
+                         可能有改密操作并发，放弃本次 meta 覆盖防数据锁死，请重试 sync",
+                        snapshot.security_stamp, current.security_stamp
+                    )));
+                }
+            }
+        }
+
         let f = mf.to_sync_fields()?;
         let _strict_params = Argon2Params::from_i64_strict(
             f.kdf_iterations,
@@ -1438,7 +1472,7 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
             public_key: pub_key,
             protected_private_key: priv_key,
         };
-        db::upsert_vault_meta(&meta_input).map_err(SyncError::Other)?;
+        save_vault_meta(&meta_input).map_err(SyncError::Other)?;
     }
 
     // === 阶段 E：写 outline + meta（从 DB 最新状态重建——merge 完后 DB 即单一真相源）===

@@ -282,8 +282,12 @@ pub(crate) fn move_action_bar_item_at(conn: &Connection, id: i64, direction: i32
 
     if let Some(nid) = neighbor_id {
         let neighbor = load_action_bar_item_at(conn, nid)?.context("相邻项不存在")?;
-        conn.execute("UPDATE action_bar_items SET sort_order=?1 WHERE id=?2", params![neighbor.sort_order, id])?;
-        conn.execute("UPDATE action_bar_items SET sort_order=?1 WHERE id=?2", params![row.sort_order, nid])?;
+        // 第二十二轮 P2-i3：两 sort_order 交换必须包事务。原先 autocommit 下第一条成功
+        // 第二条失败 → 两 item 共享同 sort_order，菜单顺序乱。对齐 P2-i1/i2 范式。
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("UPDATE action_bar_items SET sort_order=?1 WHERE id=?2", params![neighbor.sort_order, id])?;
+        tx.execute("UPDATE action_bar_items SET sort_order=?1 WHERE id=?2", params![row.sort_order, nid])?;
+        tx.commit()?;
     }
     Ok(())
 }

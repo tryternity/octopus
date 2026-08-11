@@ -14,6 +14,30 @@ static HTTP_CLIENT: Lazy<reqwest::blocking::Client> = Lazy::new(|| {
         .expect("failed to build LLM HTTP client")
 });
 
+/// 第二十二轮 P2-l1 / 第二十六轮 P2-l3 复查：读取错误响应 body 并截断——
+/// - **P2-l1（信息泄漏，已修）**：某些 provider 4xx body 会 echo 请求头（含
+///   `Authorization: Bearer ...`）或 stack trace，整 body 进 bail message → toast/日志
+///   泄漏。截断到 500 字符（足够诊断 HTTP 错误，不会完整暴露 echo 的敏感头）。
+/// - **P2-l3（OOM，留后续 P3）**：`response.text()`（:25）仍全量读内存——截断只省
+///   message 不防 OOM。原注释自称"避免全量入内存"与实现矛盾（第二十六轮纠正）。实际
+///   威胁低：LLM provider 是用户自配 API（OpenAI/DeepSeek/Ollama），非不可信外部服务，
+///   GB 级 body 需 provider 主动作恶。完整修复需 reqwest streaming + 上限分块读，复杂度
+///   超出收益，留 P3。
+const ERROR_BODY_MAX_CHARS: usize = 500;
+fn read_error_body(response: reqwest::blocking::Response) -> String {
+    let text = response.text().unwrap_or_default();
+    truncate_error_body(&text)
+}
+
+/// 截断逻辑分离（便于单元测试，无需 HTTP）。
+fn truncate_error_body(text: &str) -> String {
+    if text.chars().count() <= ERROR_BODY_MAX_CHARS {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(ERROR_BODY_MAX_CHARS).collect();
+    format!("{}...(truncated)", truncated)
+}
+
 /// DeepSeek 专有：关闭思考模式的参数体。
 #[derive(Serialize)]
 struct Thinking {
@@ -121,7 +145,7 @@ fn chat_text(
 
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().unwrap_or_default();
+        let body = read_error_body(response);
         anyhow::bail!("LLM API 返回错误 {}: {}", status, body);
     }
 
@@ -245,14 +269,19 @@ pub fn polish_regions(
 ///
 /// 仅去包裹标记的括号，不影响用户文本里的字面 `{`/`}`/`<`/`>`（代码/数学/HTML）——
 /// 那些场景下括号是无修饰的散字符，不构成 `{...}`/`<...>` 的配对标记。
-/// 正则要求内部无嵌套 `{}`/`<>`（标记格式契约），字面文本里的孤立括号不受影响。
+///
+/// 第二十八轮 P3-LLM1：RE_HOTWORDS_MARKER 原为 `<[^<>]*>`（匹配任意 `<...>`），会误删
+/// `<div>` / `a<b` / 代码 `i<5 && j>0` 等。改为 `<[^<>|]*\|[^<>]*>` ——要求内部含至少一个
+/// `|`（hotwords 多候选分隔符），单候选 `<词>` 不匹配（LLM 应已选定无残留标记）。
+/// 这排除了 HTML 标签（无 `|`）和代码比较（无 `|`），仅清多候选残留 `<cand1|cand2>`。
+/// 注：单候选场景 LLM 返回的是选定词本身（无 `<>` 包裹），不需此正则清理。
 ///
 /// 第六轮 L1-b：两个 regex 预编译为 static Lazy（原每次 polish_regions 调用都
 /// Regex::new×2，中间润色 mode=2 停顿驱动频繁触发，热路径不必要开销）。
 static RE_EDITED_MARKER: Lazy<regex::Regex> =
     Lazy::new(|| regex::Regex::new(r"\{([^{}]*)\}").unwrap());
 static RE_HOTWORDS_MARKER: Lazy<regex::Regex> =
-    Lazy::new(|| regex::Regex::new(r"<[^<>]*>").unwrap());
+    Lazy::new(|| regex::Regex::new(r"<[^<>|]*\|[^<>]*>").unwrap());
 
 fn strip_edited_markers(text: &str) -> String {
     // {word} → word（edited 语境标记，内部不含嵌套 {}）
@@ -296,7 +325,7 @@ pub fn test_connection(config: &CompatibleLlmConfig) -> Result<()> {
 
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().unwrap_or_default();
+        let body = read_error_body(response);
         anyhow::bail!("LLM API 返回错误 {}: {}", status, body);
     }
 
@@ -325,5 +354,30 @@ mod tests {
         assert_eq!(strip_edited_markers("config={key:value}"), "config=key:value");
         // 嵌套（edited 区含字面括号）——外层泄漏，已知限制
         assert_eq!(strip_edited_markers("{config={key:value}}"), "{config=key:value}");
+    }
+
+    /// 第二十二轮 P2-l1/P2-l3：truncate_error_body 必须截断超长 body（防泄漏 + 防 OOM）。
+    #[test]
+    fn truncate_error_body_truncates_long_text() {
+        // 短 body 原样返回
+        assert_eq!(truncate_error_body("短错误"), "短错误");
+        assert_eq!(truncate_error_body(""), "");
+        // 恰好 500 字符——不截断
+        let exactly_max: String = "x".repeat(ERROR_BODY_MAX_CHARS);
+        assert_eq!(truncate_error_body(&exactly_max), exactly_max);
+
+        // 501 字符——截断 + 标记
+        let over: String = "y".repeat(600);
+        let truncated = truncate_error_body(&over);
+        assert!(truncated.ends_with("...(truncated)"), "超长 body 必须截断标记");
+        // 截断后 = 500 chars + "...(truncated)"(14 chars) = 514
+        assert_eq!(truncated.chars().count(), ERROR_BODY_MAX_CHARS + "...(truncated)".len());
+
+        // 多字节 UTF-8（中文）按字符截断，不切断字符边界
+        let chinese_over: String = "中".repeat(600);
+        let cn_truncated = truncate_error_body(&chinese_over);
+        assert!(cn_truncated.ends_with("...(truncated)"));
+        // 500 个"中" + 标记，每个"中"是 1 char
+        assert_eq!(cn_truncated.chars().filter(|&c| c == '中').count(), ERROR_BODY_MAX_CHARS);
     }
 }

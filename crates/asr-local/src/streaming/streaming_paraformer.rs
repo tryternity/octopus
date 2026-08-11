@@ -604,8 +604,12 @@ impl StreamingParaformer {
     ) -> Result<Vec<f32>> {
         // 零拷贝：直接拿 &[f32] 切片引用 enc_tensor 底层数据
         // 防御性 enc_len 截断：ONNX 输出异常（padding/截断）时避免 slice panic
+        // 第二十九轮 P2-F1：原 slice 用 enc_len.min(enc_dim1) 截断，但循环仍用原始
+        // enc_len——若 enc_len > enc_dim1，循环到 i>=enc_dim1 时 enc_data 越界 panic。
+        // 统一 effective_enc_len = enc_len.min(enc_dim1)，slice 和循环都用它。
         let enc_dim1 = enc_tensor.shape()[1];
-        let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len.min(enc_dim1), ..]);
+        let effective_enc_len = enc_len.min(enc_dim1);
+        let enc_slice = enc_tensor.slice(ndarray::s![0, ..effective_enc_len, ..]);
         let enc_data = enc_slice.as_slice().ok_or_else(|| anyhow::anyhow!(
             "encoder output non-contiguous (shape={:?})", enc_tensor.shape()
         ))?;
@@ -615,7 +619,7 @@ impl StreamingParaformer {
         let threshold: f32 = 1.0;
         let feat = self.encoder_output_size;
 
-        for i in 0..enc_len {
+        for i in 0..effective_enc_len {
             let this_alpha = alphas[i];
             if this_alpha <= 0.0 {
                 continue;
@@ -662,8 +666,12 @@ impl StreamingParaformer {
     ) -> Result<Vec<f32>> {
         // 零拷贝：直接拿 &[f32] 切片引用 enc_tensor 底层数据
         // 防御性 enc_len 截断：ONNX 输出异常（padding/截断）时避免 slice panic
+        // 第二十九轮 P2-F1：原 slice 用 enc_len.min(enc_dim1) 截断，但循环仍用原始
+        // enc_len——若 enc_len > enc_dim1，循环到 i>=enc_dim1 时 enc_data 越界 panic。
+        // 统一 effective_enc_len = enc_len.min(enc_dim1)，slice 和循环都用它。
         let enc_dim1 = enc_tensor.shape()[1];
-        let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len.min(enc_dim1), ..]);
+        let effective_enc_len = enc_len.min(enc_dim1);
+        let enc_slice = enc_tensor.slice(ndarray::s![0, ..effective_enc_len, ..]);
         let enc_data = enc_slice.as_slice().ok_or_else(|| anyhow::anyhow!(
             "encoder output non-contiguous (shape={:?})", enc_tensor.shape()
         ))?;
@@ -673,7 +681,7 @@ impl StreamingParaformer {
         let threshold: f32 = 1.0;
         let feat = self.encoder_output_size;
 
-        for i in 0..enc_len {
+        for i in 0..effective_enc_len {
             let this_alpha = alphas[i];
             if this_alpha <= 0.0 {
                 continue;

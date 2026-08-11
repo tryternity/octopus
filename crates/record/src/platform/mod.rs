@@ -62,18 +62,39 @@ pub fn provider() -> impl HelperProvider {
 
 /// 跑 helper 子命令模式（--check-permission / --list-displays / ...）。
 /// 通用工具：spawn helper 传一个子命令参数，等 stdout 第一行 JSON 解析。
+///
+/// 第三十一轮 P1-1：原 wait_with_output().await 无 timeout + 无 kill_on_drop——
+/// macOS 权限弹窗等用户确认时 helper 阻塞 → wait 永不返回 → 前端 invoke 永久 await
+/// （UI loading 永转）。现加 30s timeout（覆盖正常操作 + 给权限弹窗留时间，但防永久卡）
+/// + kill_on_drop（timeout/helper hang 时杀子进程，不残留孤儿）。对齐 session.rs:174
+/// 的 kill_on_drop + :314 timeout 范式。
 #[allow(dead_code)] // MVP 只 macos 用，windows/linux 占位时不调
 pub(crate) async fn run_helper_subcommand(
     helper_path: &std::path::Path,
     subcmd: &str,
 ) -> RecordResult<serde_json::Value> {
-    let output = tokio::process::Command::new(helper_path)
+    let child = tokio::process::Command::new(helper_path)
         .arg(subcmd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()?
-        .wait_with_output()
-        .await?;
+        .kill_on_drop(true)
+        .spawn()?;
+    // 30s timeout——覆盖 list-displays/windows/microphones（<2s）+ check-permission（<5s）
+    // + request-permission（用户确认弹窗，30s 充裕；超时返错让前端提示重试）。
+    // 用 tokio::select 因 wait_with_output 消费 child（move），timeout 后拿不到 child kill。
+    let output = tokio::select! {
+        result = child.wait_with_output() => {
+            result?
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+            // timeout——kill_on_drop 在 child drop 时杀进程，但 child 已 move 进
+            // wait_with_output 的 future。select 的 cancel drop 该 future → drop child → kill。
+            return Err(crate::error::RecordError::HelperError {
+                code: "subcommand-timeout".into(),
+                message: format!("{} timed out after 30s", subcmd),
+            });
+        }
+    };
     if !output.status.success() {
         return Err(crate::error::RecordError::HelperError {
             code: "subcommand-failed".into(),

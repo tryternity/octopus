@@ -97,17 +97,36 @@ async fn transcribe(
     let engine = query.engine.as_deref().unwrap_or(&state.active_model).to_string();
     let language = query.language.as_deref().unwrap_or("auto");
 
-    // Try to parse as WAV, fallback to raw f32
-    let samples = match octopus_asr_local::audio::read_wav_16k_from_bytes(&body) {
-        Ok(s) => s,
-        Err(_) => {
-            // Try raw f32 bytes
-            let len = body.len() / 4;
-            let mut samples = Vec::with_capacity(len);
-            for chunk in body.chunks_exact(4) {
-                samples.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    // 第二十三轮 P2-srv4：WAV decode（hound 解析 + 重采样，O(n)）合进 spawn_blocking。
+    // 原在 async handler 直接跑，阻塞 tokio worker；而下方 transcribe_batch 却在
+    // spawn_blocking——不一致。decode 独立 spawn_blocking 返回 samples，保持后续
+    // duration_ms 计算 + 400 早返回控制流不变。
+    let samples = match tokio::task::spawn_blocking(move || {
+        // Try to parse as WAV, fallback to raw f32
+        match octopus_asr_local::audio::read_wav_16k_from_bytes(&body) {
+            Ok(s) => s,
+            Err(_) => {
+                // Try raw f32 bytes
+                let len = body.len() / 4;
+                let mut samples = Vec::with_capacity(len);
+                for chunk in body.chunks_exact(4) {
+                    samples.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                }
+                samples
             }
-            samples
+        }
+    })
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("audio decode task failed: {}", e),
+                }),
+            )
+                .into_response();
         }
     };
 
@@ -139,17 +158,34 @@ async fn transcribe(
                 .into_response();
         }
     };
-    let text = match tokio::task::spawn_blocking(move || {
-        octopus_asr_local::pipeline::transcribe_batch(engine_arc.as_ref(), &samples, &cfg)
-    })
+    // 第二十三轮 P2-srv5：spawn_blocking 包 tokio::time::timeout——ASR 引擎某输入死循环
+    // （历史 paraformer drain bug 同型）会永久占 blocking pool 线程。超时返回 503，
+    // 孤儿 blocking 线程让其自然结束（tokio blocking pool 线程 JoinHandle drop 后仍跑到
+    // 完成再回收，结果丢弃）。对齐 scheduler A1 范式（孤儿线程自愈）。120s 覆盖长音频
+    // （60s 音频 RTF 0.5 = 30s 推理）+ 慢模型冷启动。
+    let text = match tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        tokio::task::spawn_blocking(move || {
+            octopus_asr_local::pipeline::transcribe_batch(engine_arc.as_ref(), &samples, &cfg)
+        }),
+    )
     .await
     {
-        Ok(result) => result,
-        Err(e) => {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => {
             return (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: format!("inference task failed: {}", e),
+                }),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: "ASR inference timeout (120s)——引擎可能死循环，请重试或换模型".into(),
                 }),
             )
                 .into_response();
@@ -224,10 +260,32 @@ async fn handle_ws(
             .await;
     }
 
-    // Validate engine
+    // Validate engine category known
     if octopus_asr_local::config::resolve_engine_category_any(&engine).is_none() {
         send_ws_error(&mut socket, format!("Unknown engine '{}'", engine)).await;
         return;
+    }
+
+    // 第二十三轮 P2-srv3：流式 session 强制用 ASR 域激活引擎（StreamingSession::new 内部
+    // resolve_active_engine("asr")，忽略 engine_spec 参数——见 streaming_engine.rs:48-50
+    // 设计说明）。原实现静默忽略客户端 ?engine=，传 whisper 却用 paraformer 时用户无感知。
+    // 现校验 ?engine= 必须与激活引擎一致，不一致时显式报错（用户知道需先切换激活引擎）。
+    match octopus_asr_local::config::resolve_active_engine("asr") {
+        Ok(active) => {
+            let active_name = active.name.as_str();
+            // engine 可能是 "domain:name" 或裸 name，取裸名比对
+            let requested_bare = octopus_asr_local::config::parse_model_spec(&engine).model_name();
+            if requested_bare != active_name {
+                send_ws_error(&mut socket, format!(
+                    "流式引擎必须是激活引擎（当前激活：{}，请求：{}）。请先用 switch_active_engine 切换激活引擎，或改用 /transcribe 批处理端点（支持任意引擎）",
+                    active_name, requested_bare
+                )).await;
+                return;
+            }
+        }
+        Err(_) => {
+            // 无激活引擎——让 StreamingSession::new 报具体错误（它内部也调 resolve_active_engine）
+        }
     }
 
     let session = match octopus_asr_local::streaming_engine::StreamingSession::new(&engine, &language) {

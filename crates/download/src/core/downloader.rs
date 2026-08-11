@@ -458,9 +458,9 @@ impl Downloader {
                 }
             }
             if !verify_ok {
+                // 第二十三轮 P2-dl1：Hash enum 删 Etag 变体后，此处只可能 Sha256。
                 let actual = match expected {
                     Hash::Sha256(_) => crate::core::verify::compute_sha256(&part).await.unwrap_or_default(),
-                    Hash::Etag(_) => String::new(),
                 };
                 let _ = std::fs::remove_file(&part);
                 crate::core::resume::remove(&task.dest);

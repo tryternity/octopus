@@ -341,7 +341,11 @@ impl Stitcher {
                         return Ok(false);
                     } else {
                         // 画面在动 → 合法均匀滚动，继续
+                        // 第三十轮 F1：补 same_dy_count = 0 复位——原缺复位导致第 4 帧 :318
+                        // 永久命中（same_dy_count 恒 3）→ uniform 后每帧都被锁定，画布不再增长。
+                        // 复位后每帧重新走 stationary check（多一道防线防 uniform 误判）。
                         log::info!("[stitch] uniform scroll detected (dy={:.0}, sad={:.1}), not locking", dy_rounded, stationary_sad);
+                        self.same_dy_count = 0;
                     }
                 }
             } else {
@@ -480,19 +484,23 @@ impl Stitcher {
         }
     }
 
-    pub fn canvas(&mut self) -> &RgbaImage {
+    /// 第二十九轮 P2-F3：canvas_buf 与 canvas_w/h 不匹配（数据严重损坏）时原返 1×1 黑图
+    /// + log error——调用方拿到黑图继续编码/入库/剪贴板，用户得空白图且根因被掩盖。
+    /// 改返 Result，让上层显式处理损坏（bail 中止截图流程）。
+    pub fn canvas(&mut self) -> anyhow::Result<&RgbaImage> {
         if self.canvas_cache.is_none() {
             let rebuilt = match RgbaImage::from_raw(self.canvas_w, self.canvas_h, self.canvas_buf.clone()) {
                 Some(img) => img,
                 None => {
-                    log::error!("canvas_buf 长度与 canvas_w/h 不匹配: {}x{} buf_len={}",
-                        self.canvas_w, self.canvas_h, self.canvas_buf.len());
-                    RgbaImage::new(1, 1)
+                    return Err(anyhow::anyhow!(
+                        "canvas_buf 长度与 canvas_w/h 不匹配: {}x{} buf_len={}",
+                        self.canvas_w, self.canvas_h, self.canvas_buf.len()
+                    ));
                 }
             };
             self.canvas_cache = Some(rebuilt);
         }
-        self.canvas_cache.as_ref().unwrap()
+        Ok(self.canvas_cache.as_ref().unwrap())
     }
 
     pub fn height(&self) -> u32 { self.canvas_h }
@@ -504,20 +512,18 @@ impl Stitcher {
     /// `canvas().clone()`（每次复制 1920×5000 RGBA ≈ 38MB，3 次 ≈ 114MB 峰值）。
     /// 改用本方法后无 clone——优先 move canvas_cache（若已构建），否则从 canvas_buf
     /// 重建一次。调用方消费 self 后不能再访问 Stitcher。
-    pub fn into_canvas(mut self) -> RgbaImage {
+    /// 第二十九轮 P2-F3：同 canvas()——数据损坏时 bail 而非返 1×1 黑图。
+    pub fn into_canvas(mut self) -> anyhow::Result<RgbaImage> {
         // 优先复用已构建的 cache（避免重建）
         if let Some(img) = self.canvas_cache.take() {
-            return img;
+            return Ok(img);
         }
         match RgbaImage::from_raw(self.canvas_w, self.canvas_h, std::mem::take(&mut self.canvas_buf)) {
-            Some(img) => img,
-            None => {
-                log::error!(
-                    "into_canvas: canvas_buf 长度不匹配 {}x{} buf_len={}",
-                    self.canvas_w, self.canvas_h, self.canvas_buf.len()
-                );
-                RgbaImage::new(1, 1)
-            }
+            Some(img) => Ok(img),
+            None => Err(anyhow::anyhow!(
+                "into_canvas: canvas_buf 长度不匹配 {}x{} buf_len={}",
+                self.canvas_w, self.canvas_h, self.canvas_buf.len()
+            )),
         }
     }
 
@@ -822,7 +828,7 @@ mod tests {
         s.process_frame(&f1).unwrap(); // init
         let f2 = make_frame(TW, TH, 50);
         s.process_frame(&f2).unwrap();
-        let canvas = s.canvas().clone();
+        let canvas = s.canvas().unwrap().clone();
         assert_eq!(canvas.height(), s.height());
         assert_eq!(canvas.width(), TW);
     }

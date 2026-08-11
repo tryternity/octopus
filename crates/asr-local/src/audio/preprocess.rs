@@ -153,6 +153,12 @@ pub fn filter_speech(
     frame_size: usize,
     threshold: f32,
 ) -> Vec<f32> {
+    // 第三十一轮 P2-1：frame_size=0 时 :156 除零（frame_duration_ms=0）+ :162 chunks(0)
+    // 双 panic。pub API 暴露（audio/mod.rs:17 pub use），内部传 480/512 不触发，但
+    // 外部调用方可传 0。入口早返回空（0 帧大小=无有效音频）。
+    if frame_size == 0 || samples.is_empty() {
+        return Vec::new();
+    }
     let frame_duration_ms = (frame_size * 1000) / 16000;
     let pad_samples = (SPEECH_PAD_MS / frame_duration_ms) * frame_size;
 
@@ -195,6 +201,10 @@ pub fn segment_audio_vad(
     min_silence_ms: usize,  // e.g. 500ms
     max_segment_ms: usize,  // e.g. 25000ms (25s)
 ) -> Vec<Vec<f32>> {
+    // 第三十一轮 P2-1：frame_size=0 时 :205 除零 + :210 除零 panic（同 filter_speech）。
+    if frame_size == 0 || samples.is_empty() {
+        return Vec::new();
+    }
     let mut segments = Vec::new();
     let mut in_speech = false;
     let mut current_segment_start = 0;
@@ -305,6 +315,10 @@ pub fn segment_audio_vad_with_offsets(
     min_silence_ms: usize,
     max_segment_ms: usize,
 ) -> Vec<VadSegment> {
+    // 第三十一轮 P2-1：frame_size=0 除零守卫（同 segment_audio_vad）
+    if frame_size == 0 || samples.is_empty() {
+        return Vec::new();
+    }
     let mut segments: Vec<VadSegment> = Vec::new();
     let mut in_speech = false;
     let mut current_segment_start = 0;

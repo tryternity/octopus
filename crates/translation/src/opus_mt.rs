@@ -66,13 +66,26 @@ impl OpusMTEngine {
             let gen: serde_json::Value = serde_json::from_reader(
                 std::fs::File::open(&gen_path).context("读取 generation_config 失败")?,
             )?;
+            // 第二十七轮 P2-3：eos_token_id 是模型必需元数据——缺字段时原 unwrap_or(0)
+            // 会让 :158 的 `if next_token == eos_id { break }` 误用 token 0（通常是 pad/BOS）
+            // 作 eos：首步 argmax 恰为 0 → 立即 break 返空串；0 不被选中 → 跑满 512 输出垃圾。
+            // 缺即 bail!（模型 generation_config.json 不完整），而非危险默认 0。
+            let eos_id = gen.get("eos_token_id").and_then(|v| v.as_i64()).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "generation_config.json 缺 eos_token_id 字段——模型元数据不完整，无法安全解码"
+                )
+            })?;
             (
                 gen.get("decoder_start_token_id").and_then(|v| v.as_i64()).unwrap_or(65000),
-                gen.get("eos_token_id").and_then(|v| v.as_i64()).unwrap_or(0),
+                eos_id,
                 gen.get("pad_token_id").and_then(|v| v.as_i64()).unwrap_or(65000),
             )
         } else {
-            (65000, 0, 65000)
+            // 无 generation_config.json——bail!（opus-mt 标准模型必有此文件，缺失说明模型损坏）
+            anyhow::bail!(
+                "缺少 generation_config.json——opus-mt 模型文件不完整（需含 eos_token_id 等解码元数据）: {}",
+                gen_path.display()
+            );
         };
 
         log::info!("opus-mt 引擎加载完成: {:?} (decoder_start={}, eos={}, pad={})",

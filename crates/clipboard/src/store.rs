@@ -304,8 +304,12 @@ const VOICE_SOFT_DELETE_MIN_LEN: usize = 5;
 /// 判断 id 是否为 voice 且 content 足够长（值得软删保留作 bigram 语料）。
 /// voice 且 content 长度 >= VOICE_SOFT_DELETE_MIN_LEN → true（软删）；
 /// voice 但太短 / 非 voice / 查不到 → false（物理删）。
+///
+/// 第二十九轮补充 P2-C2：原 unwrap_or(false) 把 DB 错误（锁竞争/IO/损坏）并入 false
+/// → delete_item 走 permanent_delete_item → voice 永久删除不可恢复（失去 bigram 语料）。
+/// 删除应 fail-safe——DB 错误时保守返 true（软删优先，宁可多保留也不误删）。
 fn is_voice_worth_keeping(conn: &Connection, id: &str) -> bool {
-    conn.query_row(
+    match conn.query_row(
         "SELECT item_type, length(content) FROM clipboard_history WHERE id = ?",
         params![id],
         |r| {
@@ -313,7 +317,15 @@ fn is_voice_worth_keeping(conn: &Connection, id: &str) -> bool {
             let len: i64 = r.get(1).unwrap_or(0);
             Ok(item_type == "voice" && len as usize >= VOICE_SOFT_DELETE_MIN_LEN)
         },
-    ).unwrap_or(false)
+    ) {
+        Ok(worth) => worth,
+        Err(rusqlite::Error::QueryReturnedNoRows) => false, // 查不到→物理删（行不存在）
+        Err(e) => {
+            // DB 错误——保守软删（fail-safe：宁可多保留也不误删 voice 语料）
+            log::warn!("[clipboard] is_voice_worth_keeping DB 错误（保守软删）：{}", e);
+            true
+        }
+    }
 }
 
 /// 默认删除：voice 且够长→软删（进回收站 + enforce 上限）；voice 太短/其他→物理删。

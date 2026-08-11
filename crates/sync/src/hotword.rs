@@ -423,24 +423,18 @@ pub fn export_all_hotwords_with(sets: &[HotwordSet], words: &[HotwordWord]) -> R
         words_by_set.entry(w.set_id.as_str()).or_default().push(w);
     }
 
-    // 1. 清空所有词典目录（每个 set 一个 <set-id>/ 目录）。保留 outline.json。
-    if dir.is_dir() {
-        for entry in std::fs::read_dir(&dir)
-            .with_context(|| format!("读 hotword 目录失败：{}", dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                let _ = std::fs::remove_dir_all(&path); // 词典目录——清空重建
-            }
-        }
-    }
+    // 第二十三轮 P2-sync1（方案 B 先写后清孤儿）：原实现 :426-437 循环 remove_dir_all 各
+    // set 目录后重建——remove 后崩溃致残破。现改为只 create_dir_all(hotword/)（:416 已做），
+    // 写完所有 set 后清孤儿（见末尾 cleanup_orphan_hotword_files）。
+    // 注意：超期 set tombstone 的目录靠孤儿清理删（原靠清空步骤删）。
 
-    // 2. 写每个词典 + 收集总 outline 的 set entries
+    // 写每个词典 + 收集总 outline 的 set entries
     let now_secs = now_secs();
     let mut set_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
+    // keep_set_ids：未超期的 set id（写文件的），孤儿清理时保留这些 set 目录
+    let mut keep_set_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for h in sets {
-        // GC 2026-08-02：超期 set tombstone 不写文件 + 不进 outline（清空步骤已删其目录）
+        // GC 2026-08-02：超期 set tombstone 不写文件 + 不进 outline（其目录变孤儿，cleanup 清）
         if is_tombstone_expired(h.is_deleted, now_secs) {
             continue;
         }
@@ -481,9 +475,14 @@ pub fn export_all_hotwords_with(sets: &[HotwordSet], words: &[HotwordWord]) -> R
                 updated_ms: iso_to_unix_ms(&h.updated_at),
             },
         );
+        keep_set_ids.insert(h.id.clone());
     }
 
-    // 3. 写总 outline.json
+    // 清孤儿：两级——set 级（不在 keep_set_ids 的 set 目录）+ word 级（存活 set 内超期
+    // tombstone 词文件）。超期 set tombstone 的目录在此清理（原靠清空步骤删）。
+    cleanup_orphan_hotword_files(&keep_set_ids, &words_by_set, now_secs)?;
+
+    // 写总 outline.json
     let outline = HotwordOutline {
         version: 1,
         hotword_version: 1, // 首次导出从 1 开始
@@ -492,6 +491,86 @@ pub fn export_all_hotwords_with(sets: &[HotwordSet], words: &[HotwordWord]) -> R
     write_hotword_outline(&outline)?;
 
     Ok(outline)
+}
+
+/// 第二十三轮 P2-sync1（方案 B）：清理 hotword/ 目录中的孤儿。
+///
+/// 两级结构：
+/// - **set 级**：`hotword/<set-id>/` 目录不在 `keep_set_ids` → 删整个目录（DB 已删的 set /
+///   超期 tombstone set / 上次崩溃残留）。outline.json 不是目录，不受影响。
+/// - **word 级**：存活的 set 内，`<set-id>/<2hex>/<word-uuid>.json` 不在 keep_word_ids
+///   （该 set 未超期的词）→ 删文件。超期 word tombstone 在此清理。
+///
+/// `words_by_set` 含**全部**词（含超期 tombstone），本函数过滤超期的作为 keep_word_ids
+/// （未超期的保留，超期的是孤儿）。
+fn cleanup_orphan_hotword_files(
+    keep_set_ids: &std::collections::HashSet<String>,
+    words_by_set: &std::collections::HashMap<&str, Vec<&HotwordWord>>,
+    now_secs: i64,
+) -> Result<()> {
+    let dir = hotword_dir();
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(&dir)
+        .with_context(|| format!("读 hotword 目录失败：{}", dir.display()))?
+    {
+        let path = entry?.path();
+        if !path.is_dir() {
+            continue; // outline.json 等非目录跳过
+        }
+        let set_id = match path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        if !keep_set_ids.contains(&set_id) {
+            // 整个 set 目录是孤儿——删目录（best-effort）
+            if let Err(e) = std::fs::remove_dir_all(&path) {
+                log::warn!("[sync] 清孤儿 set 目录失败 {}：{}", path.display(), e);
+            }
+        } else {
+            // set 存活——清 set 内孤儿词文件（超期 tombstone word）
+            let keep_word_ids: std::collections::HashSet<String> = words_by_set
+                .get(set_id.as_str())
+                .map(|words| {
+                    words
+                        .iter()
+                        .filter(|w| !is_tombstone_expired(w.is_deleted, now_secs))
+                        .map(|w| w.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            // 遍历 set_dir/<2hex>/*.json
+            for shard_entry in std::fs::read_dir(&path)
+                .with_context(|| format!("读 set 目录失败：{}", path.display()))?
+            {
+                let shard_path = shard_entry?.path();
+                if !shard_path.is_dir() {
+                    continue;
+                }
+                for file_entry in std::fs::read_dir(&shard_path)
+                    .with_context(|| format!("读分片目录失败：{}", shard_path.display()))?
+                {
+                    let file_path = file_entry?.path();
+                    if file_path.extension().and_then(|e| e.to_str()) != Some("json") {
+                        continue;
+                    }
+                    if let Some(stem) = file_path.file_stem().and_then(|s| s.to_str()) {
+                        if !keep_word_ids.contains(stem) {
+                            if let Err(e) = std::fs::remove_file(&file_path) {
+                                log::warn!(
+                                    "[sync] 清孤儿 word 文件失败 {}：{}",
+                                    file_path.display(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 增量导出——sync_now 用，只写真正变化的文件（不清空目录）。
@@ -903,9 +982,21 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
     let latest_sets = db::list_all_hotword_sets()?;
     for set in &latest_sets {
         set_thread_set_id(&set.id);
+        // 第二十六轮 P3（对称第二十三轮 clipboard P3-sync1）：RAII guard 保 ? 早返回也 clear
+        let _guard = SetIdGuard;
         merge_three_way::<HotwordWordEntity>(&mut report, now)?;
     }
     clear_thread_set_id();
+
+    // ── 第二十六轮 P3：thread-local set_id RAII guard ──
+    /// drop 时清 thread-local set_id，保证 merge_three_way `?` 早返回时也 clear
+    ///（对齐 clipboard.rs ClipboardKeyGuard 范式）。
+    struct SetIdGuard;
+    impl Drop for SetIdGuard {
+        fn drop(&mut self) {
+            clear_thread_set_id();
+        }
+    }
 
     // 阶段 3：从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）。
     // 必须在两层 merge 都收敛后调一次——export_all_hotwords 会清空所有 set 目录，提前调会丢词。

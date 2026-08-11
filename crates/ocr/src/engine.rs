@@ -38,6 +38,34 @@ const SPLIT_HEIGHT_THRESHOLD: u32 = 1600;
 const CHUNK_HEIGHT: u32 = 1280;
 const CHUNK_OVERLAP: u32 = 200;
 
+/// 第二十三轮 P2-ocr3：image 解码维度上限。`load_from_memory` 默认无维度限制，
+/// 超大长图（剪贴板粘贴 / 异常截图）→ load + to_rgb8 峰值近 1GB OOM。
+/// 8192×8192 ≈ 67M 像素，RGBA 约 268MB（低于 image crate 默认 max_alloc 512MB），
+/// 覆盖正常截图（4K = 3840×2160）+ 长图拼接。超出返错提示用户裁剪。
+const OCR_MAX_IMAGE_DIM: u32 = 8192;
+
+/// 带维度限制的 image 解码——替代 `image::load_from_memory`（无限制）。
+///
+/// 用 `ImageReader::with_guessed_format` + `set_limits` 在解码前 check 维度，
+/// 超限返 `ImageError::Limits`（不分配大缓冲）。第八步前就拒绝，防 OOM。
+fn load_image_with_limits(image_bytes: &[u8]) -> Result<::image::DynamicImage> {
+    use std::io::Cursor;
+    let mut reader = ::image::ImageReader::new(Cursor::new(image_bytes))
+        .with_guessed_format()
+        .context("无法识别图片格式")?;
+    let mut limits = ::image::Limits::default();
+    limits.max_image_width = Some(OCR_MAX_IMAGE_DIM);
+    limits.max_image_height = Some(OCR_MAX_IMAGE_DIM);
+    reader.limits(limits);
+    reader
+        .decode()
+        .context(format!(
+            "图片解码失败（可能维度超限 {}×{} 或文件损坏）",
+            OCR_MAX_IMAGE_DIM, OCR_MAX_IMAGE_DIM
+        ))
+        .map_err(anyhow::Error::from)
+}
+
 /// OCR idle 多久后释放模型内存（drop ort session + mmap 权重）。ASR/VAD 不在此机制范围。
 const OCR_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 /// 守护线程采样间隔（≤ OCR_IDLE_TIMEOUT 的一半，保证及时释放又不频繁检查）。
@@ -120,6 +148,14 @@ impl OcrEngine {
             return;
         }
         let mut inner = self.inner.lock();
+        // 第二十六轮 P2-c2（double-checked locking）：:147 检查 is_idle 后等 inner 锁，
+        // 若 OCR 推理正在跑（run_ocr :217 持锁 + :207 刷新 last_used=now），守护线程等
+        // 锁到 OCR 完成。拿到锁时 last_used 已是刚刷新的 now，is_idle 应返 false——但
+        // 原实现不再复查直接 unload 刚用完的模型。复查消除 TOCTOU（对齐 :206-207 注释
+        // "防守护线程在重载期间误判 idle" 的意图）。
+        if !Self::is_idle(&self.last_used.lock()) {
+            return;
+        }
         if let Some(backend) = inner.as_mut() {
             backend.unload(); // PP-OCR drop RapidOcr → 释放 ort session + mmap 权重
             *inner = None;    // drop Box<dyn OcrBackend>
@@ -146,8 +182,7 @@ impl OcrEngine {
     }
 
     pub fn recognize(&self, image_bytes: &[u8]) -> Result<String> {
-        let img = ::image::load_from_memory(image_bytes)
-            .context("Failed to decode image")?;
+        let img = load_image_with_limits(image_bytes)?;
         let blocks = if img.height() > SPLIT_HEIGHT_THRESHOLD {
             self.recognize_long_image_with_blocks(&img)?
         } else {
@@ -157,8 +192,7 @@ impl OcrEngine {
     }
 
     pub fn recognize_with_blocks(&self, image_bytes: &[u8]) -> Result<(String, Vec<OcrBlock>)> {
-        let img = ::image::load_from_memory(image_bytes)
-            .context("Failed to decode image")?;
+        let img = load_image_with_limits(image_bytes)?;
         self.recognize_with_blocks_from_image(&img)
     }
 

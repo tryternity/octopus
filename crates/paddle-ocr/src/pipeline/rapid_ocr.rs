@@ -65,6 +65,11 @@ pub struct RapidOcr {
 
 impl RapidOcr {
     pub fn new(config: EngineConfig) -> Result<Self> {
+        // 第二十二轮 P2-ocr1：激活已有 validate()——原 new 直接构造 Detector/Classifier/Recognizer
+        // 跳过校验，200 行守卫（text_score 范围 / limit_side_len 非零 / shape 非零）dormant。
+        // 当前 build_engine_config 用 default 不触发，但未来用户配置反序列化（det.std=[0,0,0]
+        // 等）→ NaN/除零注入 ort。一行激活，early return 配置错误。
+        config.validate()?;
         init_rayon_global_pool(&config);
         let det = Detector::new(detector_cfg_from_pipeline(&config))?;
         let cls = Classifier::new(classifier_cfg_from_pipeline(&config))?;

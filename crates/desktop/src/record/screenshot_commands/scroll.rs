@@ -745,7 +745,16 @@ pub async fn start_scroll_recording(
             let _ = stitcher.finalize(lf);
 
             // finalize 后再 emit 一帧预览（spawn_blocking 避免阻塞事件循环）
-            let canvas = stitcher.canvas().clone();
+            // 第二十九轮 P2-F3：canvas 损坏时 bail 整个截图流程（不再返 1×1 黑图掩盖）
+            let canvas = match stitcher.canvas() {
+                Ok(c) => c.clone(),
+                Err(e) => {
+                    log::error!("[scroll] canvas 损坏，中止预览：{}", e);
+                    let _ = ah.emit("scroll://error",
+                        serde_json::json!({ "message": format!("截图画布数据损坏：{}", e) }));
+                    return;
+                }
+            };
             let preview_b64 = tokio::task::spawn_blocking(move || {
                 let preview_w = 400u32;
                 let max_preview_h = 1200u32;
@@ -786,7 +795,15 @@ pub async fn start_scroll_recording(
 
         // 消费 stitcher 一次性 move 出 canvas——避免 canvas().clone() 复制整张画布
         // （P0-2 修复：38MB/次 × 3 次 → 0 次大 clone）。此后 stitcher 不可再用。
-        let canvas = stitcher.into_canvas();
+        let canvas = match stitcher.into_canvas() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("[scroll] 最终 canvas 损坏，中止截图：{}", e);
+                let _ = ah.emit("scroll://error",
+                    serde_json::json!({ "message": format!("截图画布数据损坏：{}", e) }));
+                return;
+            }
+        };
         let ah3 = ah.clone();
         let ah4 = ah.clone();
 

@@ -110,15 +110,34 @@ pub(crate) fn handle_toggle(
                     let session_id = tr.id;
                     rt.spawn(async move {
                         // 看门狗：close 超时也必须发 CloudStreamingDone，否则 stage 永久卡死
-                        let result = tokio::time::timeout(
+                        // 第二十二轮 P2-d4：catch_unwind 兜 close_async 内 panic——原 timeout 只兜
+                        // 超时不兜 panic，panic 终止 task → tx.send 永不执行 → stage 永久卡
+                        // CloudClosing。对齐 polish.rs:112 / paste.rs:102 范式。panic 后仍 send
+                        // Err，让 handler 能 finalize_cloud 收尾（无标点补全）。
+                        //
+                        // 第二十六轮 P1-1（regression 修复）：原用 std::panic::catch_unwind 包
+                        // async block——catch_unwind 返 Result<{async block}, _>，.await 作用在
+                        // Result 上非法（cloud feature 编译失败）。改用 FutureExt::catch_unwind
+                        // 直接作用在 Future 上（返 Future<Output=Result<F::Output, _>>）。
+                        use futures_util::FutureExt;
+                        let result = std::panic::AssertUnwindSafe(tokio::time::timeout(
                             std::time::Duration::from_secs(30),
                             handle.close_async(),
-                        )
+                        ))
+                        .catch_unwind()
                         .await;
+                        // result: Result<Result<Result<String, anyhow::Error>, Elapsed>, Box<dyn Any+Send>>
                         let text_result = match result {
-                            Ok(Ok(text)) => Ok(text),
-                            Ok(Err(e)) => Err(e.to_string()),
-                            Err(_) => Err("cloud close timeout (30s)".to_string()),
+                            // 未 panic
+                            Ok(timeout_result) => match timeout_result {
+                                Ok(close_result) => match close_result {
+                                    Ok(text) => Ok(text),
+                                    Err(e) => Err(e.to_string()),
+                                },
+                                Err(_) => Err("cloud close timeout (30s)".to_string()),
+                            },
+                            // panic
+                            Err(_) => Err("cloud close panic".to_string()),
                         };
                         let _ = tx_clone.send(Command::CloudStreamingDone {
                             text: text_result,
@@ -597,7 +616,14 @@ pub(crate) fn handle_cloud_streaming_done(
             // close 返回的是整个 session 的完整文本，非空则 apply_engine_full 喂回（前缀追加；diverted 重算基准）
             // Err 时提取错误信息传给 finalize_cloud 落 meta_info.cloud_close_error（P2-2 诊断落库）。
             let cloud_error = match &text {
-                Ok(text) if !text.is_empty() => { transcript.apply_engine_full(text); None }
+                // 第三十三轮 P1-2：close 返回的 text 含在途 partial（provider Text=stable+sep+partial），
+                // apply_engine_full 已把 sep+partial 追加进 transcript。若不在此清 current_partial，
+                // finalize_cloud :506-511 会再次 append current_partial → partial 重复。
+                Ok(text) if !text.is_empty() => {
+                    transcript.apply_engine_full(text);
+                    *current_partial = String::new(); // 清空防 finalize_cloud 重复 append
+                    None
+                }
                 Ok(_) => None,
                 Err(e) => {
                     warn!("CloudStreaming close WSS failed: {}", e);

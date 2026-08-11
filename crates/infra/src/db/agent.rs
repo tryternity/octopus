@@ -67,8 +67,12 @@ pub(crate) fn set_default_agent_at(conn: &Connection, id: i64) -> Result<()> {
     if exists == 0 {
         anyhow::bail!("agent adapter id={} 不存在", id);
     }
-    conn.execute("UPDATE agent_adapters SET is_default=0", [])?;
-    conn.execute("UPDATE agent_adapters SET is_default=1 WHERE id=?1", params![id])?;
+    // 第二十二轮 P2-i4：清零 + 置 1 两步必须包事务。原先 autocommit 下清零成功、置 1
+    // 失败 → 全表无 default。对齐 P2-i1/i2/i3 + insert_vault_ciphers_batch 范式。
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("UPDATE agent_adapters SET is_default=0", [])?;
+    tx.execute("UPDATE agent_adapters SET is_default=1 WHERE id=?1", params![id])?;
+    tx.commit()?;
     Ok(())
 }
 

@@ -962,6 +962,10 @@ pub struct ModelDetail {
 #[tauri::command]
 pub fn get_model_detail(id: i64) -> Result<ModelDetail, String> {
     let (source, secret_key) = octopus_infra::db::get_model_source_key(id).map_err(e2s)?;
+    // 第三十二轮 P2-1：vault 启用后 DB 存 v1: 密文，get_model_source_key 是裸 SQL 不解密。
+    // 同文件 edit_cloud_model:774 已显式 try_decrypt_secret_global——此处对称遗漏。
+    // 前端编辑表单拿到密文：UX 困惑 + trim/拼接密文损坏（幂等兜底仅对完整密文有效）。
+    let secret_key = crate::vault::vault_secret_access::try_decrypt_secret_global(&secret_key)?;
     let (is_streaming, is_thinking) = octopus_infra::db::get_model_flags(id).unwrap_or((false, false));
     Ok(ModelDetail {
         source,

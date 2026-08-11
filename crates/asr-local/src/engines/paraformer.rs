@@ -165,8 +165,15 @@ impl crate::engine::OfflineAsrEngine for ParaformerEngine {
         let alphas: Vec<f32> = alpha_data.to_vec();
 
         // 零拷贝：直接借用 enc_tensor 的连续切片供 CIF 循环读取，避免 clone() 整段 encoder 输出。
-        // 形状 [1, enc_len_val, enc_feat] 为标准行主序，slice(s![0, ..enc_len_scalar, ..]) 连续。
-        let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len_scalar, ..]);
+        // 形状 [1, enc_len_val, enc_feat] 为标准行主序，slice(s![0, ..effective, ..]) 连续。
+        // 第二十九轮 P2-F1：防御性 enc_len 截断——enc_len_scalar（ONNX 第 1 输出标量）
+        // 正常 == enc_len_val（第 0 输出 dim1），但模型损坏/int8 量化异常/ORT 版本差异时
+        // enc_len_scalar > dim1 → slice + 循环越界 panic。统一 effective = min(标量, dim1)，
+        // slice 和循环都用 effective（对齐流式版 streaming_paraformer.rs:607-608，且修流式版
+        // 循环 :618 仍用原始 enc_len 的不完整修复）。
+        let enc_dim1 = enc_tensor.shape()[1];
+        let effective_enc_len = enc_len_scalar.min(enc_dim1);
+        let enc_slice = enc_tensor.slice(ndarray::s![0, ..effective_enc_len, ..]);
         let enc_data: &[f32] = enc_slice.as_slice().ok_or_else(|| anyhow::anyhow!("enc_slice 非连续内存，无法取 slice"))?;
 
         let mut acoustic_embedding: Vec<f32> = Vec::new();
@@ -174,7 +181,7 @@ impl crate::engine::OfflineAsrEngine for ParaformerEngine {
         let mut integrate: f32 = 0.0;
         let threshold: f32 = 1.0;
 
-        for i in 0..enc_len_scalar {
+        for i in 0..effective_enc_len {
             let this_alpha = alphas[i];
             if integrate + this_alpha < threshold {
                 integrate += this_alpha;

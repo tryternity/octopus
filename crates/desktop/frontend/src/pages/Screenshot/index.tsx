@@ -4,6 +4,7 @@ import { invoke } from "@/lib/tauri";
 import { invoke as rawInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { message } from "@tauri-apps/plugin-dialog";
 import { type Annotation, drawAnnotation, drawAnnotationScaled, drawBlur, annBounds, hitTestAnnotationPrecise, drawWatermark, type WatermarkOpts } from "@/lib/annotation";
 import { ToolButton } from "./ToolButton";
 import { ScrollPreview } from "./ScrollPreview";
@@ -170,6 +171,7 @@ export default function Screenshot() {
   useEffect(() => {
     let unlistenFrame: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
     let cancelled = false;
     listen<{ frame: string; preview: string; height: number; phys_height: number }>("scroll://frame", (e) => {
       const img = new Image();
@@ -189,8 +191,20 @@ export default function Screenshot() {
       // 保存模式由 Rust 端直接弹对话框，前端不再中转 base64
       scrollSaveAfterStopRef.current = false;
     }).then((fn) => { if (cancelled) fn(); else unlistenDone = fn; });
+    // 第三十轮 z-sync：scroll://error——canvas 损坏时后端 emit（P2-F3 Result 传播），
+    // 前端清预览 + 停计时器 + 弹 dialog 告知用户（不再静默中止）。
+    listen<{ message: string }>("scroll://error", (e) => {
+      setScrollPreview(null);
+      if (scrollElapsedRef.current) {
+        clearInterval(scrollElapsedRef.current);
+        scrollElapsedRef.current = null;
+      }
+      setModeSafe("selected");
+      scrollSaveAfterStopRef.current = false;
+      message(e.payload?.message || "截图画布数据损坏，已中止", { title: "截图错误", kind: "error" });
+    }).then((fn) => { if (cancelled) fn(); else unlistenError = fn; });
     return () => {
-      cancelled = true; unlistenFrame?.(); unlistenDone?.();
+      cancelled = true; unlistenFrame?.(); unlistenDone?.(); unlistenError?.();
       bgBitmapRef.current?.close(); // 释放 ImageBitmap 缓存
     };
   }, []);

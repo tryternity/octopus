@@ -277,7 +277,7 @@ mod tests {
 
         // 手动从 canvas 计算底部 strip 灰度比对（canvas() 借用 s，须先取出 strip_h）
         let strip_h = s.config.strip_h;
-        let canvas = s.canvas();
+        let canvas = s.canvas().unwrap();
         let canvas_h = canvas.height();
         assert!(canvas_h >= strip_h);
         for y in 0..strip_h {

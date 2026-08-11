@@ -172,10 +172,17 @@ pub fn autotype_login_with_mode(
             log::debug!("[autotype] password 注入完成");
         }
         AutoTypeMode::PasswordOnly => {
+            // 第二十二轮 P2-d2：activate(:142) + sleep(150ms) 后焦点可能被系统通知/Spotlight
+            // 抢走——UsernamePassword 在 password 前(:170)有 verify_focused，PasswordOnly 缺。
+            // PasswordOnly 是默认模式（autotype.rs:116「最稳健」），缺二次校验 = password 注入
+            // 错误窗口风险。补一次 verify（与 UsernamePassword :170 对称）。
+            verify_focused(expected_bundle_id)?;
             enigo.text(password).context("输入 password 失败")?;
             log::debug!("[autotype] password 注入完成（PasswordOnly）");
         }
         AutoTypeMode::UsernameOnly => {
+            // 第二十二轮 P2-d2：同 PasswordOnly，activate 后补 verify（对称）。
+            verify_focused(expected_bundle_id)?;
             enigo.text(username).context("输入 username 失败")?;
             log::debug!("[autotype] username 注入完成（UsernameOnly）");
         }

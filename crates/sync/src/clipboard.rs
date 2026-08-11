@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::outline::OutlineEntry;
-use crate::pipeline::{merge_three_way, MergeReport, SyncEntity};
+use crate::pipeline::{is_tombstone_expired, merge_three_way, MergeReport, SyncEntity};
 use crate::store::{iso_to_unix_ms, md5_hex, now_secs, shard_dir, sync_root, write_atomically};
 
 // === 路径辅助 ===
@@ -223,6 +223,22 @@ fn set_thread_clipboard_key(key: ClipboardKey) {
     THREAD_KEY.with(|k| *k.borrow_mut() = Some(key));
 }
 
+/// 第二十二轮 P3-sync1：merge 结束清 thread-local key——ClipboardKey 含 Zeroizing<[u8;32]>
+/// （剪贴板 sync 加密密钥）。原 merge 不 clear，spawn_blocking 线程被 tokio pool 复用时
+/// key 残留到下次无关任务（卫生瑕疵，非安全漏洞——同进程内 key 已在 DB，残留不新增暴露面）。
+/// clear 独立函数便于 RAII guard 调用。
+fn clear_thread_clipboard_key() {
+    THREAD_KEY.with(|k| *k.borrow_mut() = None);
+}
+
+/// RAII guard：drop 时清 thread-local key，保证 merge 任何路径（含 `?` 早返回 / panic）都 clear。
+struct ClipboardKeyGuard;
+impl Drop for ClipboardKeyGuard {
+    fn drop(&mut self) {
+        clear_thread_clipboard_key();
+    }
+}
+
 /// 取 thread-local key——trait method（`write_file` / `upsert_db_from_file`）解密用。
 ///
 /// 未 set 时 panic（`merge_clipboard_favorites` 必然先 set，调用方契约）。
@@ -386,13 +402,23 @@ pub fn delete_favorite_file(uuid: &str) -> Result<()> {
 /// 单比 history_id 无法发现内容变化。本函数对内容字段取指纹——outline diff + 冲突比对
 /// 用它检测「同一 history_id 的内容是否变了」。
 fn history_row_md5(row: &HistoryRowJson) -> String {
+    // 第二十九轮补充 P2-C1：原 md5 只含 4 字段（id/item_type/content/meta_info），漏
+    // ref_data/segments/is_rich。Image/File 的 content 恒空（实际内容在 ref_data），
+    // voice 的 segments（润色/编辑段模型）——这些字段变化时 md5 不变 → outline 不 diff
+    // → sync 不 push → 远端拿不到新内容，静默数据不一致。补全 3 字段。
+    //
+    // 注：补字段后所有已 sync 设备的 md5 会变（新增字段参与计算），首次 sync 触发全量
+    // conflict（md5 不等）→ 走「DB 赢」push 分支 → 最终收敛。非数据丢失，一次性全量 push。
     md5_hex(
         format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}",
             row.id,
             row.item_type,
             row.content,
-            row.meta_info.as_deref().unwrap_or("")
+            row.ref_data.as_deref().unwrap_or(""),
+            row.meta_info.as_deref().unwrap_or(""),
+            row.is_rich,
+            row.segments.as_deref().unwrap_or(""),
         )
         .as_bytes(),
     )
@@ -417,18 +443,31 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
     std::fs::create_dir_all(&clip_dir)
         .with_context(|| format!("创建 clipboard 目录失败：{}", clip_dir.display()))?;
 
-    // 清空 favorites/ 子目录（含分片子目录），保留 clipboard.key + outline.json
+    // 第二十三轮 P2-sync1（方案 B 先写后清孤儿）：原实现 remove_dir_all(fav_dir) + 重建，
+    // remove→create 间崩溃 → 残破工作区（目录被删空，git 捕获删除传播对端）。现改为只
+    // ensure fav_dir 存在（create_dir_all 幂等），写完所有文件后清孤儿（见末尾）。
+    // 任何时刻崩溃：要么旧文件还在（写未开始/部分），要么新文件已写入（孤儿残留，
+    // 下次 export 清）。永不存在「目录被删空」状态。
     let fav_dir = favorites_dir()?;
-    if fav_dir.is_dir() {
-        std::fs::remove_dir_all(&fav_dir)
-            .with_context(|| format!("清空 favorites/ 失败：{}", fav_dir.display()))?;
-    }
     std::fs::create_dir_all(&fav_dir)
-        .with_context(|| format!("重建 favorites/ 失败：{}", fav_dir.display()))?;
+        .with_context(|| format!("创建 favorites 目录失败：{}", fav_dir.display()))?;
 
-    // 每个 favorite 写文件 + 进 outline
+    // 每个 favorite 写文件 + 进 outline + 收集 keep_keys（含 active + 未超期 tombstone，
+    // 两者都写文件，都需保留，孤儿清理时以此判定）
     let mut entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
+    let mut keep_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 第三十二轮 P2-4：超期 tombstone 不写文件 + 不进 outline（对齐 hotword
+    // export_all_hotwords_with :444 is_tombstone_expired 过滤）。GC 启用后 A 机硬删超期
+    // tombstone，若 export 仍写文件 → B 机 pull 复活。超期 tombstone 的文件靠孤儿清理删。
+    let now_s = now_secs();
+    let retention = <ClipboardFavoriteEntity as SyncEntity>::tombstone_retention_secs();
     for fav in &favs {
+        // 超期 tombstone 跳过（不写文件、不进 outline、不进 keep_keys → 孤儿清理删其文件）
+        if fav.is_deleted > 0 && retention > 0
+            && is_tombstone_expired(retention, fav.is_deleted, now_s)
+        {
+            continue;
+        }
         if fav.is_deleted > 0 {
             // tombstone——不需要 payload（内容已无意义，pull 方只看 is_deleted）。
             // encrypted_payload 留空，md5 用空内容固定值。
@@ -452,7 +491,12 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
                 created_at: String::new(),
                 segments: None,
             });
-            let _ = octopus_infra::db::set_sync_md5(&fav.history_id, &md5);
+            // 第二十九轮补充 P3-CF9：原 let _ = 吞 DB 写错，改 log warn（不阻断——
+            // md5 未回写 DB 会导致下次 merge 误判 conflict 做无效 push + 日志噪声，
+            // 但不影响正确性，DB 是真相源 export 会重算）。
+            if let Err(e) = octopus_infra::db::set_sync_md5(&fav.history_id, &md5) {
+                log::warn!("[sync] 收藏 export set_sync_md5 失败（不阻断）：{}", e);
+            }
             entries.insert(
                 fav.history_id.clone(),
                 OutlineEntry {
@@ -482,7 +526,12 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
 
             let md5 = history_row_md5(&payload.history_row);
             // export 后把磁盘指纹写回 DB——下次 merge 据此比对冲突（DB md5 vs outline md5）。
-            let _ = octopus_infra::db::set_sync_md5(&fav.history_id, &md5);
+            // 第二十九轮补充 P3-CF9：原 let _ = 吞 DB 写错，改 log warn（不阻断——
+            // md5 未回写 DB 会导致下次 merge 误判 conflict 做无效 push + 日志噪声，
+            // 但不影响正确性，DB 是真相源 export 会重算）。
+            if let Err(e) = octopus_infra::db::set_sync_md5(&fav.history_id, &md5) {
+                log::warn!("[sync] 收藏 export set_sync_md5 失败（不阻断）：{}", e);
+            }
 
             entries.insert(
                 fav.history_id.clone(),
@@ -492,7 +541,13 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
                 },
             );
         }
+        keep_keys.insert(fav.history_id.clone());
     }
+
+    // 清孤儿：扫 favorites/<2hex>/*.json，删 stem 不在 keep_keys 的文件（DB 已删/未导出
+    // 但文件残留）。孤儿不影响 merge pull（pull 按 outline 走），但会让 git 历史堆积 +
+    // 浪费磁盘。删除失败不阻断（best-effort，下次 export 再清）。
+    cleanup_orphan_favorite_files(&keep_keys)?;
 
     let outline = ClipboardOutline {
         version: 1,
@@ -500,6 +555,53 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
     };
     write_clipboard_outline(&outline)?;
     Ok(outline)
+}
+
+/// 第二十三轮 P2-sync1（方案 B）：清理 favorites/ 目录中不在 keep_keys 的孤儿 .json 文件。
+///
+/// `favorites/` 下是 `<2hex>/<uuid>.json` 两级分片结构。遍历所有分片子目录，删 stem
+/// 不在 keep_keys 的 .json 文件。非 .json 文件跳过（防御）。
+///
+/// 孤儿产生场景：① DB 删除 favorite 后未 export（下次 export 本函数清）；② 上次 export
+/// 写入新文件后崩溃，旧文件残留（自愈）。孤儿不影响正确性——merge pull 按 outline 走，
+/// 孤儿不在 outline 不会被 pull；outline 用 write_atomically 最后写，崩溃后要么旧
+/// （自愈）要么新（与文件一致）。
+fn cleanup_orphan_favorite_files(keep_keys: &std::collections::HashSet<String>) -> Result<()> {
+    let fav_dir = favorites_dir()?;
+    if !fav_dir.is_dir() {
+        return Ok(());
+    }
+    for shard_entry in std::fs::read_dir(&fav_dir)
+        .with_context(|| format!("读 favorites 目录失败：{}", fav_dir.display()))?
+    {
+        let shard_path = shard_entry?.path();
+        if !shard_path.is_dir() {
+            continue; // 非目录（如意外文件）跳过
+        }
+        for file_entry in std::fs::read_dir(&shard_path)
+            .with_context(|| format!("读分片目录失败：{}", shard_path.display()))?
+        {
+            let file_path = file_entry?.path();
+            // 只处理 .json 文件（防御：跳过 .tmp 等其他文件）
+            if file_path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            // 提取 uuid（文件名去 .json）——不在 keep_keys 即孤儿
+            if let Some(stem) = file_path.file_stem().and_then(|s| s.to_str()) {
+                if !keep_keys.contains(stem) {
+                    // 孤儿——删除失败 log warn 不阻断（best-effort）
+                    if let Err(e) = std::fs::remove_file(&file_path) {
+                        log::warn!(
+                            "[sync] 清孤儿 favorite 文件失败 {}：{}",
+                            file_path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // === Task 7: 双向 merge（DB ↔ .sync 文件）===
@@ -531,6 +633,8 @@ pub struct ClipboardMergeReport {
 pub fn merge_clipboard_favorites() -> Result<ClipboardMergeReport> {
     let key = load_or_create_clipboard_key()?;
     set_thread_clipboard_key(key);
+    // 第二十二轮 P3-sync1：guard 确保 merge 任何路径（Ok/Err/panic）都清 thread-local key。
+    let _key_guard = ClipboardKeyGuard;
     let mut report = MergeReport::default();
     let now = now_secs();
     merge_three_way::<ClipboardFavoriteEntity>(&mut report, now)?;
@@ -608,8 +712,15 @@ fn pull_favorite(fav: &octopus_infra::db::ClipboardFavorite) -> Result<bool> {
                 };
                 octopus_infra::db::upsert_favorite_sync(&tombstone_fav)?;
                 // history 行可能存在且 is_favorite=1（favorites 表记录丢了但 history 标记还在）
-                // ——幂等清掉，不存在则 no-op
-                let _ = octopus_infra::db::set_clipboard_is_favorite(history_id, false);
+                // ——幂等清掉，不存在则 no-op。第二十七轮 P2-1：原 let _ = 吞错，现 log warn
+                // （不阻断——favorite tombstone 已写入，history.is_favorite 残留不影响 sync 正确性，
+                // 下次 export 会基于 favorite 表重建，UI 列表取 favorite 表为准）。
+                if let Err(e) = octopus_infra::db::set_clipboard_is_favorite(history_id, false) {
+                    log::warn!(
+                        "[sync] 收藏 pull: {} tombstone 后清 history.is_favorite 失败（不阻断）：{}",
+                        history_id, e
+                    );
+                }
                 log::debug!("[sync] 收藏 pull: {} DB 无 → INSERT tombstone + 清 history.is_favorite", history_id);
                 Ok(true)
             }
@@ -1363,5 +1474,42 @@ mod tests {
             "🔴 文件应保持 tombstone（不被本地 active 覆盖），实际 is_deleted={}",
             file.is_deleted
         );
+    }
+
+    /// 第二十三轮 P2-sync1（方案 B）回归：cleanup_orphan_favorite_files 清理孤儿。
+    ///
+    /// 手造一个 keep_keys + 分片子目录里塞孤儿 .json + 合法 .json → cleanup 后孤儿删除、
+    /// 合法保留。验证「先写后清孤儿」方案：新文件已写入后，旧的/残留的被清。
+    #[test]
+    fn cleanup_orphan_favorite_files_removes_stale_keeps_valid() {
+        let _guard = SyncRootGuard::new();
+        let fav_dir = favorites_dir().unwrap();
+        // 模拟 3 个文件：keep1（保留）、keep2（保留）、orphan（删除）
+        let keep_keys: std::collections::HashSet<String> =
+            ["keep1", "keep2"].iter().map(|s| s.to_string()).collect();
+        // 分片子目录（用 shard_dir 拿 <2hex>）
+        let shard1 = fav_dir.join(shard_dir("keep1"));
+        std::fs::create_dir_all(&shard1).unwrap();
+        std::fs::write(shard1.join("keep1.json"), "{}").unwrap();
+        std::fs::write(shard1.join("orphan.json"), "{}").unwrap(); // 同分片孤儿
+        let shard2 = fav_dir.join(shard_dir("keep2"));
+        std::fs::create_dir_all(&shard2).unwrap();
+        std::fs::write(shard2.join("keep2.json"), "{}").unwrap();
+
+        cleanup_orphan_favorite_files(&keep_keys).unwrap();
+
+        // keep1/keep2 保留，orphan 删除
+        assert!(shard1.join("keep1.json").exists(), "keep1 应保留");
+        assert!(shard2.join("keep2.json").exists(), "keep2 应保留");
+        assert!(!shard1.join("orphan.json").exists(), "orphan 应被清理");
+    }
+
+    /// 第二十三轮 P2-sync1（方案 B）回归：cleanup 对空目录/不存在目录不报错（幂等）。
+    #[test]
+    fn cleanup_orphan_favorite_files_empty_dir_ok() {
+        let _guard = SyncRootGuard::new();
+        // favorites/ 不存在——cleanup 应 Ok（不报错）
+        let keep_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        assert!(cleanup_orphan_favorite_files(&keep_keys).is_ok());
     }
 }

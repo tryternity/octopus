@@ -361,10 +361,26 @@ fn dispatch_action(coordinator: &Coordinator, action: FsmAction) {
 ///
 /// HotkeyManager 必须固定在 manager 线程内（不可跨线程 move），
 /// 因此线程闭包内创建并独占持有它。
-fn ensure_thread(app: &AppHandle) -> Sender<ManagerCommand> {
+///
+/// 第二十三轮 P2-d3：spawn 失败不再 .expect panic，改为返 Err——调用方（register_ptt）
+/// 返 Err 给 Tauri 命令（用户看到「PTT 启动失败」而非 app crash）。spawn 失败=系统极端
+/// 状态，PTT 不可用可接受（其他功能继续），panic 让整个 app 消失对用户更糟。
+fn ensure_thread(app: &AppHandle) -> Result<Sender<ManagerCommand>, String> {
     let mut guard = PTT_STATE.lock();
+    // 第三十一轮 B1：检测 manager 线程是否已死亡（HotkeyManager 创建失败/panic）。
+    // 线程死后 PTT_STATE 保留 stale sender，后续 send() 立即 Disconnected → PTT 永久失效。
+    // 检测 is_finished() 后清空 PTT_STATE，让下方重新 spawn。
     if let Some(state) = guard.as_ref() {
-        return state.command_sender.clone();
+        if let Some(ref handle) = state.thread_handle {
+            if handle.is_finished() {
+                log::warn!("[ptt] manager 线程已死亡，清理 stale state 重新 spawn");
+                *guard = None;
+            } else {
+                return Ok(state.command_sender.clone());
+            }
+        } else {
+            return Ok(state.command_sender.clone());
+        }
     }
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<ManagerCommand>();
@@ -372,14 +388,17 @@ fn ensure_thread(app: &AppHandle) -> Sender<ManagerCommand> {
     let handle = std::thread::Builder::new()
         .name("octopus-ptt".into())
         .spawn(move || manager_thread(cmd_rx, app_clone))
-        .expect("[ptt] failed to spawn manager thread");
+        .map_err(|e| {
+            log::error!("[ptt] failed to spawn manager thread: {}——PTT 功能将不可用", e);
+            format!("PTT manager thread spawn failed: {}", e)
+        })?;
 
     *guard = Some(PttState {
         command_sender: cmd_tx.clone(),
         thread_handle: Some(handle),
     });
     log::info!("[ptt] manager thread started");
-    cmd_tx
+    Ok(cmd_tx)
 }
 
 /// 在 manager 线程内执行注册。
@@ -427,7 +446,7 @@ fn do_unregister(
 pub fn register_ptt(app: &AppHandle, key: &str) -> Result<(), String> {
     log::info!("[ptt] register_ptt: key={}", key);
 
-    let sender = ensure_thread(app);
+    let sender = ensure_thread(app)?;
 
     let (tx, rx) = mpsc::channel();
     sender
@@ -437,8 +456,10 @@ pub fn register_ptt(app: &AppHandle, key: &str) -> Result<(), String> {
         })
         .map_err(|_| "[ptt] failed to send register command".to_string())?;
 
-    rx.recv()
-        .map_err(|_| "[ptt] failed to receive register response".to_string())?
+    // 第三十一轮 B2：recv_timeout 防 manager 卡住冻结主线程（register_ptt 是同步 pub fn，
+    // set_config 在 Tauri 主线程调它）。5s 超时——正常 register <100ms，5s 充裕。
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("[ptt] failed to receive register response: {}", e))?
 }
 
 /// 注销 PTT 键监听。
@@ -467,8 +488,10 @@ pub fn unregister_ptt(app: &AppHandle) -> Result<(), String> {
         .send(ManagerCommand::Unregister { response: tx })
         .map_err(|_| "[ptt] failed to send unregister command".to_string())?;
 
-    rx.recv()
-        .map_err(|_| "[ptt] failed to receive unregister response".to_string())?
+    // 第三十二轮 P2-2（对称第三十一轮 B2 register_ptt recv_timeout）：unregister_ptt
+    // 也是同步 pub fn（set_config:176 调），recv 无超时 manager 卡住时冻结主线程。
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("[ptt] failed to receive unregister response: {}", e))?
 }
 
 #[cfg(test)]

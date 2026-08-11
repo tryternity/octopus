@@ -283,6 +283,13 @@ fn cgimage_to_rgba(
     let raw = cf_data.bytes();
 
     // macOS 截图 CGImage 通常为 BGRA（little-endian 32bit）。转为 RGBA。
+    // 第三十一轮 P2-3：显式校验 bpr>=width*4——macOS 不变量保证，但 helper 缺显式 ensure!
+    // 若 bpr<width*4（理论不变量违反），:289 slice 越界 panic。
+    anyhow::ensure!(
+        bpr >= width as usize * 4,
+        "CGImage bpr ({}) < width*4 ({})——数据不变量违反",
+        bpr, width as usize * 4
+    );
     let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height as usize {
         let row_start = y * bpr;
