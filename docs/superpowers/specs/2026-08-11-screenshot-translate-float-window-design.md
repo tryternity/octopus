@@ -38,13 +38,16 @@
 
 ### 1.3 本 spec 范围
 
-截图工具栏加「翻译」按钮 → 新建 `translate_window` 只读浮窗 → OCR + 流式翻译 → 译文流式展示。
+`translate_window` 只读译文浮窗 + 两条触发路径（行为统一，都输出到本浮窗）：
+1. **截图翻译**：截图工具栏「翻译」按钮 → `translate_screenshot` 命令 → OCR + 流式翻译
+2. **ActionBar 选中翻译**（2026-08-11 追加）：选中文本 → ActionBar「翻译」→ `execute_action_bar_inner` 的 `auto_translate` 分支 → show 浮窗 + 翻译（原走 CompactEditor contrast tab，改为浮窗保持行为一致性）
 
 **不在范围**（YAGNI，留后续）：
-- Action Bar「截图翻译」action（调研 §10.2 C 线第二入口）
 - Quick Access Overlay（调研 §2.5 #4，截图后右下角缩略卡片六动作）
 - 图片翻译（矢量覆盖层在原图位置呈现译文，Stranslate 做法，工作量更大）
 - 多引擎并行对比（P1 档位）
+
+> ** ActionBar 选中翻译改走浮窗的决策（2026-08-11 追加）**：原 ActionBar 翻译开 CompactEditor contrast tab（左原文右译文双栏），截图翻译开只读浮窗——两条路径体验割裂。改为统一走 `translate_window` 只读浮窗，理由：①行为一致性（用户无需区分「这个翻译会开编辑器」「那个翻译会开浮窗」）；②只读浮窗更轻量（ActionBar 翻译是「快速看译文」场景，不需要编辑器）；③CompactEditor contrast 仍保留给「文本 tab 工具栏翻译按钮」（明确的编辑器内翻译场景）。
 
 ## 2. 架构（数据流）
 
@@ -476,3 +479,33 @@ if !text_empty {
 4. 顺序与预期一致（先清后写），用户看到「❌ 未识别到文本」。✅
 
 **为什么要 move 进闭包而非保留外面**：`run_on_main_thread` 闭包在 main thread 上同步执行，闭包内调用顺序即执行顺序——无任何异步竞态。闭包外的 `if text_empty { emit }` 与排队中的 show_at_mouse 之间是跨线程时序，非确定。
+
+### 9.9 ActionBar 选中翻译改走 translate_window 浮窗（2026-08-11 追加）
+
+**背景**：ActionBar 选中翻译原走 CompactEditor contrast tab（`execute_action_bar_inner` 的 `auto_translate` 分支 → `open_temp_compact_editor(contrast)`）。为与截图翻译行为统一，改为走 `translate_window` 浮窗。
+
+**改动**（`action_bar_commands/script.rs::execute_action_bar_inner` 的 `auto_translate` 分支，两处）：
+
+1. **Local/CloudModel 流式分支**：删掉 `TempTabPayload` 构造 + `open_temp_compact_editor` + `CompactEditor { session_id }` target，换成 `show_at_mouse` + `do_translate_streaming(Float)`：
+   ```rust
+   let ah = app.clone();
+   let _ = app.run_on_main_thread(move || {
+       crate::ui::translate_window::show_at_mouse(&ah);
+   });
+   let target = TranslateEmitTarget::Float;
+   std::thread::spawn(move || { do_translate_streaming(&original_text, &app_clone, target); });
+   ```
+
+2. **FallbackLlm 分支**（非流式，LLM 单次调用）：原 `action_bar_show_result(result, text, "translate", app, true)` 开 contrast tab，改为 `show_at_mouse` + `emit_float_done`（一次性结果）：
+   ```rust
+   let result_text = result.clone();
+   let ah = app.clone();
+   let _ = app.run_on_main_thread(move || {
+       crate::ui::translate_window::show_at_mouse(&ah);
+       crate::ui::translate_window::emit_float_done(&ah, &result_text);
+   });
+   ```
+
+**不动 `action_bar_show_result`**：润色/总结等其他 AI 动作（`action_type="ai"` 非 `auto_translate`）仍走 CompactEditor，继续用 `action_bar_show_result`。该函数里的 `if _action == "translate"` contrast 分支变为死代码（翻译不再调用），留着无害（YAGNI，不清理避免 scope 蔓延）。
+
+**不动 `translate_text` 命令**：ActionBar 翻译走 `execute_action_bar`，不经 `translate_text` 命令。`translate_text` 仍只服务 CompactEditor 工具栏翻译按钮（`target_type="compact_editor"`）和 Result 窗口翻译（`target_type="result"`）。
