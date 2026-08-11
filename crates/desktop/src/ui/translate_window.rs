@@ -60,11 +60,11 @@ pub fn show_at_mouse(app: &AppHandle) {
         let _ = win.set_position(tauri::Position::Logical(
             tauri::LogicalPosition::new(win_x, win_y),
         ));
-        // 重置 ready（防上次 hide 后 ready 残留 true，新翻译 emit 早于 listener 重注册）
-        WINDOW_READY.store(false, Ordering::SeqCst);
-        *PENDING_TEXT.lock() = None;
         let _ = win.show();
-        // 通知前端清空上次译文（listener 已注册，reset 不参与 ready 机制）
+        // 通知前端清空上次译文（listener 已注册，reset 不参与 ready 机制）。
+        // 注意：这里**不**重置 WINDOW_READY——listener 在 React mount 时注册一次，
+        // hide≠destroy 不重 mount，reset 事件单独负责清空 UI 文本。对齐 result_window
+        // （ready 只在 set_*_ready 命令里 store(true)，从不 reset）。
         let _ = app.emit_to(WINDOW_LABEL, "translate-window://reset", ());
     }
 }

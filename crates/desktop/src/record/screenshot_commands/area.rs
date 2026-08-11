@@ -459,12 +459,14 @@ pub async fn translate_screenshot(
     let _ = app_handle.run_on_main_thread(move || {
         close_all_screenshot_windows(&ah);
         crate::ui::translate_window::show_at_mouse(&ah);
+        // OCR 空文本：必须放在 show_at_mouse 之后，避免和异步队列 show 竞态被 reset 事件清空。
+        // C1 修复后 ready 仍为 true（initial mount 设过），reset→done 顺序正确。
+        if text_empty {
+            crate::ui::translate_window::emit_float_done(&ah, "❌ 未识别到文本");
+        }
     });
 
-    if text_empty {
-        // OCR 空文本：show 浮窗后等 ready，直接 emit done 显示错误（不调翻译）
-        crate::ui::translate_window::emit_float_done(&app_handle, "❌ 未识别到文本");
-    } else {
+    if !text_empty {
         // 流式翻译：worker 线程跑 do_translate_streaming，事件经 ready 机制 emit_to 浮窗
         let app_clone = app_handle.clone();
         std::thread::spawn(move || {
