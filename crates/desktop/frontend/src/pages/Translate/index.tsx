@@ -87,9 +87,9 @@ export default function Translate() {
   return (
     <div
       data-tauri-drag-region
-      className="w-screen h-screen flex flex-col bg-[var(--color-bg)] text-[var(--color-text)] rounded-lg overflow-hidden select-none"
+      className="w-screen h-screen flex flex-col bg-background/90 text-foreground backdrop-blur-2xl rounded-lg overflow-hidden select-none"
     >
-      <header data-tauri-drag-region className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)] cursor-move">
+      <header data-tauri-drag-region className="flex items-center justify-between px-3 py-1.5 border-b border-border cursor-move">
         <span className="text-xs opacity-60">
           {done ? t("screenshot.translate.done") : t("screenshot.translate.translating")}
         </span>
@@ -102,11 +102,11 @@ export default function Translate() {
       <main className="flex-1 overflow-auto p-3 text-sm leading-relaxed whitespace-pre-wrap break-words select-text">
         {text || <span className="opacity-50">⏳ {t("screenshot.translate.translating")}</span>}
       </main>
-      <footer className="flex items-center justify-end gap-2 px-3 py-2 border-t border-[var(--color-border)]">
+      <footer className="flex items-center justify-end gap-2 px-3 py-2 border-t border-border">
         <button
           onClick={handleCopy}
           disabled={!text}
-          className="px-3 py-1 text-xs rounded bg-[var(--color-accent)] text-white disabled:opacity-40 hover:opacity-90"
+          className="px-3 py-1 text-xs rounded bg-primary text-primary-foreground disabled:opacity-40 hover:bg-primary/90"
         >
           {copied ? t("common.copied") : t("common.copy")}
         </button>
