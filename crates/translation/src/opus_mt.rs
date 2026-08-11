@@ -313,17 +313,21 @@ fn is_cjk_char(c: char) -> bool {
     )
 }
 
-/// 规范化 CJK 邻接空格：移除「左侧或右侧为 CJK 字符」的 ASCII 半角空格。
+/// 规范化 CJK 邻接空格：仅移除「左右两侧均为 CJK 字符」之间的 ASCII 半角空格。
 ///
 /// 背景：opus-mt 的 tokenizer pre_tokenizer 是 `WhitespaceSplit + Metaspace`，
 /// 对带空格的中文会在句中产生**独立的 `▁` token（id=7）**——而 opus-mt-zh-en
 /// 训练数据中中文是连续字符（句中无 `▁`）。这种 OOD 输入会让 decoder 翻译完
 /// 第一段（空格前）后过早输出 EOS，译文被截断（实测「要看 猫是主动咬…」→
-/// "It depends."）。移除 CJK 邻接空格让 token 序列回到训练分布。
+/// "It depends."）。移除 CJK-CJK 之间的空格让 token 序列回到训练分布。
 ///
-/// 语言无关、安全：纯英文输入无 CJK 字符，空格全保留；中英混合时仅移除
-/// CJK 边界空格（如「使用 Python 编程」→「使用Python编程」），Latin 词内部
-/// 空格保留。换行等其它空白不动（上层已按 \n 切段）。
+/// **只移除 CJK↔CJK 之间的空格**（`prev_cjk && next_cjk`），**保留 CJK↔Latin 边界
+/// 的空格**。曾用 `||`（任一侧 CJK 即移除），但会把 `使用 Python 编程` → `使用Python编程`，
+/// 丢失 Latin 词的前导空格 → Metaspace tokenizer 无法正确切分 `Python` → token 错乱
+/// （`FTS5 trigram 对` → `FTS5 trigram对`，decoder 生成 `FS5 triking`）+ 长中英混排
+/// 文本过早 EOS 只译出第一句（2026-08-11 修复）。
+///
+/// 语言无关、安全：纯英文输入无 CJK 字符，空格全保留。
 fn normalize_cjk_spaces(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -331,8 +335,9 @@ fn normalize_cjk_spaces(text: &str) -> String {
         if c == ' ' {
             let prev_cjk = i > 0 && is_cjk_char(chars[i - 1]);
             let next_cjk = i + 1 < chars.len() && is_cjk_char(chars[i + 1]);
-            // 空格任一侧是 CJK → 移除（CJK 不靠空格分词）
-            if prev_cjk || next_cjk {
+            // 仅当空格两侧都是 CJK 时移除（CJK 不靠空格分词）
+            // CJK-Latin 边界保留空格（Latin 词需前导空格被 tokenizer 切分）
+            if prev_cjk && next_cjk {
                 continue;
             }
         }
@@ -396,17 +401,23 @@ mod tests {
 
     #[test]
     fn normalize_cjk_spaces_mixed() {
-        // 中英混合：CJK 边界空格移除，Latin 词内部保留
-        assert_eq!(normalize_cjk_spaces("使用 Python 编程"), "使用Python编程");
-        assert_eq!(normalize_cjk_spaces("hello 世界"), "hello世界");
-        assert_eq!(normalize_cjk_spaces("世界 hello"), "世界hello");
+        // 中英混合：CJK-CJK 空格移除，CJK-Latin 边界空格保留（Latin 词需前导空格被 tokenizer 切分）
+        // 2026-08-11 修复：曾移除 CJK-Latin 空格致 token 错乱 + 译文截断
+        assert_eq!(normalize_cjk_spaces("使用 Python 编程"), "使用 Python 编程");
+        assert_eq!(normalize_cjk_spaces("hello 世界"), "hello 世界");
+        assert_eq!(normalize_cjk_spaces("世界 hello"), "世界 hello");
+        // CJK-CJK 之间仍移除（原 bug 场景保留）
+        assert_eq!(normalize_cjk_spaces("要看 猫"), "要看猫");
+        // 中英密集混排（用户 bug 场景）：FTS5 trigram 对 → 保留 trigram 和 对 之间的空格
+        assert_eq!(normalize_cjk_spaces("FTS5 trigram 对 CJK 友好"), "FTS5 trigram 对 CJK 友好");
     }
 
     #[test]
     fn normalize_cjk_spaces_edges_and_empty() {
-        // 首尾空格：邻接 CJK 移除
-        assert_eq!(normalize_cjk_spaces(" 看"), "看");
-        assert_eq!(normalize_cjk_spaces("看 "), "看");
+        // 首尾空格：单侧 CJK 保留（2026-08-11 改 && 后不再移除单侧 CJK 空格）
+        // 句首 ▁ token 对 tokenizer 是正常的，无需移除单侧空格
+        assert_eq!(normalize_cjk_spaces(" 看"), " 看");
+        assert_eq!(normalize_cjk_spaces("看 "), "看 ");
         // 无空格 / 空串不变
         assert_eq!(normalize_cjk_spaces("要看猫"), "要看猫");
         assert_eq!(normalize_cjk_spaces(""), "");
