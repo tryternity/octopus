@@ -191,7 +191,7 @@ start_screenshot
 - **翻译完成**：done 事件 setDone(true)，头部状态文案「翻译中...」→「翻译完成」
 - **复制**：footer「复制」按钮调 `navigator.clipboard.writeText(text)`，按钮文案「复制」→「已复制」1.5s 后还原
 - **Esc 关闭**：keydown 监听 Escape → `getCurrentWindow().hide()`（hide 不销毁，下次 show 复用单例）
-- **失焦关闭**：`getCurrentWindow().onFocusChanged`，show 后 200ms 延迟启用（避开 show 初始 blur），失焦 = 点击了浮窗外 → hide
+- **❌ 不监听失焦**：浮窗 `always_on_top` 置顶，用户可一边看译文一边操作其他窗口（对照原文/编辑器），失焦自动关闭会打断工作流。仅 Esc / ✕ 按钮关闭（用户主动操作）
 - **可拖拽**：根容器 `data-tauri-drag-region`，header 也是拖拽区，透明浮窗标配
 
 **浮窗生命周期**（`translate_window.rs`）：

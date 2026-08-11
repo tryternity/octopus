@@ -500,29 +500,13 @@ export default function Translate() {
     };
   }, []);
 
-  // Esc 关闭
+  // Esc 关闭（不监听 blur——浮窗置顶，用户需一边看译文一边操作其他窗口）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") getCurrent().hide();
+      if (e.key === "Escape") getCurrentWindow().hide();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  // 浮窗外点击关闭：监听窗口 blur（失焦 = 点击了其他窗口/桌面）。
-  // 不用 DOM mousedown capture——translate_window 是独立窗口，DOM mousedown 只在窗口内
-  // 触发，capture 阶段会误关内部按钮点击。blur 是窗口级事件，点浮窗外才触发。
-  useEffect(() => {
-    const win = getCurrent();
-    let enabled = false;
-    const enableTimer = setTimeout(() => { enabled = true; }, 200);
-    const unlistenPromise = win.onFocusChanged(({ payload: focused }) => {
-      if (enabled && !focused) win.hide();
-    });
-    return () => {
-      clearTimeout(enableTimer);
-      unlistenPromise.then((u) => u());
-    };
   }, []);
 
   const handleCopy = async () => {

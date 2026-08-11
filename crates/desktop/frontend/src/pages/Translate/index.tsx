@@ -6,12 +6,12 @@ import { useT } from "@/lib/i18n";
 
 // 截图翻译只读译文浮窗页面。
 //
-// 设计要点（与 brief 一致）：
+// 设计要点：
 //   - listen translate-window://progress|done|reset → 流式渲染译文。
 //   - listeners 注册完毕再 invoke set_translate_window_ready，防 ready flush 时
 //     pending emit 早于 mount 丢失（后端 PENDING_TEXT 锁同节奏）。
-//   - onFocusChanged 监听窗口 blur → 外击关闭；200ms enable delay 防初始 show
-//     紧跟的 blur 把窗口立刻关掉。
+//   - 不监听 blur 自动关闭——浮窗 always_on_top 置顶，用户可一边看译文一边操作其他
+//     窗口（如对照原文/编辑器），失焦就消失会打断工作流。仅 Esc / ✕ 按钮关闭。
 //   - Esc 隐藏窗口（不销毁——窗口预创建复用）。
 //
 // 复制：与项目内其它窗口（PasswordGenerator / CipherEditor / QrResultCard 等 10+
@@ -55,22 +55,6 @@ export default function Translate() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  // 浮窗外点击关闭：监听窗口 blur（失焦 = 点击了其他窗口/桌面）。
-  // 不用 DOM mousedown capture——translate_window 是独立窗口，DOM mousedown 只在窗口内
-  // 触发，capture 阶段会误关内部按钮点击。blur 是窗口级事件，点浮窗外才触发。
-  useEffect(() => {
-    const win = getCurrentWindow();
-    let enabled = false;
-    const enableTimer = setTimeout(() => { enabled = true; }, 200);
-    const unlistenPromise = win.onFocusChanged(({ payload: focused }: { payload: boolean }) => {
-      if (enabled && !focused) win.hide();
-    });
-    return () => {
-      clearTimeout(enableTimer);
-      unlistenPromise.then((u: () => void) => u());
-    };
   }, []);
 
   const handleCopy = async () => {

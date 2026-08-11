@@ -257,18 +257,11 @@ export default function Translate() {
     return () => { p.then(u => u()); d.then(u => u()); };
   }, []);
 
-  // Esc 关闭
+  // Esc 关闭（不监听 blur——浮窗置顶，用户需一边看译文一边操作其他窗口）
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") getCurrent().hide(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") getCurrentWindow().hide(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  // 浮窗外点击关闭（mousedown capture，同截图标注窗范式）
-  useEffect(() => {
-    const onDown = () => getCurrent().hide();
-    window.addEventListener("mousedown", onDown, true);
-    return () => window.removeEventListener("mousedown", onDown, true);
   }, []);
 
   return (
@@ -289,8 +282,8 @@ export default function Translate() {
 - ✅ 流式渲染（progress 事件实时 setText）
 - ✅ 复制译文（`@tauri-apps/plugin-clipboard-manager` writeText）
 - ✅ 可拖拽（`data-tauri-drag-region`，透明浮窗标配）
-- ✅ Esc 关闭（`getCurrent().hide()`，不销毁，下次 show 复用）
-- ✅ 浮窗外点击关闭（监听窗口 `onFocusChanged` blur 事件，show 后延迟 200ms 启用避免初始 blur 误关；不用 DOM mousedown capture——独立窗口的 DOM 事件只在窗口内触发，capture 会误关内部按钮）
+- ✅ Esc 关闭（`getCurrentWindow().hide()`，不销毁，下次 show 复用）
+- ❌ 不监听 blur 自动关闭——浮窗 `always_on_top` 置顶，用户可一边看译文一边操作其他窗口（对照原文/编辑器），失焦就消失会打断工作流。仅 Esc / ✕ 按钮关闭（用户主动操作）
 
 **生命周期注意**：hide 不销毁窗口（同 overlay_window），下次 `show_at_mouse` 复用单例。React mount 只发生一次，ready 只调一次——但 `text` state 需在每次 show 时重置。
 
@@ -360,7 +353,7 @@ translate: Translate
 2. 截图窗关闭，鼠标位置弹出 translate_window
 3. 浮窗显示「⏳ 翻译中...」→ 译文流式更新 → done
 4. 点「复制」→ 译文进剪贴板
-5. Esc / 点浮窗外 → 浮窗 hide
+5. Esc / ✕ 按钮 → 浮窗 hide（不监听 blur——浮窗置顶，允许一边看译文一边操作其他窗口）
 6. 再次截图翻译 → 浮窗复用，上次译文清空，新译文流式更新
 
 ## 8. 文档同步
