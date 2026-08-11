@@ -57,6 +57,13 @@ pub fn show_at_mouse(app: &AppHandle) {
                     .unwrap_or((400.0, 300.0))
             }
         };
+        // 窗口已可见时，macOS 对 always_on_top+transparent 窗口的 set_position 可能被
+        // 窗口管理器忽略（不移动）。先 hide 再 set_position 再 show，强制刷新位置。
+        // 首次 show（visible=false）时 hide 是 no-op，不影响。
+        let already_visible = win.is_visible().unwrap_or(false);
+        if already_visible {
+            let _ = win.hide();
+        }
         let _ = win.set_position(tauri::Position::Logical(
             tauri::LogicalPosition::new(win_x, win_y),
         ));
