@@ -788,3 +788,31 @@ compact_editor_window 截图翻译状态更新；spec/plan 实施注记 + 状态
 1. **Spec 覆盖**：spec §2 数据流（Task 3）、§3.1 translate_screenshot（Task 3）、§3.2 Float 分支（Task 1）、§3.3 translate_window + ready（Task 2）、§3.4 注册清单（Task 2-3）、§4.1 工具栏按钮（Task 5）、§4.2 浮窗页面（Task 4）、§4.3 vite（Task 4）、§4.4 i18n（Task 5）、§5 错误处理（Task 3 text_empty 分支 + do_translate_streaming 已有）、§7 测试（Task 6 e2e）
 2. **Placeholder**：无 TBD/TODO，所有代码块完整
 3. **类型一致**：`emit_float_progress`/`emit_float_done`（Task 1 调用 ↔ Task 2 定义）；`translate-window://progress|done|reset`（Task 2 emit ↔ Task 4 listen）；`set_translate_window_ready`（Task 2 定义 ↔ Task 4 invoke ↔ Task 3 注册）；`translate_screenshot`（Task 3 定义 ↔ Task 5 invoke ↔ Task 3 注册）
+
+---
+
+## 实施状态
+
+实施于 2026-08-11 完成（Task 1-6）。Step 2 手动 e2e（GUI 启动 app + 点击验证）由用户后续手动执行——subagent 无法做 GUI e2e。
+
+| Task | 状态 | 偏差/注记 |
+|---|---|---|
+| 1. TranslateEmitTarget::Float | ✅ | 补 `translate_text` 的 `Float => String::new()` 穷举分支（§9.1） |
+| 2. translate_window 模块 | ✅ | TOCTOU 修复：ready 判定 + PENDING 写入放同一锁（§9.2，对齐 result_window.rs:256-264） |
+| 3. translate_screenshot 命令 | ✅ | `do_translate_streaming` / `TranslateEmitTarget` 经 glob `pub use translate::*;` 短路径可达（§9.6），无需显式 re-export |
+| 4. 前端浮窗页面 | ✅ | (a) clipboard 改 `navigator.clipboard.writeText`（plugin 未装，§9.3）；(b) `getCurrentWindow` 从 `@tauri-apps/api/window`（§9.4）；(c) CSS var 名修正 `bg-background/90 text-foreground ... bg-primary text-primary-foreground`（§9.5） |
+| 5. 工具栏按钮 + i18n | ✅ | — |
+| 6. 联调 + 文档 | ✅ | Step 1 全量构建 0 error 0 warning；Step 2 GUI e2e 待用户手动；Step 3-5 文档已同步（screenshot.md §11、architecture.md translate_window 行 + compact_editor 截图翻译状态、spec §9 实现注记、本表） |
+
+**构建验证**（2026-08-11）：`touch crates/desktop/src/main.rs && cargo build -p octopus-desktop` → 0 error 0 warning。
+
+**Step 2 e2e 验证清单**（用户后续手动跑）：
+- [ ] 截图选区 → 工具栏出现「翻译」按钮（OCR 旁）
+- [ ] 点翻译按钮 → 截图窗关闭，鼠标上方弹出 translate_window
+- [ ] 浮窗显示「⏳ 翻译中...」→ 译文流式更新
+- [ ] 翻译完成 → 头部状态变「翻译完成」
+- [ ] 点「复制」→ 按钮变「已复制」→ 粘贴验证译文进剪贴板
+- [ ] Esc → 浮窗 hide
+- [ ] 再次截图翻译 → 浮窗复用，上次译文清空，新译文流式
+- [ ] OCR 空文本（截空白区）→ 浮窗显示「❌ 未识别到文本」
+- [ ] 快速连点翻译 → 第二次触发 ocrWarn「前一个 OCR 还未完成」

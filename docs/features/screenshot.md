@@ -174,13 +174,55 @@ start_screenshot
 
 ---
 
-## 11. macOS 权限
+## 11. 截图翻译
+
+截图工具栏「翻译」按钮（OCR 按钮旁，`action-translate.svg` 图标）→ 后端 `translate_screenshot` 命令（同 `ocr_screenshot` 的 Raw body PNG 协议 + `OcrLockGuard` 互斥，尾部换成 show 浮窗 + 翻译）→ OCR 识别 → 关所有截图窗 + show `translate_window` 只读浮窗 → `do_translate_streaming(text, app, TranslateEmitTarget::Float)` 流式翻译 → 译文 `emit_to("translate_window", "translate-window://progress|done", text)` 实时推送给浮窗。
+
+**与 OCR 按钮的区别**：
+| 项 | OCR 按钮 | 翻译按钮 |
+|---|---|---|
+| 后端命令 | `ocr_screenshot` | `translate_screenshot`（复制骨架，尾部换 show translate_window + 翻译） |
+| OCR 后入库 | image + ocr 双 tab（CompactEditor） | image + ocr 双条目入库（同 helper），但不开 CompactEditor |
+| 展示 | `CompactEditor` 多 tab（图片 tab + 文本 tab，可编辑） | `translate_window` 只读浮窗（只展示译文流式更新） |
+| 适用场景 | 看图识字、复制原文、编辑校对 | 截图即翻译、快速看一眼译文、不抢焦点 |
+
+**交互**：
+- **流式渲染**：浮窗 listen `translate-window://progress` 事件实时 setText，逐段追加译文
+- **翻译完成**：done 事件 setDone(true)，头部状态文案「翻译中...」→「翻译完成」
+- **复制**：footer「复制」按钮调 `navigator.clipboard.writeText(text)`，按钮文案「复制」→「已复制」1.5s 后还原
+- **Esc 关闭**：keydown 监听 Escape → `getCurrentWindow().hide()`（hide 不销毁，下次 show 复用单例）
+- **失焦关闭**：`getCurrentWindow().onFocusChanged`，show 后 200ms 延迟启用（避开 show 初始 blur），失焦 = 点击了浮窗外 → hide
+- **可拖拽**：根容器 `data-tauri-drag-region`，header 也是拖拽区，透明浮窗标配
+
+**浮窗生命周期**（`translate_window.rs`）：
+- 启动期预建 visible=false（`setup.rs::create_windows` 调 `create_translate_window`）
+- 鼠标位置 show（`show_at_mouse`：`get_mouse_position` 算 win_x/win_y 居中鼠标上方，show 前 `WINDOW_READY.store(false)` + 清 `PENDING_TEXT` + `emit_to("translate_window", "translate-window://reset", ())` 通知前端清空上次译文）
+- 复用单例（hide 不销毁，下次 show 复用；React mount 只发生一次，ready 只调一次）
+
+**ready 机制**（防 emit 早于 React mount 丢事件，照搬 `result_window.rs:26-94` 范式）：
+- `WINDOW_READY: AtomicBool` + `PENDING_TEXT: Mutex<Option<(String, bool)>>`（text + is_done）
+- `emit_float_progress/done`：ready 时 `emit_to` 直发，未 ready 时写 PENDING（仅保留最新）
+- `set_translate_window_ready` 命令：前端 mount + listener 注册后调用，置 ready + 取走 PENDING 一次性 emit
+- TOCTOU 修复（Task 2）：`WINDOW_READY.load` 与 `PENDING_TEXT` 写入放同一锁内（对齐 `result_window.rs:256-264`），消除启动首帧事件丢失
+
+**互斥**：与 OCR 按钮共用 `octopus_ocr::engine::OcrLockGuard`，前一个未完成时第二个命令返回中文错误「前一个 OCR 还未完成，请稍后」，前端 `setOcrWarn(true)` 1.8s 后自动消失（与 OCR 按钮同款 warning）。
+
+**错误处理**：
+- OCR 空文本（截空白区）：show 浮窗后 `emit_float_done("❌ 未识别到文本")`，不调翻译
+- 翻译失败：`do_translate_streaming` 已有的 `❌ 翻译失败: {e}` 经 done 事件直送浮窗
+- 翻译引擎未配置：FallbackLlm 路径报「翻译 fallback LLM 未配置」
+
+详见 spec `2026-08-11-screenshot-translate-float-window-design.md` + plan `2026-08-11-screenshot-translate-float-window.md`。
+
+---
+
+## 12. macOS 权限
 
 通过 `cargo run` 运行时，屏幕录制权限需授给终端应用（非二进制）。打包 .app 后绑定 octopus 本身。
 
 ---
 
-## 12. screenshot_geometry.rs
+## 13. screenshot_geometry.rs
 
 `start_scroll_recording` 提取出的纯逻辑——所有函数不依赖 Tauri/Quartz 类型，可独立单测：
 

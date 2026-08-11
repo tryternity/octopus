@@ -373,3 +373,55 @@ translate: Translate
 ## 9. 实现注记（实施时补充）
 
 > 实现过程中发现的偏差、新增决策、踩坑记录写在这里。plan 的实施状态表也需同步更新。
+
+实现于 2026-08-11 完成（Task 1-6）。以下为实施过程中的偏差、新增决策、踩坑记录。
+
+### 9.1 `translate_text` 的 `Float => String::new()` 分支补全（Task 1+2，brief 未提及）
+
+`translate.rs::translate_text`（行 342 附近）的 match arms 按 `TranslateEmitTarget` 穷举 `session_id` 字段（`Result => String::new()`、`CompactEditor { session_id } => session_id.clone()`）。加 `Float` 变体（无字段）后编译器报 non-exhaustive。补 `Float => String::new()`——Float 路径不经 `translate_text` 命令（直接调 `do_translate_streaming`），此分支理论不会执行，仅为满足穷举。
+
+### 9.2 TOCTOU 修复（Task 2，brief 描述的 ready 机制有竞态）
+
+Brief 里 ready 机制描述：`emit_float_progress` 读 `WINDOW_READY` 后写 `PENDING_TEXT`——load + store 非原子，若 `set_translate_window_ready` 在两者之间执行（load 时未 ready → store 时已 ready → flush 空 PENDING → 下次 store 覆盖空），事件会丢。
+
+修复（对齐 `result_window.rs:256-264` 的同款修复范式）：`emit_float_progress` / `emit_float_done` 内「判 ready + 写 PENDING」放同一把 `PENDING_TEXT` 锁。ready 时直接 emit（不持锁太久）；未 ready 时持锁写 PENDING，`set_translate_window_ready` 也持同一锁取 PENDING——互斥消除竞态。
+
+### 9.3 `@tauri-apps/plugin-clipboard-manager` 未安装（Task 4，改用 `navigator.clipboard`）
+
+Brief 假设 `package.json` 已装此插件（result_window 的 TranslationPane 已用）——实际 desktop 项目未安装。10+ 前端组件（TerminalPane、MarkdownPane、action bar 等）统一用浏览器原生 `navigator.clipboard.writeText(text)`（项目通用 pattern）。
+
+改动：`import { writeText } from "@tauri-apps/plugin-clipboard-manager"` → 改用 `await navigator.clipboard.writeText(text)`。功能等价（都是写系统剪贴板），不增依赖。
+
+### 9.4 `getCurrent` API 路径修正（Task 4，brief 的 import 错误）
+
+Brief 写 `import { invoke, getCurrent } from "@tauri-apps/api/core"`——`getCurrent` 在 Tauri v2 不在 `core` 导出。
+
+修正：`getCurrentWindow` 从 `@tauri-apps/api/window` 导入（Tauri v2 标准 API）。所有调用 `getCurrentWindow().hide()` / `getCurrentWindow().onFocusChanged(...)`。
+
+### 9.5 CSS 颜色变量名修正（Task 4，brief 的 var 名 + accent 语义角色错误）
+
+Brief 写 `bg-[var(--color-bg)] text-[var(--color-text)] ... bg-[var(--color-accent)] text-white`。实际项目 Tailwind v4 主题系统的 CSS var 名与语义角色不同：
+- `--color-bg` / `--color-text` 不存在（项目无此 var）
+- `--color-accent` 不存在；按钮主色应用 `bg-primary text-primary-foreground`（语义角色：primary = 品牌主色 / 强调按钮背景，accent 在项目里是 hover 强调色不是按钮主色）
+
+修正（对齐项目惯例，参考 `pages/Onboarding/` / `pages/Clipboard/` 等组件）：
+```tsx
+className="w-screen h-screen flex flex-col bg-background/90 text-foreground backdrop-blur-2xl border border-border rounded-lg overflow-hidden select-none"
+// 复制按钮：
+className="px-3 py-1 text-xs rounded bg-primary text-primary-foreground disabled:opacity-40 hover:opacity-90"
+```
+- `bg-background/90` + `backdrop-blur-2xl`（透明浮窗磨砂效果，90% 不透明度避免完全遮挡）
+- `text-foreground` / `border-border`（标准语义色）
+- `bg-primary text-primary-foreground`（主按钮标准配色）
+
+### 9.6 `do_translate_streaming` / `TranslateEmitTarget` 跨模块路径（Task 3，brief 担心的可见性无问题）
+
+Brief Step 1「路径可见性说明」担心 glob re-export 对 `pub(crate)` 项可能不可达，预留 fallback（在 `mod.rs` 加 `pub(crate) use translate::{do_translate_streaming, TranslateEmitTarget};`）。
+
+实测：`action_bar_commands/mod.rs:19` 的 `pub use translate::*;` glob 对 `pub(crate)` 项同样生效——`crate::action_bar::action_bar_commands::do_translate_streaming` 和 `crate::action_bar::action_bar_commands::TranslateEmitTarget::Float` 均可达。**无需显式 re-export**，brief 的 fallback 没用上。
+
+### 9.7 Self-review 补充：未踩坑的点
+
+- **hide 复用单例竞态**：每次 show 前 `WINDOW_READY.store(false)` + 清 PENDING + emit reset——ready 重走，listener 已在前次 mount 注册（除非窗口销毁，但 hide 不销毁），reset 事件不丢。
+- **`close_all_screenshot_windows` 时序**：`run_on_main_thread` 内执行（同 ocr_screenshot），与 show translate_window 同一闭包，顺序执行无竞态。
+- **OCR `recognize_with_blocks_from_image`**：与 ocr_screenshot 共用同一 `DynamicImage`（已在 ocr_screenshot 双重解码消除优化中实现），截图翻译天然继承此优化。
