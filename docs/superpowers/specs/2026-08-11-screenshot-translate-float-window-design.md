@@ -290,7 +290,7 @@ export default function Translate() {
 - ✅ 复制译文（`@tauri-apps/plugin-clipboard-manager` writeText）
 - ✅ 可拖拽（`data-tauri-drag-region`，透明浮窗标配）
 - ✅ Esc 关闭（`getCurrent().hide()`，不销毁，下次 show 复用）
-- ✅ 浮窗外 mousedown 关闭（capture 阶段，同 AGENTS.md mousedown capture 范式）
+- ✅ 浮窗外点击关闭（监听窗口 `onFocusChanged` blur 事件，show 后延迟 200ms 启用避免初始 blur 误关；不用 DOM mousedown capture——独立窗口的 DOM 事件只在窗口内触发，capture 会误关内部按钮）
 
 **生命周期注意**：hide 不销毁窗口（同 overlay_window），下次 `show_at_mouse` 复用单例。React mount 只发生一次，ready 只调一次——但 `text` state 需在每次 show 时重置。
 
