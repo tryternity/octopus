@@ -438,6 +438,7 @@ impl<'a> AppSetup<'a> {
         // Create + register action bar window (AI command palette)
         crate::action_bar::action_bar_window::create_action_bar_window(self.app.handle());
         crate::ui::overlay_window::create_overlay_window(self.app.handle());
+        crate::ui::translate_window::create_translate_window(self.app.handle());
         crate::action_bar::action_hotkey::register_action_hotkeys(self.app.handle());
         // 录屏快捷键（config-driven，与 screenshot 同模式）：
         // 失败仅 warn 不阻断启动——录屏不是核心 ASR 功能，可用 tray menu 代替。

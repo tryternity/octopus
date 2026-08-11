@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for octopus-desktop",
-  "windows": ["main", "result_window", "settings_window", "clipboard_window", "compact_editor_window", "terminal_*", "action_bar_window", "overlay_window", "screenshot_*", "vault_picker_window", "password_generator_window", "download_window", "record_config_window", "record_history_window", "record_area_picker_*", "record_annotation_window", "record_control_window", "onboarding_window"],
+  "windows": ["main", "result_window", "settings_window", "clipboard_window", "compact_editor_window", "terminal_*", "action_bar_window", "overlay_window", "translate_window", "screenshot_*", "vault_picker_window", "password_generator_window", "download_window", "record_config_window", "record_history_window", "record_area_picker_*", "record_annotation_window", "record_control_window", "onboarding_window"],
   "permissions": [
     "core:default",
     "core:window:allow-show",

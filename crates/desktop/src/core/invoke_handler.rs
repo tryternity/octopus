@@ -162,6 +162,7 @@ macro_rules! handler {
             crate::record::screenshot_commands::confirm_screenshot_with_data,
             crate::record::screenshot_commands::save_screenshot_dialog,
             crate::record::screenshot_commands::ocr_screenshot,
+            crate::record::screenshot_commands::translate_screenshot,
             crate::record::screenshot_commands::scan_qrcode_screenshot,
             crate::record::screenshot_commands::get_last_screenshot_ocr,
             crate::record::screenshot_commands::start_scroll_recording,
