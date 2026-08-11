@@ -677,15 +677,21 @@ async fn download_segment_once_with_client(
             }
         }
     } else {
-        // 206 续传：从 start 位置开始写入
+        // 206 续传：从 start 位置开始写入。段容量 = end - start + 1（本次请求的 Range 长度）。
+        // 必须 clamp 写入：非 RFC 合规的服务端/代理可能返回超出 Range 的字节，
+        // 不 clamp 会写穿 seg.end 覆盖下一段区域（200 路径已有同款 clamp）。
         writer.seek(SeekFrom::Start(start))?;
-        loop {
+        let seg_capacity_206 = end - start + 1;
+        while written_this_call < seg_capacity_206 {
             match tokio::time::timeout(cfg.read_timeout, stream.next()).await {
                 Ok(Some(chunk)) => {
                     if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
                     let bytes = chunk.map_err(map_reqwest_transient)?;
-                    writer.write_all(&bytes)?;
-                    add_written!(bytes.len());
+                    let remain = (seg_capacity_206 - written_this_call) as usize;
+                    let write_len = bytes.len().min(remain);
+                    if write_len == 0 { continue; } // 空 chunk 不代表流结束
+                    writer.write_all(&bytes[..write_len])?;
+                    add_written!(write_len);
                 }
                 Ok(None) => break,
                 Err(_) => return Err(transient(TransientKind::Timeout, "stream read timeout")),
@@ -803,6 +809,40 @@ mod tests {
         assert_eq!(&written[10..20], &full_body[10..20], "段区间内容正确（200 跳过 offset 前字节）");
         // 成功路径：counter 应 = 段大小 10（guard committed 不回滚）
         assert_eq!(counter.load(Ordering::Relaxed), 10, "成功路径 counter = 段大小");
+    }
+
+    #[tokio::test]
+    async fn download_segment_206_overshoot_clamps_to_segment_range() {
+        // 非 RFC 合规服务端：请求 [0,9] 共 10 字节，却返回 20 字节（超出 Range）。
+        // 修复前 206 路径无 clamp，会写穿 seg.end 到下一段区域 → 段间数据污染。
+        // 修复后应 clamp 到 10 字节，且不静默失败（写满段容量即 Ok）。
+        let server = MockServer::start();
+        let overshoot_body = vec![0xCDu8; 20]; // 服务端多给 10 字节
+        server.mock(|when, then| {
+            when.method(Method::GET).path("/f").header("Range", "bytes=0-9");
+            then.status(206)
+                .header("Content-Range", "bytes 0-9/100")
+                .body(overshoot_body.clone());
+        });
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("f");
+        let _ = Downloader::ensure_part_file(&dest, 100).unwrap();
+        let part = part_path(&dest);
+        let seg = Segment { begin: 0, end: 9, downloaded: 0 };
+        let counter = AtomicU64::new(0);
+        let dl = Downloader::new(DownloadConfig::default()).unwrap();
+        let out = dl
+            .download_segment(&server.url("/f"), &part, seg, &counter, None)
+            .await
+            .unwrap();
+        // downloaded 应 = 段大小 10，不是 20（overshoot 字节被 clamp 丢弃）
+        assert_eq!(out.downloaded, 10, "206 overshoot 应 clamp 到段大小");
+        assert_eq!(counter.load(Ordering::Relaxed), 10, "counter 不虚高");
+        let written = std::fs::read(&part).unwrap();
+        // 段区间 [0,10) 应是 overshoot_body 前 10 字节
+        assert_eq!(&written[0..10], &overshoot_body[0..10], "段区间内容正确");
+        // [10,20) 应是预分配的 0（未被 overshoot 写穿）
+        assert_eq!(&written[10..20], &[0u8; 10], "overshoot 未写穿下一段区域");
     }
 
     #[tokio::test]

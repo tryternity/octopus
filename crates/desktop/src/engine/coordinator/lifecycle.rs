@@ -437,6 +437,11 @@ pub(crate) fn finalize_after_stop(
     // 统一分流：AgentBridge 非空 → execute_agent_task
     // AgentBridge 用 db_text() 不追加句号（句号是 paste 逻辑，不适合 agent task）
     if dispatch_by_record_type(&transcript, &transcript.db_text(), app_handle) {
+        // 第三十四轮 P2：AgentBridge 走 execute_agent_task，既不经 do_paste 也不经
+        // PasteDone handler（mod.rs:602 INSTANT_MODE.swap），故此处必须显式清
+        // INSTANT_MODE，否则 instant 模式 + AgentBridge 录音后残留 → 下次快捷键仍走
+        // instant 浮窗（会话已结束应回普通模式）。对齐上方空文本分支（:430）。
+        INSTANT_MODE.swap(false, Ordering::Relaxed);
         *stage = Stage::Idle;
         set_recording_mode(0);  // AgentBridge 派发后回 Idle
         return;
@@ -556,6 +561,9 @@ pub(crate) fn finalize_cloud(
 
     // 统一分流：AgentBridge → execute_agent_task
     if dispatch_by_record_type(&transcript, &combined, app_handle) {
+        // 第三十四轮 P2：同 local 路径（finalize_after_stop），AgentBridge 不经
+        // do_paste/PasteDone，必须显式清 INSTANT_MODE。对齐上方空文本分支（:539）。
+        INSTANT_MODE.swap(false, Ordering::Relaxed);
         *stage = Stage::Idle;
         set_recording_mode(0);  // AgentBridge 派发后回 Idle
         return;

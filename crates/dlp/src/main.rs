@@ -235,11 +235,17 @@ async fn main() -> Result<()> {
     println!("Retrieving video metadata...");
     let info_output = Command::new(&yt_dlp)
         .arg("--dump-json")
+        .arg("--no-playlist") // 播放列表 URL 会输出多行 JSON 导致解析失败，强制单视频
+        .arg("--socket-timeout")
+        .arg("30") // 网络读写 30s 超时，防止 hung TCP 无限挂起整个管线
+        .arg("--retries")
+        .arg("3") // 片段重试 3 次后放弃，交由上层处理而非永久挂起
         .arg("-f")
         .arg("ba/b")
         .arg("-o")
         .arg(&output_template_str)
         .arg(url)
+        .kill_on_drop(true) // dlp 进程被 kill 时回收 yt-dlp，防 reparent 孤儿
         .output()
         .await?;
 
@@ -275,9 +281,15 @@ async fn main() -> Result<()> {
         let download_status = Command::new(&yt_dlp)
             .arg("-f")
             .arg("ba/b")
+            .arg("--no-playlist")
+            .arg("--socket-timeout")
+            .arg("30")
+            .arg("--retries")
+            .arg("3")
             .arg("-o")
             .arg(&output_template_str)
             .arg(url)
+            .kill_on_drop(true)
             .status()
             .await?;
 
@@ -325,7 +337,7 @@ async fn main() -> Result<()> {
             .stderr(Stdio::null());
     }
 
-    let mut ffmpeg_child = ffmpeg_cmd.spawn()?;
+    let mut ffmpeg_child = ffmpeg_cmd.kill_on_drop(true).spawn()?;
     let ffmpeg_status = ffmpeg_child.wait().await?;
     // 临时文件清理由 _cleanup_guard 在函数退出（含上方 ? 提前返回）时统一处理
 

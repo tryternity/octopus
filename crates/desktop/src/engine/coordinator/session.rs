@@ -167,8 +167,15 @@ pub(crate) fn prepare_cloud_streaming_session(
                 };
         }
         Err(e) => {
-            error!("VAD init failed for cloud streaming: {}, falling back to VadSegmented", e);
+            // 第三十四轮 P1：VAD init 失败（模型未下载/磁盘错误/ONNX init 失败）必须完整清理——
+            // audio.stop() 单独不够：recording_mode(2/3)+INSTANT_MODE 残留 → ptt.rs on_keydown
+            // 走停止分支 → "ignored: not recording" → PTT 按键卡死（第三十三轮 P1-1 原症状）。
+            // 原注释 "falling back to VadSegmented" 误导——这里直接 abort，无 fallback。
+            error!("VAD init failed for cloud streaming: {}, abort (no fallback)", e);
             let _ = audio.stop();
+            crate::ui::result_window::hide_result(app_handle);
+            crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
+            reset_mode_flags_on_start_failure();
         }
     }
 }
@@ -327,8 +334,13 @@ pub(crate) fn prepare_vad_segmented_session(
             };
         }
         Err(e) => {
-            error!("VAD init failed for VadSegmented: {}, falling back to offline", e);
+            // 第三十四轮 P1：VAD init 失败必须完整清理（同 cloud 路径）。
+            // 原注释 "falling back to offline" 误导——这里直接 abort，无 fallback。
+            error!("VAD init failed for VadSegmented: {}, abort (no fallback)", e);
             let _ = audio.stop();
+            crate::ui::result_window::hide_result(app_handle);
+            crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
+            reset_mode_flags_on_start_failure();
         }
     }
 }

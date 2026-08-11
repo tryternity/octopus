@@ -221,10 +221,12 @@ pub fn crop_region_rgba_direct(
     w: u32,
     h: u32,
 ) -> Result<::image::RgbaImage> {
-    if rgba_bytes.len() != (full_width * full_height * 4) as usize {
+    // 用 u64 做尺寸校验防 u32 乘法溢出：w*h*4 在极端分辨率下可能 wrap，骗过校验。
+    let expected = (full_width as u64) * (full_height as u64) * 4;
+    if rgba_bytes.len() as u64 != expected {
         anyhow::bail!(
             "Invalid buffer size: expected {}, got {}",
-            full_width * full_height * 4,
+            expected,
             rgba_bytes.len()
         );
     }

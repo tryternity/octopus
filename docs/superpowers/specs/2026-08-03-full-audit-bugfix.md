@@ -1672,3 +1672,103 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 - `cargo check -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error
 - `cargo test`：desktop 525 全过
+
+## 38. 第三十四轮——download/dlp/capx/paddle-ocr/translation/capx 复审（2026-08-11，修 1 P2 + 2 P3 + 多项证伪）
+
+### 触发
+
+对前 33 轮覆盖较薄的几个独立 crate（download / dlp / capx / paddle-ocr / translation）派 5 个并行 agent 做深度复审。逐条核实 finding 真伪后再动手——这轮重点是「证伪比修复重要」，避免照单全收 agent 的误报。
+
+### 🟠 P2-1 · download 206 路径无 clamp 致段间数据污染 ✅ 已修
+
+**根因**：`download_segment_once_with_client`（downloader.rs）200 路径对每 chunk 做 `write_len = chunk.len().min(remain)` clamp（line 648/670），但 206 路径（line 679-694 旧）裸 `writer.write_all(&bytes)` 无 clamp。非 RFC 合规的服务端/代理/CDN 返回超出 `Range` 请求的字节时，206 路径会把多出的字节写穿 `seg.end` 覆盖**下一段**的区域 → 段间数据污染（最终文件局部错位，hash 校验可能也不报，因为污染发生在段边界处）。
+
+**修复**：206 路径对齐 200 路径范式——计算 `seg_capacity_206 = end - start + 1`，循环条件改 `while written_this_call < seg_capacity_206`，每 chunk `write_len = bytes.len().min(remain)`，写满即退出。同时补回归测试 `download_segment_206_overshoot_clamps_to_segment_range`（mock 服务端对 `bytes=0-9` 返回 20 字节，断言仅写 10 字节 + [10,20) 区间保持预分配 0 未被写穿）。
+
+### 🟡 P3-1 · dlp yt-dlp 调用无超时无 playlist 防护 ✅ 已修
+
+**根因**：`dlp/src/main.rs` 两处 yt-dlp 调用（metadata `--dump-json` line 236 / download line 275）无 `--socket-timeout` / `--retries`，也无 `--no-playlist`。hung TCP 连接或需交互认证的站点会让 yt-dlp 无限挂起 → 整个 ASR 管线（dlp 是 CLI 音频提取前置）无限阻塞。播放列表 URL 会让 `--dump-json` 输出多行 JSON → `serde_json::from_slice` 失败报模糊错（line 252）。
+
+**修复**：两处调用统一加 `--no-playlist`（强制单视频）+ `--socket-timeout 30` + `--retries 3`（网络层超时与重试，比 tokio::time::timeout 包裹更可靠，覆盖 yt-dlp 内部的所有 HTTP 交互）。
+
+### 🟡 P3-2 · dlp 子进程无 kill_on_drop 致 reparent 孤儿 ✅ 已修
+
+**根因**：3 处 `Command` spawn（yt-dlp metadata / yt-dlp download / ffmpeg）无 `.kill_on_drop(true)`。正常完成路径 `wait().await` 会回收，但当 dlp 进程被父进程（CLI/desktop）强制 kill 时，tokio runtime 销毁不走 Drop → yt-dlp/ffmpeg 被 reparent 到 launchd 继续运行（ffmpeg 流式路径 `Stdio::inherit()` 尤甚——stdout fd 不关，ffmpeg 收不到 SIGPIPE 可长时间空跑）。
+
+**修复**：3 处 spawn 统一加 `.kill_on_drop(true)`。注：Ctrl+C 场景整个进程组收 SIGINT，ffmepg 默认 handler 即退，本修复主要覆盖「父进程单方面 kill dlp」的非对称终止路径。
+
+### 🟡 P3-3 · capx 尺寸校验 u32 乘法溢出 ✅ 已修
+
+**根因**：`crop_region_rgba_direct`（capture.rs:224）校验 `rgba_bytes.len() != (full_width * full_height * 4) as usize`——`full_width * full_height * 4` 是 u32 乘法，极端分辨率下 wrap 后可能恰好等于 `rgba_bytes.len()`，骗过校验，后续 `clamp_rect` + 索引拿到错误尺寸 → 越界 panic。现实屏幕 ≤8K×8K 远不到溢出阈值，纯加固。
+
+**修复**：改 u64 算 `expected = (full_width as u64) * (full_height as u64) * 4` 再与 `len() as u64` 比。
+
+### 证伪项（agent 报但经核实非 bug，避免误改）
+
+| 项 | agent 报告 | 证伪依据 |
+|---|---|---|
+| paddle-ocr P2 `apply_vertical_padding` 当 h>target_h 时 abs_diff 反向 | image_ops.rs:55-71 早返条件 `!use_limit_ratio && h > min_height` 过滤了「h>min_height 且非限宽」分支；可达路径上 `use_limit_ratio=true` → `target_h = (w/ratio)*2 > 2h`，或 `h<=min_height` → `target_h = min_height*2 >= 2h`。**所有可达路径 target_h >= h**，abs_diff 永远是 `target_h - h`，不会反向 |
+| paddle-ocr P2 `order_points_clockwise` x 平局错配 | det box 来自 minAreaRect 实际旋转矩形，4 点 x 一般互异；退化的零宽框已被 `rect_width <= 3` 过滤（filter.rs:19）。纯理论 |
+| translation P3 opus-mt truncate 丢 EOS | MarianMT encoder 对缺 EOS 鲁棒（attention_mask 而非 EOS 决定边界），500 token 截断丢末尾 `</s>` 不影响输出质量。且 truncate 保守为 500 < 512 上限，是为防 ONNX 位置越界。改了反而风险 |
+| download P3 resumed sidecar vs no-range counter 虚高 | 最终持久化 progress（line 491）发正确 total，仅实时进度流瞬态 >100%，cosmetic 非 bug |
+
+### 留后续（agent 报，暂不修）
+
+| 项 | 原因 |
+|---|---|
+| translation m2m100 缺 repetition penalty（仅 8-token 循环检测） | 功能增强非 bug，opus-mt 路径有完整 penalty，m2m100 是备用引擎 |
+| translation m2m100 MAX_DECODER_LENGTH=200 可能截断长译 | 需实测真实翻译 token 长度分布决定是否调到 512 |
+| paddle-ocr `get_word_info` debug_assert only（chars/cols 不匹配） | 仅自定义字典场景，stock PP-OCRv6 字典不会触发 |
+| capx `canvas_buf_slice` pub 但无 bounds check | 内部调用均先校验，pub 接口暂无外部消费方 |
+
+### 验证
+
+- `cargo build -p octopus-download -p octopus-dlp -p octopus-capx` —— 0 error 0 warning
+- `cargo test -p octopus-download --lib` —— 34 过（含新增 `download_segment_206_overshoot_clamps_to_segment_range`）
+- `cargo test -p octopus-capx --lib` —— 55 过
+- `cargo build -p octopus-cli` —— 0 error（dlp flag 变更不影响 CLI 调用契约，flag 透传 yt-dlp）
+
+### 第三十四轮补充——coordinator session/lifecycle + translation ONNX 边界（2026-08-11，修 1 P1 + 1 P2 + 4 P3）
+
+收到第二轮审查报告（coordinator 全链亲自审 + translation/ocr/llm/record agent）。核实后全部成立。
+
+#### 🔴 P1-补充 · 第三十三轮 P1-1 修复漏 2 处 VAD init 失败分支 ✅ 已修
+
+**核实**：第三十三轮 `reset_mode_flags_on_start_failure()` 只插了 5 处失败分支，漏了 2 处 VAD init 失败分支（报告坐实）：
+- `session.rs:169-173`（`prepare_cloud_streaming_session` 的 `create_silero_vad()` Err 分支）
+- `session.rs:329-333`（`prepare_vad_segmented_session` 的 `VadSegmentedPipeline::new()` Err 分支）
+
+两处原代码只 `audio.stop()`，不清 `recording_mode`/`INSTANT_MODE`、不 `hide_result`、不 `tray Idle`。且注释谎称 "falling back to VadSegmented/offline"——实际直接 return 无 fallback（误导）。
+
+**后果全链**：`recording_mode(2/3)+INSTANT_MODE` 残留 → `ptt.rs on_keydown(mode)` 走停止分支 → `InstantStop` → `mod.rs:814 "ignored: not recording"` → **PTT 按键卡死（P1-1 原症状未消除）**；识别框/托盘 UI 残留"录音中"。触发条件：silero VAD 模型加载失败（模型未下载/磁盘错误/ONNX init 失败）——现实场景，cloud 路径前置依赖 VAD 尤其脆弱。
+
+**修复**：两处 Err 分支对齐其他 5 处已修分支的完整清理模式（`audio.stop()` + `hide_result` + `tray Idle` + `reset_mode_flags_on_start_failure()`），同时修正误导注释（"abort (no fallback)"）。
+
+#### 🟡 P2-补充 · AgentBridge 分支不清 INSTANT_MODE（双重不对称） ✅ 已修
+
+**核实**：`lifecycle.rs` 两处 AgentBridge 分支（`finalize_after_stop:439-443` + `finalize_cloud:558-562`）的 `dispatch_by_record_type` 返回 true 分支只 `set_recording_mode(0)`，不清 `INSTANT_MODE`（报告坐实）。
+
+**双重不对称**：①同函数空文本分支（`:424-434`/`:515-543`）清了 `INSTANT_MODE`+`hide`+`tray`；②非 AgentBridge 路径经 `do_paste`→`PasteDone` handler（`mod.rs:602 INSTANT_MODE.swap(false)`）清，而 AgentBridge 走 `execute_agent_task`（`agent.rs`，全程不碰 `INSTANT_MODE`），既不经 `do_paste` 也不经 `PasteDone`。
+
+**后果**：instant 模式 + AgentBridge 录音 → `INSTANT_MODE` 残留 → 下次快捷键仍走 instant 浮窗（会话已结束应回普通模式）。
+
+**修复**：两处补 `INSTANT_MODE.swap(false, Ordering::Relaxed)`（2 行）。
+
+#### 🟡 P3-补充 · opus_mt/m2m100 ONNX 输出索引改 `.get()`+bail ✅ 已修
+
+**核实**：`opus_mt.rs:131/152` + `m2m100.rs:80/103` 用 `enc_outputs["last_hidden_state"]` / `dec_outputs["logits"]` 字符串索引（`SessionOutputs::Index<&str>`，缺键 panic）。模型损坏/版本不匹配/输出键名不符时直接 panic（报告坐实，属第三十一轮留后续 P3「ONNX 边界 panic 群」的一部分）。
+
+**修复**：4 处改 `.get("key").ok_or_else(|| anyhow!(...))?` —— 模型不匹配时返回明确错误而非 panic。错误信息标明「模型损坏/版本不匹配」便于诊断。
+
+#### 前端 P3（报告核实，未修，记留后续）
+
+报告自行将前端 5 项降为 P3（经亲自核实 agent 报告偏重）：
+- Screenshot interval cleanup 漏 `clearInterval`（`:206-209`）→ P3（Tauri 截图窗销毁时 JS context 清 timer，无实际泄漏）
+- Result `enterTranslateMode` setTimeout 无 cleanup（`:360-362`）→ P3（React 18 卸载 setState 无害）
+- HotwordPanel IntersectionObserver deps 频繁重建 / ActionBar useEffect 无 deps / Result listen cleanup 无 `.catch` → P3（性能/防御）
+
+#### 验证
+
+- `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning（P1 cloud-gated 分支覆盖）
+- `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 541 过 0 失败
+- `cargo test -p octopus-translation` —— 0 失败（real-model 测试 ignored）

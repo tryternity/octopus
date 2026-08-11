@@ -128,7 +128,8 @@ impl OpusMTEngine {
                 "input_ids" => TensorRef::from_array_view(input_ids_arr.view())?,
                 "attention_mask" => TensorRef::from_array_view(attention_mask_arr.view())?,
             })?;
-            let (enc_shape, enc_data) = enc_outputs["last_hidden_state"]
+            let (enc_shape, enc_data) = enc_outputs.get("last_hidden_state")
+                .ok_or_else(|| anyhow::anyhow!("ONNX encoder 输出缺 'last_hidden_state'（模型损坏/版本不匹配）"))?
                 .try_extract_tensor::<f32>()?;
             let d: Vec<usize> = enc_shape.iter().map(|&v| v as usize).collect();
             ndarray::Array3::from_shape_vec((d[0], d[1], d[2]), enc_data.to_vec())?
@@ -149,7 +150,8 @@ impl OpusMTEngine {
                 "encoder_attention_mask" => TensorRef::from_array_view(attention_mask_arr.view())?,
             })?;
 
-            let (logits_shape, logits_data) = dec_outputs["logits"]
+            let (logits_shape, logits_data) = dec_outputs.get("logits")
+                .ok_or_else(|| anyhow::anyhow!("ONNX decoder 输出缺 'logits'（模型损坏/版本不匹配）"))?
                 .try_extract_tensor::<f32>()?;
             let vocab_size = logits_shape[2] as usize;
             let offset = (dec_len - 1) * vocab_size;
