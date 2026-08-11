@@ -217,8 +217,13 @@ pub(crate) fn delete_hotword_set_at(conn: &Connection, id: &str) -> Result<()> {
 pub fn hard_delete_hotword_set(id: &str) -> Result<()> {
     ensure_db()?;
     with_db(|conn| {
-        conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
-        conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+        // 第三十三轮补充 P2：两步 DELETE 包事务——第一步成功第二步失败→空词典。
+        // 对齐 delete_hotword_set_at / purge_expired_hotword_tombstones_at 范式。
+        // 注：注释说「仅测试用」但 pub fn（可见性公开），事务保安全。
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
+        tx.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+        tx.commit()?;
         Ok(())
     })
 }
@@ -244,33 +249,38 @@ pub(crate) fn purge_expired_hotword_tombstones_at(
 ) -> Result<usize> {
     let cutoff = now_secs - HOTWORD_TOMBSTONE_RETENTION_SECS;
     let mut purged_sets = 0usize;
+    // 第三十三轮补充 P2：所有 DELETE 包 unchecked_transaction——GC 涉及多表多步
+    // （words + sets + hits），任一失败致部分 GC 留脏。对齐 delete_hotword_set_at :191
+    // 的 unchecked_transaction 范式（同文件已修的 P2-i1/i2）。
+    let tx = conn.unchecked_transaction()?;
     // 1. 超期 set tombstone：先收集 id（连带删词 + hits），再硬删
     let expired_set_ids: Vec<String> = {
-        let mut stmt = conn.prepare(
+        let mut stmt = tx.prepare(
             "SELECT id FROM hotword_sets WHERE is_deleted > 0 AND is_deleted < ?1",
         )?;
         let rows = stmt.query_map(params![cutoff], |r| r.get::<_, String>(0))?;
         rows.filter_map(|r| r.ok()).collect()
     };
     for id in &expired_set_ids {
-        conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
-        conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+        tx.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
+        tx.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
         purged_sets += 1;
     }
     // 2. 超期 word tombstone（活跃词典里的软删词）——is_deleted>0 且超期
     let word_cutoff = cutoff; // 同阈值
-    let n = conn.execute(
+    let n = tx.execute(
         "DELETE FROM hotword_words WHERE is_deleted > 0 AND is_deleted < ?1",
         params![word_cutoff],
     )?;
     // 3. hotword_hits 孤儿清理：词在所有活跃词典（is_deleted=0 的 hotword_words）消失 → 命中清零。
     //    放在删 word tombstone 之后——保证超期硬删的词的 hits 也被清。hits 不参与 sync，
     //    各机独立按本地活跃词集合判定孤儿，无跨设备复活问题。详见 tombstone-gc spec §5。
-    let orphan_hits = conn.execute(
+    let orphan_hits = tx.execute(
         "DELETE FROM hotword_hits WHERE word NOT IN \
          (SELECT word FROM hotword_words WHERE is_deleted = 0)",
         [],
     )?;
+    tx.commit()?;
     if purged_sets > 0 || n > 0 || orphan_hits > 0 {
         log::info!(
             "[hotword-gc] purged {} set tombstones + {} word tombstones + {} orphan hits (cutoff={})",
