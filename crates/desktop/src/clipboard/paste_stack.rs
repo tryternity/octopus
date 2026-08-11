@@ -35,12 +35,18 @@ pub fn clear() {
 ///
 /// `next_preview` 取栈底（下一个要粘贴的）条目 content 前 30 字符（按字节安全截断：
 /// 只在边界为 ASCII 时切片，避免切断多字节 UTF-8）。
+///
+/// 第三十三轮 P2-2：原持 stack lock 调 with_db——DB 操作（ReentrantMutex）持锁期间
+/// stack 被阻塞。改为锁内只取 len + front id clone，释放后 with_db（对齐 peek_all :66
+/// 锁外范式）。
 pub fn status() -> (usize, Option<String>) {
-    let s = stack().lock().unwrap();
-    let remaining = s.len();
-    let next_preview = s.front().and_then(|id| {
+    let (remaining, front_id) = {
+        let s = stack().lock().unwrap();
+        (s.len(), s.front().cloned())
+    };
+    let next_preview = front_id.and_then(|id| {
         octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::get_item_by_id(conn, id)
+            octopus_clipboard::store::get_item_by_id(conn, &id)
         })
         .ok()
         .flatten()

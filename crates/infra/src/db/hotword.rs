@@ -184,7 +184,7 @@ pub(crate) fn delete_hotword_set_at(conn: &Connection, id: &str) -> Result<()> {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or(1); // 第三十三轮 P2-4：时钟异常时 is_deleted=1（非 0=活跃），至少触发软删
     // 第二十二轮 P2-i1：两步 UPDATE 包 unchecked_transaction。原先 autocommit 下第一条
     // （词软删）成功、第二条（set 软删）失败 → 词全软删但 set 仍活跃 = 空词典（sync 推送
     // 出去对端拿到矛盾状态）。对齐 insert_vault_ciphers_batch 范式（vault.rs:327）。
@@ -578,7 +578,7 @@ pub(crate) fn remove_word_from_set_at(conn: &Connection, set_id: &str, word: &st
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or(1); // 第三十三轮 P2-4
     conn.execute(
         "UPDATE hotword_words SET is_deleted=?3, updated_at=datetime('now')
          WHERE set_id=?1 AND word=?2 AND is_deleted=0",
@@ -613,7 +613,7 @@ pub(crate) fn set_words_in_set_at(
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or(1); // 第三十三轮 P2-4
     // 第二十二轮 P2-i2：SELECT + 批量软删 + 批量 upsert 包 unchecked_transaction。原先
     // autocommit 下 2500 词中途失败 → 半更新脏状态（部分词软删、部分新词未导入）。
     // 对齐 P2-i1 + insert_vault_ciphers_batch 范式。
