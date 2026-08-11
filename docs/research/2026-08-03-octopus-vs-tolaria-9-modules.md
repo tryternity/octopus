@@ -47,9 +47,9 @@
 | 模块 | 最独特的价值 | 最大的不足 | P0 改进方向 |
 |---|---|---|---|
 | 1. ASR | 本地 7 族 + 云端 4 家国内服务商统一 trait，热词单记录 + git 软删，Silero VAD v6（2026-08-04 升级） | 无说话人分离、无词级时间戳 / SRT、Whisper 仅 small.en | 词级时间戳导出 + 集成 sherpa-onnx 分离 |
-| 2. 截图 | 三平台原生贴图 + 自研滚动 NCC 拼接 + **3 种模糊（Pixelate/Gaussian Stackblur/Redact）+ 平铺水印（density+angle）**（2026-08-10 新增） | 截图翻译 UI 缺（通路就绪）、无窗口/元素截图入口、贴图能力弱于 PixPin | 截图翻译 UI 接线 + 贴图能力补齐 |
+| 2. 截图 | 三平台原生贴图 + 自研滚动 NCC 拼接 + **3 种模糊（Pixelate/Gaussian Stackblur/Redact）+ 平铺水印（density+angle）**（2026-08-10 新增）+ **截图翻译（OCR→translate_window 只读浮窗，2026-08-11 新增）** | 无窗口/元素截图入口、贴图能力弱于 PixPin | 贴图能力补齐 |
 | 3. 剪贴板 | text/voice/ocr/image/file 统一表 + FTS5 trigram，与 ASR/OCR 联动；粘贴队列（2026-08-05 新增） | 无云同步、无 macro、富文本仅标记不存原文（明文存储与 Maccy/EcoPaste 同档位，加 sync 前不构成缺口） | sync 接入（同步前先做 sqlite3mc 整库加密） |
-| 4. 翻译 | Opus-MT + m2m100 + CloudLlm 5+1 provider 三引擎统一 trait + 兜底降级 | 无 glossary、无 OCR/截图翻译 pipeline、双语对照弱 | glossary 表 + OCR→translate 接线 |
+| 4. 翻译 | Opus-MT + m2m100 + CloudLlm 5+1 provider 三引擎统一 trait + 兜底降级 + **OCR→translate pipeline（截图翻译 + ActionBar 选中翻译 → translate_window 浮窗，2026-08-11 新增）** | 无 glossary、双语对照弱 | glossary 表 |
 | 5. Action Bar | OCR/ASR/translate/clipboard/terminal/vault 全栈聚合 + agent CLI 启动 + CompactEditor tab | 仅 macOS、无扩展生态、跨屏焦点问题 | AX 直读选中文本 + 扩展注册中心 |
 | 6. Terminal | OSC agent 状态感知（Claude/Codex/Gemini/Pi 工作相位）+ ASR 直写 PTY + WKWebView 稳定性细节 | 无 GPU 渲染、无 SSH、无 AI 命令、无 shell history sync | Atuin 集成 + russh 远程 |
 | 7. 录屏 | 与 ASR 联动（录后字幕 + LLM 润色）、Swift helper 子进程解耦、双轨 source 标注 | 无实时转写、无点击效果、无 AI 摘要、无云分享 | 录制中实时转写（杀手锏） |
@@ -208,9 +208,9 @@ AGENTS.md 明确写了「物理/逻辑坐标转换 ⚠️ 已踩坑 6+ 次」（
 
 `ocr_screenshot` 闭环（`area.rs:322`）：spawn_blocking 内 PNG 解码 → 图片入库 → PaddleOCR（PP-OCRv5 / v6-small）识别 → insert_ocr_item → 主线程 `open_compact_editor_tabs` 同时打开图片 + 文本双 tab → emit `ocr-screenshot://result` 把文本块推回 ImagePreview 叠加显示。`OcrLockGuard` 全局互斥。
 
-**Translate-on-screenshot**
+**Translate-on-screenshot**（2026-08-11 已实现）
 
-缺口。`docs/features/screenshot.md` 没有截图翻译条目；架构文档（`docs/architecture.md` 翻译对照模式段）明确写「截图翻译：数据通路已支持，UI 后续」——后端 `translate_text` 命令和 CompactEditor 翻译对照视图已就绪，但截图工具栏没有触发入口。
+截图工具栏「翻译」按钮 → `translate_screenshot` 命令（同 `ocr_screenshot` 的 Raw body PNG + OcrLockGuard 互斥，尾部换成 `translate_window::show_at_mouse`）→ OCR → `do_translate_streaming(Float)` 流式翻译 → `translate_window` 只读浮窗（`emit_to` 定向推送译文）。ActionBar 选中翻译也于 2026-08-11 改走同一浮窗（原走 CompactEditor contrast tab）。详见 [spec](../superpowers/specs/2026-08-11-screenshot-translate-float-window-design.md)。
 
 **贴图（pin_window）**
 
@@ -240,7 +240,7 @@ AGENTS.md 明确写了「物理/逻辑坐标转换 ⚠️ 已踩坑 6+ 次」（
 | 序号标注 | ✅ | ✅ Counter | ✅ Counter | ❌ | ✅ 序列号 | ❌ | ✅ 标号 | ❌ |
 | 贴图 / 浮动 | ✅ 三平台原生 | ✅ 锁定+透明度+方向键 | ✅ Pin + 锁定穿透 | ✅ Ding + CSS 滤镜 | ✅ 文本/文件/LaTeX | ✅ 置顶图 | ❌ | 窗口定格 |
 | OCR | ✅ PaddleOCR 离线 | ✅ Vision 设备端 24+ 语种 | ✅ Vision + 远程端点 | ✅ PaddleOCR + 在线 | ✅ + 公式识别 | ✅ PP-OCRv6 50 语种 | ❌ | ❌ |
-| 翻译 | ❌ UI 缺失（通路就绪） | ❌ | ❌ | ✅ 多引擎 + 屏幕翻译 | ✅ 内置 | ❌ | ❌ | ❌ |
+| 翻译 | ✅ 截图翻译 + ActionBar 选中翻译 → translate_window 浮窗（2026-08-11） | ❌ | ❌ | ✅ 多引擎 + 屏幕翻译 | ✅ 内置 | ❌ | ❌ | ❌ |
 | 二维码 | ✅ 多码全识别 | ✅ QR 读取 | ✅ QR 检测 | ✅ | ✅ 自动识别 | ❌ | ❌ | ❌ |
 | 录屏 | ✅ 同模块 SCK | ✅ MP4/GIF + 摄像头 + 点击捕获 | ✅ + 视频编辑器 + Follow Mouse | ✅ + WebCodecs 帧级编辑 | ✅ 普通/快速 + 标注 | ❌ | ✅ GIF/MP4 | — |
 | AI 特性 | OCR/二维码/VLM 预留 | Raycast Chat 集成 | Vision OCR + OpenAI 端点 + 抠图 | AI Vision 多模态 | 公式识别 | — | — | — |
@@ -258,7 +258,7 @@ AGENTS.md 明确写了「物理/逻辑坐标转换 ⚠️ 已踩坑 6+ 次」（
 
 ### 2.4 Octopus 不足 / 缺失
 
-1. **截图翻译 UI 缺失**：架构文档明确标注「数据通路已支持，UI 后续」。eSearch 的「屏幕翻译」（贴图窗内文字替换为译文 + 定时翻译适合视频）和 PixPin 内置翻译是明显的体验差距。
+1. ~~**截图翻译 UI 缺失**~~ **✅ 已解决（2026-08-11）**：~~架构文档明确标注「数据通路已支持，UI 后续」~~。截图工具栏「翻译」按钮 + ActionBar 选中翻译均走 `translate_window` 只读浮窗（OCR→流式翻译→`emit_to` 定向推送）。详见 [spec](../superpowers/specs/2026-08-11-screenshot-translate-float-window-design.md)。**仍缺**：eSearch 的「屏幕翻译」（贴图窗内文字替换为译文 + 定时翻译适合视频）——这是更重的图片翻译功能，留后续。
 2. **没有窗口截图入口**：`capture_window_region` + `find_window_id_by_pid` 实现完备，但只用于滚动模式排除 overlay，用户层没有「截活动窗口」「Smart Element 检测」这类一键操作（CleanShot/Snapzy/PixPin 都有 UI 元素识别）。
 3. **~~标注工具相对单薄~~（2026-08-10 大幅补齐）**：~~缺 PixPin 的水印、放大镜；缺 Snapzy 的 8 种模糊效果~~ → **已补齐 3 种模糊**（Pixelate/Gaussian Stackblur/Redact）+ **平铺水印**（density+angle+color）。工具栏归组精简（形状/线条合并，6 个标注按钮）。仍缺：CleanShot/Snapzy 的聚光灯、取色器、Mockup 背景、旋转翻转、多图合并、放大镜。
 4. **贴图能力弱于 PixPin**：Octopus pin 只支持拖拽 + 缩放 + 关闭。PixPin 贴图支持透明度调节、锁定、鼠标穿透、取色、缩略图模式、文本/文件/LaTeX 贴图、批量操作、阴影颜色状态指示——是矩阵中贴图功能最全的。Octopus 贴图甚至没有透明度滑块和键盘方向键微调（CleanShot 有）。
@@ -269,7 +269,7 @@ AGENTS.md 明确写了「物理/逻辑坐标转换 ⚠️ 已踩坑 6+ 次」（
 
 ### 2.5 建议改进方向（按性价比排序）
 
-1. **截图翻译 UI 接线**（高收益低投入）：后端 `translate_text(targetType: "compact_editor")` 已就绪、CompactEditor 翻译对照视图已就绪。只需在截图工具栏加「翻译」按钮，把 `composeAndCropBytes` 的 PNG 走 `ocr_screenshot` 拿文本 → `translate_text` → 开 contrast tab。一周内可上线，直接补齐相对 eSearch/PixPin 的核心差距。
+1. ~~**截图翻译 UI 接线**~~ **✅ 已完成（2026-08-11）**：截图工具栏「翻译」按钮 + ActionBar 选中翻译 → `translate_window` 只读浮窗（非原设想的 CompactEditor contrast——产品决策改为独立浮窗，行为统一）。详见 [spec](../superpowers/specs/2026-08-11-screenshot-translate-float-window-design.md) + [plan](../superpowers/plans/2026-08-11-screenshot-translate-float-window.md)。
 2. **暴露窗口 / UI 元素截图入口**（高收益中投入）：`capture_window_region` + `find_window_id_by_pid` 现成。加一个工具栏按钮或快捷键，截图模式下按 `W` 切到「窗口模式」，用 `CGWindowListCopyWindowInfo` 列出可见窗口让用户点选。Snapzy 的 Smart Element（AX 查询自动检测 UI 元素）是更进一步的方案但 macOS 限定。
 3. **贴图能力补齐**（中收益低投入）：pin_window 加透明度调节（`Ctrl+滚轮`）、锁定模式（`L` 键 + `setIgnoresMouseEvents`）、方向键微调位置。PixPin 的功能集是直接抄的模板，三平台原生实现已经在手里，主要是 UI/快捷键层补全。
 4. **Quick Access Overlay**（中收益中投入）：截图确认后不立即关窗，右下角弹一张可拖拽缩略卡片，提供「复制 / 保存 / OCR / 翻译 / pin / 编辑」六动作。HushSnap 的「缩略图 → 左键 OCR / 悬停按钮 / 拖放」交互是很好的范本。这一层能显著降低「截完才发现要 OCR」的返工。
@@ -413,7 +413,7 @@ Octopus 的翻译能力集中在 `octopus-translation` crate（`crates/translati
 **不足**：
 - **无 glossary / 术语表 / memory**——`grep -rn "glossary\|术语"` 在 translation crate 零命中，全仓无翻译术语持久化机制（对比 kiss-translator 的「自定义 AI 术语词典」、Pot 的生词本导出）。
 - **双语对照仅限 CompactEditor contrast 模式**，无网页级段落级双语对照（kiss-translator 的核心卖点）。
-- **无 OS 级划词翻译 / 屏幕翻译 / 截图翻译**——translation crate 纯文本输入输出，不与 OCR / 截屏 / 系统选区集成（对比 Pot 的划词+截图+OCR→翻译、esearch 的屏幕翻译、Paster 的 OCR→翻译）。OCR 同在项目内（`crates/ocr/`，PaddleOCR + 二维码）但无 OCR→translate 的 pipeline 拼接。
+- ~~**无 OS 级划词翻译 / 屏幕翻译 / 截图翻译**~~ **部分已解决（2026-08-11）**：~~translation crate 纯文本输入输出，不与 OCR / 截屏 / 系统选区集成~~。截图翻译（`translate_screenshot` 命令 OCR→翻译）+ ActionBar 选中翻译已接入 `translate_window` 浮窗。**仍缺**：OS 级划词翻译（监听系统选区）、屏幕翻译（贴图窗内文字替换为译文，eSearch 做法）。
 - **云端翻译方向固定中英互译**——`detect_translate_direction` 仅按是否含 CJK 二分 zh/en（`translate.rs:58-67`），m2m100 虽支持 100+ 语言但上层路由不暴露语言选择。
 
 ### 4.2 竞品对比矩阵
@@ -422,7 +422,7 @@ Octopus 的翻译能力集中在 `octopus-translation` crate（`crates/translati
 |---|---|---|---|---|---|---|
 | **本地引擎** | Opus-MT (MarianMT int8) + m2m100-418M (ONNX int8) | 无（纯调用方） | Ollama 离线（插件） | 无（Google 免费） | Argos Translate（中英） | 无（系统服务） |
 | **云端多 provider** | 5+1 家 OpenAI 兼容（OpenAI/DeepSeek/Aliyun/BigModel/Moonshot/MiniMax） | 传统4家(Google/MS/腾讯/火山)+AI(OpenAI/Gemini/Claude/Ollama/DeepSeek/OpenRouter)+DeepL | OpenAI/Gemini/智谱+百度/腾讯/火山/有道/DeepL/Bing/Yandex 等 15+ | Google/DeepL/百度/ChatGPT/自定义 | 无（仅离线） | 多家国产+DeepL |
-| **OCR/截图翻译** | ❌（OCR 模块独立无 pipeline 拼接） | ❌ | ✅ 截图OCR+截图翻译+外部HTTP调用 | ✅ 截屏→OCR→翻译+**屏幕翻译**（贴图替换） | ✅ 截图OCR→离线翻译 | ✅ 图片翻译 |
+| **OCR/截图翻译** | ✅ 截图翻译 + ActionBar 选中翻译 → translate_window 浮窗（2026-08-11） | ❌ | ✅ 截图OCR+截图翻译+外部HTTP调用 | ✅ 截屏→OCR→翻译+**屏幕翻译**（贴图替换） | ✅ 截图OCR→离线翻译 | ✅ 图片翻译 |
 | **双语对照** | △（仅 CompactEditor contrast 左右栏） | ✅✅ 网页段落级双语对照（核心卖点） | ❌ | △（屏幕翻译贴图） | ❌ | ❌ |
 | **流式** | ✅ 按换行分段 emit 增量 | ✅ 流式传输+聚合批量 | ❌ | ❌ | ❌ | ❌ |
 | **glossary/memory** | ❌ | ✅ 自定义AI术语词典+上下文记忆 | ✅ 生词本导出(Anki/欧路/有道/扇贝) | ✅ 翻译结果存Anki | ❌ | ❌ |
@@ -448,7 +448,7 @@ Octopus 的翻译能力集中在 `octopus-translation` crate（`crates/translati
 
 2. **无双语对照 UI 的网页级段落对照**——CompactEditor 的 `mode="contrast"` 是左右双栏（`compact_editor_commands.rs:28`），不是 kiss-translator 那种「原文段落与译文段落交错嵌入」的沉浸式对照。对阅读长文场景体验弱于 kiss-translator / FluentRead / Read Frog。
 
-3. **无 OS 级划词翻译 / 屏幕翻译 / 截图翻译**——translation crate 纯文本 I/O，不接管系统选区/截屏/OCR。OCR 模块（`crates/ocr/`，PaddleOCR + 二维码）就在项目内但无 OCR→translate pipeline。Pot/esearch/Paster 的「截屏即入口→OCR→翻译」闭环在 Octopus 缺失。
+3. ~~**无 OS 级划词翻译 / 屏幕翻译 / 截图翻译**~~ **截图翻译已实现（2026-08-11）**：截图翻译（`translate_screenshot`）+ ActionBar 选中翻译接入 `translate_window` 浮窗。**仍缺**：OS 级划词翻译（监听系统选区，Pot 做法）、屏幕翻译（贴图窗内文字替换为译文，eSearch 做法）。
 
 4. **云端翻译方向硬编码中英互译**——`detect_translate_direction` 仅按 CJK 二分 zh/en（`translate.rs:58-67`），m2m100 支持 100+ 语言但上层不暴露。即使 m2m100 已下载，用户也无法选日语/韩语等其他方向。
 
@@ -458,7 +458,7 @@ Octopus 的翻译能力集中在 `octopus-translation` crate（`crates/translati
 
 1. **加 glossary / 术语表**（P0）——复用现有 DB schema 扩展能力（`models`/`prompts`/`fuzzy_dialect_rules` 等表已证明 schema 演进机制成熟）。建 `translate_glossary` 表（source_term / target_term / context / domain），CloudLlmEngine 的 prompt 注入术语表（参考 kiss-translator 的 systemPrompt 占位符 `{{glossary}}`），本地引擎可在 decode 后做术语替换后处理。
 
-2. **OCR→translate pipeline 拼接**（P0）——OCR 模块（`crates/ocr/`）已就绪，只需在 action_bar 加「截图翻译」action：截图 → OCR → `do_translate_streaming`，复用现有流式 emit 基建。对标 Pot/esearch 的截图翻译。
+2. ~~**OCR→translate pipeline 拼接**（P0）~~ **✅ 已完成（2026-08-11）**：截图工具栏「翻译」按钮（`translate_screenshot` 命令）+ ActionBar 选中翻译（`auto_translate` 分支）均接入 `translate_window` 浮窗，复用 `do_translate_streaming` 流式 emit。详见 [spec](../superpowers/specs/2026-08-11-screenshot-translate-float-window-design.md)。
 
 3. **暴露多语言选择 + 接入 NLLB-200**（P1）——`detect_translate_direction` 扩展为 UI 可选语言列表，m2m100 已支持 100+ 语言只需上层放开。可考虑接 NLLB-200-distilled-600M（比 m2m100 质量更高、200 语言，社区 2026 仍推荐用于低资源语言）作为第三本地引擎选项，与 Opus-MT（少语言高质量）/ m2m100（多语言兜底）形成梯度。
 
@@ -1149,14 +1149,14 @@ Sources:
 
 → **统一**：clipboard 接入 sync（必须做防回环），同步一张表全类型，相对竞品是降维打击。一次工程，剪贴板跨设备能力补齐 + 复用现有 sync 基建。
 
-**C. Action Bar / Capx / OCR / Translation 的截图翻译闭环（横切 4 个模块）**
+**C. Action Bar / Capx / OCR / Translation 的截图翻译闭环（横切 4 个模块）** ✅ 已实现（2026-08-11）
 
-- 截图翻译 UI 缺失（架构文档明确「通路就绪」）
-- OCR→translate pipeline 缺失
+- ~~截图翻译 UI 缺失（架构文档明确「通路就绪」）~~ → 已实现
+- ~~OCR→translate pipeline 缺失~~ → 已实现（`translate_screenshot` 命令）
 - Action Bar 的 agent 类型已能启动任意 CLI
-- CompactEditor contrast 模式 + 流式翻译 emit 已就绪
+- ~~CompactEditor contrast 模式 + 流式翻译 emit 已就绪~~ → 改为 `translate_window` 只读浮窗 + `TranslateEmitTarget::Float` 分支（`emit_to` 定向）
 
-→ **统一**：①截图工具栏加翻译按钮；②Action Bar 加「截图翻译」action（截图→OCR→`do_translate_streaming`）；③三处入口共享翻译策略。一次接线，补齐相对 eSearch/PixPin/Pot 的核心差距。
+→ **统一**（已落地）：①截图工具栏「翻译」按钮 → `translate_screenshot`；②ActionBar 选中翻译 → `auto_translate` 分支改走浮窗；③两处入口共享 `TranslateEmitTarget::Float` + `do_translate_streaming`。详见 [spec](../superpowers/specs/2026-08-11-screenshot-translate-float-window-design.md)。**仍缺**：③Quick Access Overlay 第三入口 + OS 级划词翻译 + 屏幕翻译（贴图替换）。
 
 ### 10.3 单模块 P0 清单（按战略紧迫度）
 
@@ -1166,8 +1166,8 @@ Sources:
 | ASR | 词级时间戳 + SRT 导出 | 解锁会议/字幕/配音场景；与录屏的 `generate_subtitle` 联动收益翻倍 |
 | ASR | 说话人分离 | 相对 sherpa/WhisperX/moss 最显著缺口；会议纪要必备 |
 | Record | 录制中实时转写 | 差异化杀手锏；ASR 流式引擎基础已就绪，无竞品（Cap 是云端） |
-| Translation | glossary + OCR→translate pipeline | 专业翻译痛点 + 截图翻译 UI 接线（C 线） |
-| Screenshot | 截图翻译 UI 接线（C 线） | 通路就绪只缺 UI，一周可上线 |
+| Translation | ~~glossary~~ + ~~OCR→translate pipeline~~（后者 2026-08-11 已实现） | 专业翻译痛点（glossary 仍缺）；截图翻译已完成 |
+| Screenshot | ~~截图翻译 UI 接线（C 线）~~ ✅ 已完成（2026-08-11） | 已补齐，剩余贴图能力补齐 / Quick Access Overlay |
 | OCR | PP-Structure 接入 + VLM OCR | 文档解析能力补齐；PaddleOCR-VL 1.6B 是同源最佳路径 |
 | ActionBar | AX 直读选中文本 + 扩展注册中心 | 绕过 Cmd+C 剪贴板污染；启动生态 |
 | Terminal | Atuin 集成 + russh SSH | history sync 是最显眼缺口；SSH 扩展运维场景 |
