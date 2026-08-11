@@ -5,6 +5,7 @@ pub mod pin_window;
 pub mod settings_window;
 pub mod onboarding_window;
 pub mod overlay_window;
+pub mod translate_window;
 pub mod download_window;
 pub mod terminal_window;
 pub mod tray;

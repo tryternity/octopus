@@ -413,6 +413,74 @@ pub async fn ocr_screenshot(
     Ok(())
 }
 
+/// 截图翻译：合成选区 → 图片入库 → OCR 识别 → 关截图窗 + show translate_window → 流式翻译。
+/// 与 ocr_screenshot 同 Raw body 协议 + OcrLockGuard 互斥，尾部换成浮窗 + 翻译。
+/// OCR 空文本时 show 浮窗并 emit done 显示错误提示，不调翻译。
+#[tauri::command]
+pub async fn translate_screenshot(
+    request: tauri::ipc::Request<'_>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let _ocr_lock = octopus_ocr::engine::OcrLockGuard::try_acquire()
+        .ok_or_else(|| "前一个 OCR 还未完成，请稍后".to_string())?;
+    let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
+        return Err("expected raw binary body".into());
+    };
+    let png_bytes = png_bytes.clone();
+
+    ALL_CAPTURES.lock().clear();
+    PENDING_IMAGES.lock().clear();
+
+    let (ocr_engine, ocr_model) = crate::clipboard::clipboard_commands::current_ocr_meta();
+
+    let (image_id, text) = tokio::task::spawn_blocking(move || {
+        let img = ::image::load_from_memory(&png_bytes)
+            .map_err(|e| e2s_ctx("解码失败: {:?}", e))?;
+        let image_id = save_screenshot_to_history(&png_bytes, Some(&img))?;
+        let engine = octopus_ocr::engine::OcrEngine::instance()
+            .map_err(e2s)?;
+        let (text, _blocks) = engine.recognize_with_blocks_from_image(&img).map_err(e2s)?;
+        // OCR 文本独立入库（同 ocr_screenshot，便于后续在 CompactEditor 回看）
+        if !text.trim().is_empty() {
+            let _ocr_id = octopus_infra::db::with_db(|conn| {
+                octopus_clipboard::store::insert_ocr_item(conn, &text, &ocr_engine, &ocr_model)
+            }).map_err(e2s)?;
+        }
+        Ok::<_, String>((image_id, text))
+    })
+    .await
+    .map_err(e2s)??;
+    let _ = image_id; // 保留 image_id 以备后续回溯（本 spec 不消费）
+
+    let _ = app_handle.emit("clipboard://changed", ());
+
+    let text_empty = text.trim().is_empty();
+    let ah = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        close_all_screenshot_windows(&ah);
+        crate::ui::translate_window::show_at_mouse(&ah);
+        // OCR 空文本：必须放在 show_at_mouse 之后，避免和异步队列 show 竞态被 reset 事件清空。
+        // C1 修复后 ready 仍为 true（initial mount 设过），reset→done 顺序正确。
+        if text_empty {
+            crate::ui::translate_window::emit_float_done(&ah, "❌ 未识别到文本");
+        }
+    });
+
+    if !text_empty {
+        // 流式翻译：worker 线程跑 do_translate_streaming，事件经 ready 机制 emit_to 浮窗
+        let app_clone = app_handle.clone();
+        std::thread::spawn(move || {
+            crate::action_bar::action_bar_commands::do_translate_streaming(
+                &text,
+                &app_clone,
+                crate::action_bar::action_bar_commands::TranslateEmitTarget::Float,
+            );
+        });
+    }
+
+    Ok(())
+}
+
 /// 截图二维码识别：前端传 Raw body PNG（与 ocr_screenshot 同协议）。
 /// spawn_blocking 内解码 PNG → qrcode::scan。
 /// 返回识别到的二维码内容列表（可能空）。不入库、不开编辑器、不自动写剪贴板

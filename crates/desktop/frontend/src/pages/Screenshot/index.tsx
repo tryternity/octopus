@@ -772,6 +772,24 @@ export default function Screenshot() {
     });
   }
 
+  // 翻译：与 doOcr 同 composeAndCropBytes + OcrLockGuard 互斥范式，调 translate_screenshot。
+  // 后端完成后会拉起 translate.html 窗口展示译文（Task 4）。
+  function doTranslate() {
+    composeAndCropBytes().then((bytes) => {
+      if (!bytes) return;
+      invoke("translate_screenshot", bytes as unknown as Record<string, unknown>).catch((e) => {
+        const msg = String(e);
+        if (msg.includes("还未完成")) {
+          setOcrWarn(true);
+          if (ocrWarnTimerRef.current) clearTimeout(ocrWarnTimerRef.current);
+          ocrWarnTimerRef.current = setTimeout(() => setOcrWarn(false), 1800);
+        } else {
+          console.error(e);
+        }
+      });
+    });
+  }
+
   // 二维码识别：与 doOcr 同 composeAndCropBytes 范式，调 scan_qrcode_screenshot。
   // 后端已写剪贴板，前端只负责就地白卡展示结果。
   function doQrScan() {
@@ -1004,6 +1022,9 @@ export default function Screenshot() {
           <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />
           <ToolButton onClick={doOcr} label="OCR" icon={
             <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
+          } />
+          <ToolButton onClick={doTranslate} label={t("screenshot.tool.translate")} icon={
+            <img src="icons/action-translate.svg" alt={t("screenshot.tool.translate")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
           } />
           <ToolButton onClick={doQrScan} active={qrScanning || qrResult !== null} label={t("screenshot.tool.qrcode")} icon={
             <img src="icons/qr-code.svg" alt={t("screenshot.tool.qrcode")} className="w-[18px] h-[18px]" style={{ filter: qrScanning || qrResult !== null ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />

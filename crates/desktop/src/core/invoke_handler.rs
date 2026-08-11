@@ -41,6 +41,7 @@ macro_rules! handler {
             // ── result_window ──
             crate::ui::result_window::result_window_ready,
             crate::ui::result_window::set_result_click_through,
+            crate::ui::translate_window::set_translate_window_ready,
             // ── settings_window / onboarding_window ──
             crate::ui::settings_window::open_settings,
             crate::ui::settings_window::get_initial_page,
@@ -161,6 +162,7 @@ macro_rules! handler {
             crate::record::screenshot_commands::confirm_screenshot_with_data,
             crate::record::screenshot_commands::save_screenshot_dialog,
             crate::record::screenshot_commands::ocr_screenshot,
+            crate::record::screenshot_commands::translate_screenshot,
             crate::record::screenshot_commands::scan_qrcode_screenshot,
             crate::record::screenshot_commands::get_last_screenshot_ocr,
             crate::record::screenshot_commands::start_scroll_recording,

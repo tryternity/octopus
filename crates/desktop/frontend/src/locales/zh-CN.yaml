@@ -1,3 +1,9 @@
+# ════════ 通用 i18n key（跨页面共享，只放真正多处复用的词） ════════
+common:
+  copy: 复制
+  copied: 已复制
+  close: 关闭
+
 # ════════ Editor 图文编辑器 ════════
 editor:
   undo: 撤销
@@ -1045,12 +1051,16 @@ screenshot:
     clearAll: 清空标注
     qrcode: 二维码
     watermark: 水印
+    translate: 翻译
   scrollShot: 滚动截图
   saveToFile: 保存到文件
   confirm: 确认
   cancel: 取消
   pin: 贴图
   ocrBusy: 前一个 OCR 还未完成，请稍后
+  translate:
+    translating: 翻译中...
+    done: 翻译完成
   qrNoResult: 未识别到二维码
   qrCopyAll: 复制所有
   qrScanning: 识别中...

@@ -1,3 +1,9 @@
+# ════════ Common i18n keys (shared across pages, only truly reused words) ════════
+common:
+  copy: Copy
+  copied: Copied
+  close: Close
+
 # ════════ Editor ════════
 editor:
   undo: Undo
@@ -1036,6 +1042,7 @@ screenshot:
     clearAll: Clear All
     qrcode: QR Code
     watermark: Watermark
+    translate: Translate
   scrollShot: Scroll Capture
   saveToFile: Save to File
   confirm: Confirm
@@ -1046,6 +1053,9 @@ screenshot:
   qrScanning: Scanning...
   save: Save
   copy: Copy
+  translate:
+    translating: Translating...
+    done: Translation complete
   props:
     fontSize: Font Size
     circle: Circle
