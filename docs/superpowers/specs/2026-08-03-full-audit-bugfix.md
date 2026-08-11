@@ -417,7 +417,8 @@
 | 28 | `260ed000` | 第二十八轮并发专项复查：修 3（**P1-F1 vault meta 覆盖竞态→锁死** + P3-F5 clipboard_cleanup 取锁 + P3-LLM1 正则限定）+ 留后续 2（P2-F2 translate block_on / P2-F3 pty Mutex 跨 write） |
 | 29 | `21e70af8` | 第二十九轮数据完整性复查：修 3（P2-F1 paraformer enc_slice 越界离线+流式 + P2-F3 canvas 黑图改 Result + P3-LLM1 单候选契约闭合）+ 留后续系统性短板（P3 F-2~F-8 ONNX 边界） |
 | 29b | `409291e4` | 第二十九轮补充（代理 C 补跑）：修 3（P2-C1 md5 补 ref_data/segments/is_rich + P2-C2 voice 吞错致物理删改 fail-safe + P3-CF9 set_sync_md5 改 warn）+ 留后续 P3 群 |
-| 30 | （本轮，待 commit） | 第三十轮全覆盖复查：修 3（**F1 stitch uniform scroll 永久锁定** + **L1-2 热词挖掘 ORDER BY id DESC 迁移回归** + P3 focus_tracker 重复 log）+ 留后续性能群（Zipformer clone / vault 全量 export / pipeline 双读 / hotword 全表 filter） |
+| 30 | `744add56` | 第三十轮全覆盖复查：修 3（**F1 stitch uniform scroll 永久锁定** + **L1-2 热词挖掘 ORDER BY id DESC 迁移回归** + P3 focus_tracker 重复 log）+ 留后续性能群（Zipformer clone / vault 全量 export / pipeline 双读 / hotword 全表 filter） |
+| 31 | （本轮，待 commit） | 第三十一轮资源/并发/panic 专项：修 5（**P1-1 helper 无超时+kill_on_drop** + P2-1 frame_size=0 除零 3 处 + ptt B1 线程死亡恢复 + ptt B2 recv_timeout + P2-3 cgimage bpr ensure）+ 留后续 4（std Mutex 中毒 / reap 超时 / attempt_guard / dead code） |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1530,3 +1531,55 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 - `cargo build` capx/infra + `cargo check` desktop —— 0 error 0 warning
 - `cargo test`：capx 55 / infra 193 / desktop 525 全过
+
+## 35. 第三十一轮——资源/并发/panic 专项复查（2026-08-11，修 5 + 留后续 4）
+
+### 触发
+
+收到第三十一轮全代码审查报告（3 代理 cloud-asr/desktop-platform/横向 panic·资源·并发 + 亲审 vault 安全核心）。A 部分确认第三十轮 3/3 修复落地。
+
+### 🔴 P1-1 · run_helper_subcommand 无超时 + 无 kill_on_drop ✅ 已修
+
+**根因**：record/platform/mod.rs:70-76 `Command::new(helper).spawn()?.wait_with_output().await?`——无 timeout、无 kill_on_drop。macOS 权限弹窗等用户确认时 helper 阻塞 → wait 永不返回 → 前端 invoke 永久 await（UI loading 永转）。5 个调用方（list-displays/windows/microphones/check-permission/request-permission）。
+
+**修复**：`tokio::select!` 包 `wait_with_output` + 30s `sleep`（timeout 返 HelperError）+ `.kill_on_drop(true)`（select cancel drop future → drop child → kill）。对齐 session.rs:174 kill_on_drop + :314 timeout 范式。
+
+### 🟠 P2 修复（4 处）
+
+#### P2-1 · filter_speech/segment_audio_vad frame_size=0 除零
+
+**根因**：preprocess.rs:156/205/325 `frame_size * 1000 / 16000` → frame_size=0 时 frame_duration_ms=0 → :157/206 除零 + :162/210 `chunks(0)` / `len()/0` panic。pub API 暴露（audio/mod.rs:17 pub use），内部传 480/512 不触发。
+
+**修复**：3 处（filter_speech + segment_audio_vad + segment_audio_vad_with_offsets）入口加 `if frame_size == 0 || samples.is_empty() { return Vec::new() }`。
+
+#### ptt B1 · manager 线程死亡后 PTT 永久不可恢复
+
+**根因**：ensure_thread :370 只查 PTT_STATE.is_some()，不查 thread_handle.is_finished()。线程死亡（HotkeyManager 创建失败/panic）后保留 stale sender，send() 立即 Disconnected → PTT 永久失效至重启。
+
+**修复**：ensure_thread 加 `is_finished()` 检测——线程死亡则清空 PTT_STATE 重新 spawn。
+
+#### ptt B2 · register_ptt recv() 阻塞主线程
+
+**根因**：register_ptt :447 `rx.recv()` 无超时，是同步 pub fn（set_config Tauri command 调）。manager 卡住时主线程冻结。
+
+**修复**：recv() 改 `recv_timeout(5s)`——正常 register <100ms，5s 充裕。
+
+#### P2-3 · cgimage_to_rgba 假设 bpr>=width*4
+
+**根因**：capture.rs:289 `&raw[row_start..row_start + width*4]`——若 bpr<width*4（理论不变量违反），slice 越界 panic。缺显式 ensure!。
+
+**修复**：入口加 `ensure!(bpr >= width*4, ...)`。
+
+### 留后续（4 项）
+
+| 项 | 原因 |
+|---|---|
+| P2-2（std Mutex 中毒传染 6 模块）| 系统性 std→parking_lot 替换（6 文件机械改），触发需持锁 panic（当前持锁代码无 panic 路径），防御性加固 |
+| P2-4/P2-5（reap 无超时 / PTY 僵尸 child）| 罕见（SIGKILL 通常即效），安全姿态对称 |
+| P3 attempt_guard fetch_max | vault 安全核心，需充分测试 |
+| P3 dead code crop_region_rgba 删 | 清理非 bugfix |
+
+### 验证
+
+- `cargo build` record/capx —— 0 error 0 warning
+- `cargo test`：record 50 / asr-local 170 / capx 55 / desktop 525 全过

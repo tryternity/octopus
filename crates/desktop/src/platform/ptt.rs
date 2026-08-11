@@ -367,8 +367,20 @@ fn dispatch_action(coordinator: &Coordinator, action: FsmAction) {
 /// 状态，PTT 不可用可接受（其他功能继续），panic 让整个 app 消失对用户更糟。
 fn ensure_thread(app: &AppHandle) -> Result<Sender<ManagerCommand>, String> {
     let mut guard = PTT_STATE.lock();
+    // 第三十一轮 B1：检测 manager 线程是否已死亡（HotkeyManager 创建失败/panic）。
+    // 线程死后 PTT_STATE 保留 stale sender，后续 send() 立即 Disconnected → PTT 永久失效。
+    // 检测 is_finished() 后清空 PTT_STATE，让下方重新 spawn。
     if let Some(state) = guard.as_ref() {
-        return Ok(state.command_sender.clone());
+        if let Some(ref handle) = state.thread_handle {
+            if handle.is_finished() {
+                log::warn!("[ptt] manager 线程已死亡，清理 stale state 重新 spawn");
+                *guard = None;
+            } else {
+                return Ok(state.command_sender.clone());
+            }
+        } else {
+            return Ok(state.command_sender.clone());
+        }
     }
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<ManagerCommand>();
@@ -444,8 +456,10 @@ pub fn register_ptt(app: &AppHandle, key: &str) -> Result<(), String> {
         })
         .map_err(|_| "[ptt] failed to send register command".to_string())?;
 
-    rx.recv()
-        .map_err(|_| "[ptt] failed to receive register response".to_string())?
+    // 第三十一轮 B2：recv_timeout 防 manager 卡住冻结主线程（register_ptt 是同步 pub fn，
+    // set_config 在 Tauri 主线程调它）。5s 超时——正常 register <100ms，5s 充裕。
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("[ptt] failed to receive register response: {}", e))?
 }
 
 /// 注销 PTT 键监听。
