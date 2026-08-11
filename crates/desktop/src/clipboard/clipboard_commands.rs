@@ -717,6 +717,31 @@ pub async fn check_image_file_exists(id: String) -> Result<bool, String> {
     .map_err(|e| e2s_ctx("join error: {}", e))?
 }
 
+/// 在文件管理器中高亮显示图片条目的原图文件（`~/Documents/octopus/screens/<hash>.jpg`）。
+/// 替代原"下载"按钮——原图已存在文件系统，下载名不副实，改为打开所在目录。
+#[tauri::command]
+pub async fn reveal_image_file(id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let item = octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::get_item_by_id(conn, &id)
+        })
+        .map_err(e2s)?;
+        let item = item.ok_or("条目不存在")?;
+        if item.item_type != octopus_clipboard::ItemType::Image {
+            return Err("非图片条目".into());
+        }
+        let hash = item.ref_data.as_ref().ok_or("图片元数据缺失")?;
+        let path = octopus_infra::paths::image_file_path(hash);
+        if !path.exists() {
+            return Err("原图文件不存在".into());
+        }
+        crate::platform::sys_open::reveal_path_lossy(&path);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e2s_ctx("join error: {}", e))?
+}
+
 /// 弹系统保存对话框，把前端合成的标注 PNG（base64）存到用户指定路径。
 ///
 /// 把前端合成的标注 PNG（Raw body 二进制）写入系统剪贴板。

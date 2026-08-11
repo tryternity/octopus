@@ -76,45 +76,39 @@ export default function Screenshot() {
   // （settings_commands.rs:317 set_config 末尾统一 emit），此处重读刷新。
   // 与 Terminal/index.tsx L94-114 字体配置读取同范式（mount + config-changed 都重读）。
   // 注：AppConfig 无 #[serde(rename_all)]，config JSON 字段为 snake_case（非 brief 写的 camelCase）。
-  const [watermarkOpts, setWatermarkOpts] = useState<WatermarkOpts | null>(null);
+  // 水印——text 是内存临时状态（不持久化，每次截图空），其余（color/density/angle/opacity/fontSize）读 config 作偏好默认。
+  const [watermarkText, setWatermarkText] = useState("");
+  const [watermarkPrefs, setWatermarkPrefs] = useState<{
+    color: string; density: number; angle: number; opacity: number; fontSize: number;
+  }>({ color: "#ffffff", density: 0.5, angle: 0, opacity: 0.3, fontSize: 24 });
   useEffect(() => {
-    const loadWatermark = () => {
+    const load = () => {
       invoke<{ config: Record<string, unknown> }>("get_config")
         .then((res) => {
           const cfg = res.config;
-          const text = cfg.screenshot_watermark_text as string | undefined;
-          if (text) {
-            setWatermarkOpts({
-              text,
-              opacity: typeof cfg.screenshot_watermark_opacity === "number"
-                ? cfg.screenshot_watermark_opacity
-                : 0.3,
-              fontSize: typeof cfg.screenshot_watermark_font_size === "number"
-                ? cfg.screenshot_watermark_font_size
-                : 24,
-              color: (cfg.screenshot_watermark_color as string) || "#ffffff",
-              density: typeof cfg.screenshot_watermark_density === "number"
-                ? cfg.screenshot_watermark_density
-                : 0.5,
-              angle: typeof cfg.screenshot_watermark_angle === "number"
-                ? cfg.screenshot_watermark_angle
-                : 0,
-            });
-          } else {
-            setWatermarkOpts(null);
-          }
-        })
-        .catch(() => {
-          // screenshot 窗口理论上已注册 get_config（invoke_handler.rs:49 全局注册）；
-          // 失败时静默——保持无水印状态，不阻塞截图流程。
-        });
+          setWatermarkPrefs({
+            color: (cfg.screenshot_watermark_color as string) || "#ffffff",
+            density: typeof cfg.screenshot_watermark_density === "number" ? cfg.screenshot_watermark_density : 0.5,
+            angle: typeof cfg.screenshot_watermark_angle === "number" ? cfg.screenshot_watermark_angle : 0,
+            opacity: typeof cfg.screenshot_watermark_opacity === "number" ? cfg.screenshot_watermark_opacity : 0.3,
+            fontSize: typeof cfg.screenshot_watermark_font_size === "number" ? cfg.screenshot_watermark_font_size : 24,
+          });
+        }).catch(() => {});
     };
-    loadWatermark();
+    load();
     let unlisten: (() => void) | null = null;
-    listen("config-changed", loadWatermark)
-      .then((fn) => { unlisten = fn; })
-      .catch(() => {});
+    listen("config-changed", load).then((fn) => { unlisten = fn; }).catch(() => {});
     return () => { unlisten?.(); };
+  }, []);
+  // watermarkOpts = 内存 text + config 偏好组合（text 空则 null=不画水印）
+  const watermarkOpts: WatermarkOpts | null = watermarkText
+    ? { text: watermarkText, ...watermarkPrefs }
+    : null;
+  // 水印确认回调——全部写内存 state（不持久化到 config，避免截图/图文编辑器跨窗口互相影响）。
+  // text + color/density/angle 更新内存，watermarkOpts 由 memo 自动重算。
+  const handleWatermarkChange = useCallback((text: string, color: string, density: number, angle: number) => {
+    setWatermarkText(text);
+    setWatermarkPrefs(prev => ({ ...prev, color, density, angle }));
   }, []);
 
   // 工具栏实际宽度（useLayoutEffect 测量，用于 X 方向 clamp 防止跑出屏幕）
@@ -1004,6 +998,7 @@ export default function Screenshot() {
           popoverX={annotation.popoverX || (sel.x + sel.w / 2)}
           // 水印按钮仅截图工具栏显示（录屏无水印功能，Task 8）
           showWatermark={true}
+          onWatermarkChange={handleWatermarkChange}
         >
           {/* divider + OCR + QR（截图独有） */}
           <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />

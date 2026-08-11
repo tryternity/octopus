@@ -21,7 +21,6 @@ import type { Tool } from "@/lib/annotation";
 import { PRESET_COLORS } from "@/lib/annotation";
 import { ToolPropsPopover } from "@/pages/Screenshot/ToolPropsPopover";
 import { useT } from "@/lib/i18n";
-import { invoke } from "@/lib/tauri";
 import type { AnnotationState } from "./useAnnotationState";
 
 
@@ -76,6 +75,8 @@ export interface AnnotationToolbarProps {
    * 截图工具栏传 true（需 config 水印），录屏不传 / 传 false。
    */
   showWatermark?: boolean;
+  /** 水印确认回调——text 是组件内存（不持久化），color/density/angle 也传（父组件决定是否写 config） */
+  onWatermarkChange?: (text: string, color: string, density: number, angle: number) => void;
 }
 
 // ── 内联 ToolButton（原 pages/Screenshot/ToolButton.tsx，19 行 dumb component）──
@@ -146,6 +147,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     visible = true,
     showHighlight = true,
     showWatermark = false,
+    onWatermarkChange,
   } = props;
 
   // ── 水印按钮 popover 输入框状态（Task 8）──
@@ -173,26 +175,17 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     return () => document.removeEventListener("mousedown", handler);
   }, [showWatermarkPopover]);
 
-  // 水印按钮点击：读当前 config 的水印文字 + 颜色 + density + angle 预填。
+  // 水印按钮点击：文字保留当前 state（同一截图操作内多次打开不清空），
+  // 颜色/密度/角度也用当前 state（不读 config——避免跨窗口互相影响）。
+  // 文字的「每次新截图清空」由父组件 watermarkText 初始值 "" 保证。
   const openWatermarkPopover = () => {
-    invoke<{ config: Record<string, unknown> }>("get_config")
-      .then((res) => {
-        const c = res.config;
-        setWatermarkInput((c.screenshot_watermark_text as string) || "");
-        setWatermarkColor((c.screenshot_watermark_color as string) || "#ffffff");
-        setWatermarkDensity(typeof c.screenshot_watermark_density === "number" ? c.screenshot_watermark_density : 0.5);
-        setWatermarkAngle(typeof c.screenshot_watermark_angle === "number" ? c.screenshot_watermark_angle : 0);
-      })
-      .catch(() => { setWatermarkInput(""); setWatermarkColor("#ffffff"); setWatermarkDensity(0.5); setWatermarkAngle(0); });
     setShowWatermarkPopover(true);
   };
 
   // 确认：set_config 文字 + 颜色 + density + angle（空字符串=清除水印）。失败不阻塞 UI，静默。
+  // 确认：调 onWatermarkChange 回调传给父组件（text 内存不持久化，color/density/angle 父组件决定）。
   const confirmWatermark = () => {
-    invoke("set_config", { key: "screenshot_watermark_text", value: watermarkInput }).catch(() => {});
-    invoke("set_config", { key: "screenshot_watermark_color", value: watermarkColor }).catch(() => {});
-    invoke("set_config", { key: "screenshot_watermark_density", value: watermarkDensity }).catch(() => {});
-    invoke("set_config", { key: "screenshot_watermark_angle", value: watermarkAngle }).catch(() => {});
+    onWatermarkChange?.(watermarkInput, watermarkColor, watermarkDensity, watermarkAngle);
     setShowWatermarkPopover(false);
   };
 
@@ -229,16 +222,28 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     onToolChange?.("none");
   };
 
+  // 形状子模式图标映射（图标随当前子模式变化）
+  const shapeIcons: Record<string, string> = {
+    rect: "icons/square.svg", oval: "icons/oval-vertical.svg", diamond: "icons/diamond.svg",
+  };
+  const shapeLabels: Record<string, string> = {
+    rect: t("screenshot.tool.rect"), oval: t("screenshot.tool.ellipse"), diamond: t("screenshot.tool.diamond"),
+  };
+  // 线条子模式图标映射
+  const lineIcons: Record<string, string> = {
+    line: "icons/straight-line.svg", arrow: "icons/arrow-line.svg", pen: "icons/sketching.svg",
+    highlight: "icons/highlighter.svg", number: "icons/sequence-note.svg",
+  };
+  const lineLabels: Record<string, string> = {
+    line: t("screenshot.tool.line"), arrow: t("screenshot.tool.arrow"), pen: t("screenshot.tool.pen"),
+    highlight: t("screenshot.tool.highlight"), number: t("screenshot.tool.number"),
+  };
+  const isShapeActive = state.tool === "rect" || state.tool === "oval" || state.tool === "diamond";
+  const isLineActive = state.tool === "line" || state.tool === "arrow" || state.tool === "pen" || state.tool === "highlight" || state.tool === "number";
+
+  // 非合并的工具（text/blur）
   const tools: { key: Tool; src: string; label: string }[] = [
-    { key: "rect", src: "icons/square.svg", label: t("screenshot.tool.rect") },
-    { key: "oval", src: "icons/oval-vertical.svg", label: t("screenshot.tool.ellipse") },
-    { key: "diamond", src: "icons/diamond.svg", label: t("screenshot.tool.diamond") },
-    { key: "line", src: "icons/straight-line.svg", label: t("screenshot.tool.line") },
-    { key: "arrow", src: "icons/arrow-line.svg", label: t("screenshot.tool.arrow") },
-    { key: "pen", src: "icons/sketching.svg", label: t("screenshot.tool.pen") },
-    ...(showHighlight ? [{ key: "highlight" as Tool, src: "icons/highlighter.svg", label: t("screenshot.tool.highlight") }] : []),
     { key: "text", src: "icons/text.svg", label: t("screenshot.tool.text") },
-    { key: "number", src: "icons/sequence-note.svg", label: t("screenshot.tool.number") },
     { key: "blur", src: "icons/mosaic.svg", label: t("screenshot.tool.mosaic") },
   ];
 
@@ -273,7 +278,27 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
           icon={<ToolIcon src="icons/arrow-pointer.svg" alt={t("screenshot.tool.select")} active={state.tool === "none"} />}
         />
 
-        {/* 标注工具（含 highlight，条件显示） */}
+        {/* 形状按钮（rect/oval/diamond 合并）——图标随当前子模式变化 */}
+        <ToolButton
+          active={isShapeActive}
+          onClick={(e) => onToolSelect(e, state.shapeModeRef.current)}
+          label={shapeLabels[state.shapeMode]}
+          icon={<ToolIcon src={shapeIcons[state.shapeMode]} alt={shapeLabels[state.shapeMode]} active={isShapeActive} />}
+        />
+
+        {/* 线条按钮（line/arrow/pen/highlight/number 合并）——图标随当前子模式变化 */}
+        <ToolButton
+          active={isLineActive}
+          onClick={(e) => {
+            // number 子模式切换时重置计数
+            const extra = state.lineModeRef.current === "number" ? () => state.setNumberCounter(1) : undefined;
+            onToolSelect(e, state.lineModeRef.current, extra);
+          }}
+          label={lineLabels[state.lineMode]}
+          icon={<ToolIcon src={lineIcons[state.lineMode]} alt={lineLabels[state.lineMode]} active={isLineActive} />}
+        />
+
+        {/* 标注工具（highlight/text/number/blur） */}
         {tools.map((it) => (
           <ToolButton
             key={it.key}
@@ -306,7 +331,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
                 }}
                 label={t("screenshot.tool.watermark")}
                 icon={<img
-                  src="icons/text.svg"
+                  src="icons/water-mark.svg"
                   alt={t("screenshot.tool.watermark")}
                   className="w-[18px] h-[18px]"
                   style={{ filter: "var(--icon-filter)" }}
@@ -524,8 +549,12 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
           isText={state.tool === "text"}
           isNumber={state.tool === "number"}
           isShape={state.tool === "rect" || state.tool === "oval" || state.tool === "diamond"}
+          isLine={isLineActive}
           isBlur={state.tool === "blur"}
           blurMode={state.blurMode}
+          shapeMode={state.shapeMode}
+          lineMode={state.lineMode}
+          highlightVisible={showHighlight}
           filled={state.toolFilled}
           onColorChange={state.setToolColor}
           onWidthChange={state.setToolWidth}
@@ -533,6 +562,12 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
           onCircleSizeChange={state.setToolCircleSize}
           onFilledChange={state.setToolFilled}
           onBlurModeChange={state.setBlurMode}
+          onShapeModeChange={(m) => { state.setShapeMode(m); state.setTool(m); onToolChange?.(m); }}
+          onLineModeChange={(m) => {
+            state.setLineMode(m); state.setTool(m); onToolChange?.(m);
+            // number 子模式切换时重置计数
+            if (m === "number") state.setNumberCounter(1);
+          }}
         />
       )}
     </>

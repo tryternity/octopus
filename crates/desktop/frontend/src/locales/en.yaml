@@ -1058,6 +1058,7 @@ screenshot:
 # ════════ Clipboard ════════
 clipboard:
   imageLost: Original image file is lost
+  revealInFolder: Reveal in Folder
   title: Clipboard
   close: Close
   pauseListen: Pause
@@ -1116,7 +1117,7 @@ imagePreview:
     diamond: Diamond
     line: Line
     arrow: Arrow
-    pen: Pen (free draw)
+    pen: Pen
     highlight: Highlight
     text: Text
     number: Number

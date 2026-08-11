@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { invoke } from "@/lib/tauri";
+import { invoke, listen } from "@/lib/tauri";
 import {
   drawAnnotation,
   drawBlur,
+  drawWatermark,
   hitTestAnnotationPrecise,
+  type WatermarkOpts,
 } from "@/lib/annotation";
 import { useAnnotationState, useAnnotationInteraction } from "@/components/Annotation";
 import Toolbar from "./Toolbar";
@@ -52,6 +54,10 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     toolWidth, setToolWidth,
     toolFontSize, setToolFontSize, toolFontSizeRef,
     toolFilled, setToolFilled, toolFilledRef,
+    shapeMode, setShapeMode,
+    lineMode, setLineMode,
+    blurMode, setBlurMode,
+    toolCircleSize, setToolCircleSize,
     annotations, setAnnotations,
     addAnnotation, undoAnnotation, redoAnnotation,
     redoAvailable, clearAllAnnotations,
@@ -59,6 +65,39 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
 
   const [popoverDismissKey, setPopoverDismissKey] = useState(0);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
+
+  // 水印——text 内存临时（不持久化），其余读 config 偏好
+  const [watermarkText, setWatermarkText] = useState("");
+  const [watermarkPrefs, setWatermarkPrefs] = useState<{
+    color: string; density: number; angle: number; opacity: number; fontSize: number;
+  }>({ color: "#ffffff", density: 0.5, angle: 0, opacity: 0.3, fontSize: 24 });
+  useEffect(() => {
+    const load = () => {
+      invoke<{ config: Record<string, unknown> }>("get_config")
+        .then((res) => {
+          const cfg = res.config;
+          setWatermarkPrefs({
+            color: (cfg.screenshot_watermark_color as string) || "#ffffff",
+            density: typeof cfg.screenshot_watermark_density === "number" ? cfg.screenshot_watermark_density : 0.5,
+            angle: typeof cfg.screenshot_watermark_angle === "number" ? cfg.screenshot_watermark_angle : 0,
+            opacity: typeof cfg.screenshot_watermark_opacity === "number" ? cfg.screenshot_watermark_opacity : 0.3,
+            fontSize: typeof cfg.screenshot_watermark_font_size === "number" ? cfg.screenshot_watermark_font_size : 24,
+          });
+        }).catch(() => {});
+    };
+    load();
+    let unlisten: (() => void) | null = null;
+    listen("config-changed", load).then((fn) => { unlisten = fn; }).catch(() => {});
+    return () => { unlisten?.(); };
+  }, []);
+  const watermarkOpts: WatermarkOpts | null = watermarkText
+    ? { text: watermarkText, ...watermarkPrefs }
+    : null;
+  // 水印确认——全部写内存（不写 config，避免与截图窗口互相影响）
+  const handleWatermarkConfirm = useCallback((text: string, color: string, density: number, angle: number) => {
+    setWatermarkText(text);
+    setWatermarkPrefs(prev => ({ ...prev, color, density, angle }));
+  }, []);
   // OCR/QR 轴：从 hooks 引入（与标注/canvas 零耦合，2026-07-30 拆出）
   const { ocrBlocks, ocrOverlay, ocrCopied, ocrWarn, ocrCopiedText, handleOcr, handleOcrBlockCopy } = useOcr(imageId);
   const { qrScanning, qrResult, handleQrScan, closeQr } = useQr(imageId);
@@ -503,6 +542,10 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
       if (ann.type === "blur") continue; // blur 已由 drawBlur 处理，跳过避免色块叠加两次
       drawAnnotation(ctx, ann);
     }
+    // 水印（平铺模式，同截图——限定在整图范围内）
+    if (watermarkOpts?.text) {
+      drawWatermark(ctx, natW, natH, watermarkOpts);
+    }
     const blob: Blob = await new Promise((resolve, reject) => c.toBlob((b) => b ? resolve(b) : reject("toBlob failed"), "image/png"));
     return await blob.arrayBuffer();
   };
@@ -584,6 +627,14 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
         filled={toolFilled} setFilled={setToolFilled}
+        shapeMode={shapeMode} setShapeMode={setShapeMode}
+        lineMode={lineMode} setLineMode={setLineMode}
+        blurMode={blurMode} setBlurMode={setBlurMode}
+        toolCircleSize={toolCircleSize} setToolCircleSize={setToolCircleSize}
+        watermarkColor={watermarkOpts?.color || "#ffffff"}
+        watermarkDensity={watermarkOpts?.density ?? 0.5}
+        watermarkAngle={watermarkOpts?.angle ?? 0}
+        onWatermarkConfirm={handleWatermarkConfirm}
         popoverDismissKey={popoverDismissKey}
       />
       {/* 滚动容器：canvas + wrapper 撑滚动条 + SVG overlay + 鼠标事件，全部在同一 scroll context */}
@@ -669,6 +720,33 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
                   <AnnotationSvg key={i} ann={ann} />
                 ))}
                 {draftAnn && <AnnotationSvg ann={draftAnn} />}
+                {/* 水印 SVG 预览——平铺文字 + 旋转，与 drawWatermark Canvas 逻辑一致 */}
+                {watermarkOpts?.text && (() => {
+                  const fs = watermarkOpts.fontSize * (natW / dispW); // 自然像素字号（CSS fontSize 换算到 viewBox 坐标）
+                  const tw = watermarkOpts.text.length * fs * 0.6;    // 近似文字宽
+                  const th = fs;
+                  const gapX = tw + tw * (1 - watermarkOpts.density) * 6 + th * 0.5;
+                  const gapY = th + th * (1 - watermarkOpts.density) * 4 + th * 0.5;
+                  const diag = Math.sqrt(natW * natW + natH * natH);
+                  const halfDiag = diag / 2;
+                  const cx = natW / 2, cy = natH / 2;
+                  const items: React.ReactNode[] = [];
+                  for (let y = -halfDiag; y <= halfDiag; y += gapY) {
+                    for (let x = -halfDiag; x <= halfDiag; x += gapX) {
+                      items.push(
+                        <text key={`${x}-${y}`} x={cx + x} y={cy + y + th}
+                          fontSize={fs} fill={watermarkOpts.color || "#ffffff"}
+                          opacity={watermarkOpts.opacity}
+                          fontFamily="-apple-system, system-ui, sans-serif"
+                          transform={`rotate(${watermarkOpts.angle} ${cx} ${cy})`}
+                          style={{ pointerEvents: "none", userSelect: "none" }}>
+                          {watermarkOpts.text}
+                        </text>
+                      );
+                    }
+                  }
+                  return <>{items}</>;
+                })()}
               </svg>
             )}
             {dataUrl && (

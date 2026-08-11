@@ -1068,6 +1068,7 @@ screenshot:
 # ════════ Clipboard 剪贴板 ════════
 clipboard:
   imageLost: 原图丢失
+  revealInFolder: 打开所在目录
   title: 剪贴板
   close: 关闭
   pauseListen: 暂停监听
@@ -1126,7 +1127,7 @@ imagePreview:
     diamond: 菱形
     line: 直线
     arrow: 箭头
-    pen: 画笔（自由曲线）
+    pen: 画笔
     highlight: 荧光笔
     text: 文字
     number: 序号

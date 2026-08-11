@@ -39,6 +39,13 @@ export interface AnnotationState {
   blurMode: "pixelate" | "gaussian" | "redact";
   setBlurMode: (m: "pixelate" | "gaussian" | "redact") => void;
   blurModeRef: React.MutableRefObject<"pixelate" | "gaussian" | "redact">;
+  // 形状/线条子模式（合并按钮后记忆当前子模式）
+  shapeMode: "rect" | "oval" | "diamond";
+  setShapeMode: (m: "rect" | "oval" | "diamond") => void;
+  shapeModeRef: React.MutableRefObject<"rect" | "oval" | "diamond">;
+  lineMode: "line" | "arrow" | "pen" | "highlight" | "number";
+  setLineMode: (m: "line" | "arrow" | "pen" | "highlight" | "number") => void;
+  lineModeRef: React.MutableRefObject<"line" | "arrow" | "pen" | "highlight" | "number">;
   toolFilled: boolean;
   setToolFilled: (f: boolean) => void;
   toolFilledRef: React.MutableRefObject<boolean>;
@@ -101,6 +108,20 @@ export function useAnnotationState(): AnnotationState {
   const setBlurMode = useCallback((m: "pixelate" | "gaussian" | "redact") => {
     blurModeRef.current = m;
     setBlurModeState(m);
+  }, []);
+
+  // 形状/线条子模式（合并按钮后记忆当前子模式，切回时恢复）
+  const [shapeMode, setShapeModeState] = useState<"rect" | "oval" | "diamond">("rect");
+  const shapeModeRef = useRef<"rect" | "oval" | "diamond">("rect");
+  const setShapeMode = useCallback((m: "rect" | "oval" | "diamond") => {
+    shapeModeRef.current = m;
+    setShapeModeState(m);
+  }, []);
+  const [lineMode, setLineModeState] = useState<"line" | "arrow" | "pen" | "highlight" | "number">("line");
+  const lineModeRef = useRef<"line" | "arrow" | "pen" | "highlight" | "number">("line");
+  const setLineMode = useCallback((m: "line" | "arrow" | "pen" | "highlight" | "number") => {
+    lineModeRef.current = m;
+    setLineModeState(m);
   }, []);
 
   const [toolFilled, setToolFilledState] = useState(false);
@@ -225,6 +246,12 @@ export function useAnnotationState(): AnnotationState {
     blurMode,
     setBlurMode,
     blurModeRef,
+    shapeMode,
+    setShapeMode,
+    shapeModeRef,
+    lineMode,
+    setLineMode,
+    lineModeRef,
     toolFilled,
     setToolFilled,
     toolFilledRef,
