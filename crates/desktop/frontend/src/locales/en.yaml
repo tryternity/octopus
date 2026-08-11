@@ -1058,6 +1058,7 @@ screenshot:
 # ════════ Clipboard ════════
 clipboard:
   imageLost: Original image file is lost
+  revealInFolder: Reveal in Folder
   title: Clipboard
   close: Close
   pauseListen: Pause

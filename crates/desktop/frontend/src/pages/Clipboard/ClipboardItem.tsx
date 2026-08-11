@@ -1,12 +1,11 @@
 import { useState, useRef, useEffect, memo, useMemo } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen, Link as LinkIcon, Copy, Check, AlertCircle } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, FolderOpen, ScanText, SquarePen, Link as LinkIcon, Copy, Check, AlertCircle } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
 import { metaParts, typeAccent, imageMeta, fileMeta, detectUrl } from "@/types/clipboard";
-import SaveImagePopover from "@/components/SaveImagePopover";
 import { useT, t as ti18n } from "@/lib/i18n";
 
 function ClipboardItemRow({
@@ -35,16 +34,12 @@ function ClipboardItemRow({
 }) {
   const t = useT();
   const [deletePending, setDeletePending] = useState(false);
-  const [showSavePopover, setShowSavePopover] = useState(false);
   const [thumbSrc, setThumbSrc] = useState<string | null>(null);
   const [fileMissing, setFileMissing] = useState(false);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Download 触发按钮 ref：传给 SaveImagePopover，让其 outside-click 检测忽略它，
-  // 否则 mousedown 关闭与 click toggle 时序冲突，表现为再次点击 Download 关不掉 popover。
-  const saveBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     return () => {
@@ -129,9 +124,14 @@ function ClipboardItemRow({
     }
   };
 
-  const handleSaveImage = (e: React.MouseEvent) => {
+  // 在文件管理器中显示原图文件（替代原"下载"——原图已存在 FS，下载名不副实）
+  const handleRevealImage = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    setShowSavePopover((v) => !v);
+    try {
+      await invoke("reveal_image_file", { id: item.id });
+    } catch (e) {
+      console.error("reveal_image_file failed:", e);
+    }
   };
 
   const handleOpenFile = async (e: React.MouseEvent) => {
@@ -329,24 +329,15 @@ function ClipboardItemRow({
           {item.itemType === "image" && (
             <div className="relative">
               <button
-                ref={saveBtnRef}
                 className={cn(
                   "p-0.5 transition-opacity hover:scale-110",
-                  showSavePopover
-                    ? "opacity-100"
-                    : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+                  "opacity-0 group-hover:opacity-60 hover:!opacity-100",
                 )}
-                onClick={handleSaveImage}
-                title={t("clipboard.saveToFile")}
+                onClick={handleRevealImage}
+                title={t("clipboard.revealInFolder")}
               >
-                <Download className={cn(
-                  "w-3.5 h-3.5 text-muted-foreground",
-                  showSavePopover && "text-foreground",
-                )} />
+                <FolderOpen className="w-3.5 h-3.5 text-muted-foreground" />
               </button>
-              {showSavePopover && (
-                <SaveImagePopover id={item.id} triggerRef={saveBtnRef} onClose={() => setShowSavePopover(false)} />
-              )}
             </div>
           )}
           {item.itemType === "file" && (
