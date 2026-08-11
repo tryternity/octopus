@@ -1,0 +1,116 @@
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useT } from "@/lib/i18n";
+
+// 截图翻译只读译文浮窗页面。
+//
+// 设计要点（与 brief 一致）：
+//   - listen translate-window://progress|done|reset → 流式渲染译文。
+//   - listeners 注册完毕再 invoke set_translate_window_ready，防 ready flush 时
+//     pending emit 早于 mount 丢失（后端 PENDING_TEXT 锁同节奏）。
+//   - onFocusChanged 监听窗口 blur → 外击关闭；200ms enable delay 防初始 show
+//     紧跟的 blur 把窗口立刻关掉。
+//   - Esc 隐藏窗口（不销毁——窗口预创建复用）。
+//
+// 复制：与项目内其它窗口（PasswordGenerator / CipherEditor / QrResultCard 等 10+
+// 处）一致使用 navigator.clipboard.writeText，无需 @tauri-apps/plugin-clipboard-manager
+//（该项目未将该 plugin 列入 dependencies）。
+export default function Translate() {
+  const [text, setText] = useState("");
+  const [done, setDone] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const t = useT();
+
+  useEffect(() => {
+    // 1. 先注册 listener（防 ready flush 时 pending emit 丢失）
+    const unlistenProgress = listen<string>("translate-window://progress", (e) => {
+      setText(e.payload);
+      setCopied(false);
+    });
+    const unlistenDone = listen<string>("translate-window://done", (e) => {
+      setText(e.payload);
+      setDone(true);
+      setCopied(false);
+    });
+    const unlistenReset = listen("translate-window://reset", () => {
+      setText("");
+      setDone(false);
+      setCopied(false);
+    });
+    // 2. 通知后端 ready（触发 pending 文本一次性 emit）
+    invoke("set_translate_window_ready").catch((e) => console.error("ready failed:", e));
+    return () => {
+      unlistenProgress.then((u) => u());
+      unlistenDone.then((u) => u());
+      unlistenReset.then((u) => u());
+    };
+  }, []);
+
+  // Esc 关闭
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") getCurrentWindow().hide();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // 浮窗外点击关闭：监听窗口 blur（失焦 = 点击了其他窗口/桌面）。
+  // 不用 DOM mousedown capture——translate_window 是独立窗口，DOM mousedown 只在窗口内
+  // 触发，capture 阶段会误关内部按钮点击。blur 是窗口级事件，点浮窗外才触发。
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let enabled = false;
+    const enableTimer = setTimeout(() => { enabled = true; }, 200);
+    const unlistenPromise = win.onFocusChanged(({ payload: focused }: { payload: boolean }) => {
+      if (enabled && !focused) win.hide();
+    });
+    return () => {
+      clearTimeout(enableTimer);
+      unlistenPromise.then((u: () => void) => u());
+    };
+  }, []);
+
+  const handleCopy = async () => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      console.error("copy failed:", e);
+    }
+  };
+
+  return (
+    <div
+      data-tauri-drag-region
+      className="w-screen h-screen flex flex-col bg-[var(--color-bg)] text-[var(--color-text)] rounded-lg overflow-hidden select-none"
+    >
+      <header data-tauri-drag-region className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)] cursor-move">
+        <span className="text-xs opacity-60">
+          {done ? t("screenshot.translate.done") : t("screenshot.translate.translating")}
+        </span>
+        <button
+          onClick={(e) => { e.stopPropagation(); getCurrentWindow().hide(); }}
+          className="opacity-50 hover:opacity-100 text-xs"
+          title={t("common.close")}
+        >✕</button>
+      </header>
+      <main className="flex-1 overflow-auto p-3 text-sm leading-relaxed whitespace-pre-wrap break-words select-text">
+        {text || <span className="opacity-50">⏳ {t("screenshot.translate.translating")}</span>}
+      </main>
+      <footer className="flex items-center justify-end gap-2 px-3 py-2 border-t border-[var(--color-border)]">
+        <button
+          onClick={handleCopy}
+          disabled={!text}
+          className="px-3 py-1 text-xs rounded bg-[var(--color-accent)] text-white disabled:opacity-40 hover:opacity-90"
+        >
+          {copied ? t("common.copied") : t("common.copy")}
+        </button>
+      </footer>
+    </div>
+  );
+}

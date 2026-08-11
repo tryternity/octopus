@@ -1,3 +1,9 @@
+# ════════ 通用 i18n key（跨页面共享，只放真正多处复用的词） ════════
+common:
+  copy: 复制
+  copied: 已复制
+  close: 关闭
+
 # ════════ Editor 图文编辑器 ════════
 editor:
   undo: 撤销

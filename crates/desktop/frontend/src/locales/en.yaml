@@ -1,3 +1,9 @@
+# ════════ Common i18n keys (shared across pages, only truly reused words) ════════
+common:
+  copy: Copy
+  copied: Copied
+  close: Close
+
 # ════════ Editor ════════
 editor:
   undo: Undo

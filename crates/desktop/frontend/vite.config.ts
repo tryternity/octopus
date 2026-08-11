@@ -48,6 +48,7 @@ const config = {
         "record-control": "record-control.html",
         download: "download.html",
         onboarding: "onboarding.html",
+        translate: "translate.html",
       },
     },
   },
