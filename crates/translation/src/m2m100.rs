@@ -63,7 +63,16 @@ impl M2M100Engine {
 
     /// 单 chunk 翻译核心逻辑（不做分段）
     fn translate_chunk(&self, text: &str, source_lang: &str, target_lang: &str) -> Result<String> {
-        let input_ids = self.tokenizer.encode(text, source_lang)?;
+        let mut input_ids = self.tokenizer.encode(text, source_lang)?;
+        // 第三十五轮 P3：truncate 兜底——对齐 opus_mt.rs:110-113。split_into_chunks
+        // 理论上保证 chunk ≤900 tokens，但单句超限（>898 tokens）仍会穿透到此。encoder
+        // 超 MAX_ENCODER_TOKENS 会 ONNX 位置越界。截断保留首（lang_id）+ 尾（eos）。
+        if input_ids.len() > MAX_ENCODER_TOKENS {
+            log::warn!("m2m100 输入 {} tokens 超上限 {}，截断", input_ids.len(), MAX_ENCODER_TOKENS);
+            let eos = input_ids[input_ids.len() - 1];
+            input_ids.truncate(MAX_ENCODER_TOKENS - 1); // 留 1 位给 eos
+            input_ids.push(eos);
+        }
         let seq_len = input_ids.len();
 
         let input_ids_arr = ndarray::Array2::from_shape_vec((1, seq_len), input_ids)?;

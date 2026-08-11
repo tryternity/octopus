@@ -1772,3 +1772,65 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 - `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning（P1 cloud-gated 分支覆盖）
 - `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 541 过 0 失败
 - `cargo test -p octopus-translation` —— 0 失败（real-model 测试 ignored）
+
+## 39. 第三十五轮——coordinator pending_prepare 状态泄漏 + download etag dead code + m2m100 truncate 兜底 + backoff/save 加固（2026-08-11，修 1 P2 + 4 P3 + 更新留后续）
+
+### 触发
+
+收到第三十五轮审查报告（coordinator 全链 + translation/download 全 crate，2 agent 并行 + 亲自核实全部 P2）。上轮（第三十四轮）修复核实全部落地（报告用 git blame 确认 `Not Committed Yet` → 已在本轮 commit `bb53e77c`）。本轮新发现逐条核实。
+
+### 🟡 P2-1 · pending_prepare 取消未清 recording_mode（状态泄漏） ✅ 已修
+
+**核实**：`mod.rs:420-424`——进入 pending_prepare 态时 `set_recording_mode(1)`（:466），但取消分支（二次 Toggle 在 200ms 看门狗窗口内）只 `pending_prepare = None`，漏 `set_recording_mode(0)`。坐实：`ptt.rs:306-318` 读 `recording_mode()`，mode==1 残留 → `PttFsm::Idle` 收 keydown 走 `ToggleInWait`（:150-151）→ 与实际 stage=Idle 失步（FSM 错乱，第三次 Toggle 自愈但中间错乱）。
+
+**修复**：取消分支补 `set_recording_mode(0);`（1 行）。
+
+### 🟡 P2-3 · download etag 半成品 dead code（存了不校验） ✅ 已修
+
+**核实**：`ResumeState.etag`（resume.rs:17）被 probe 探测（downloader.rs:141-145）→ new_state 存储 → save 写 sidecar，但 `load` 三重校验（:75-78）只比对 type/total/url_hash，不比对 etag；Range 请求也不发 If-Range。是纯 dead code。
+
+**先例**：`verify.rs` 注释记录第二十三轮 P2-dl1 已删 `Etag` 变体（同样理由：downloader 从未实现 If-Range，所有 manifest 配 Sha256 无一配 Etag）。ResumeState.etag 是同型遗漏。
+
+**修复**：方案 B（删字段）对齐 verify.rs 先例——删 `ResumeState.etag` 字段 + `ProbeResult.etag` 字段 + probe 的 etag 探测 + new_state 的 etag 参数 + 相关测试。旧 sidecar（含 etag 字段）反序列化时多余字段被 serde 忽略，向后兼容。
+
+### 🟡 P3-1 · m2m100 translate_chunk 缺 truncate 兜底 ✅ 已修
+
+**核实**：`m2m100.rs:65-71` translate_chunk 无 truncate（opus_mt.rs:110-113 有）。`split_into_chunks`（:138）理论上保证 chunk ≤ MAX_ENCODER_TOKENS=900，但单句超限（>898 tokens，:159 仅 warn 不拒绝）会穿透到 translate_chunk → encoder 超 900 → ONNX 位置越界。概率极低（m2m100 tokenizer 中文 ~600 字/句、英文 ~4000 字符/句才触发），但补 truncate 兜底对齐 opus_mt 防御。
+
+**修复**：translate_chunk encode 后检查 `input_ids.len() > MAX_ENCODER_TOKENS`，超限时截断保留首（lang_id）+ 尾（eos）。
+
+### 🟡 P3-2 · backoff sleep 不响应 cancel ✅ 已修
+
+**核实**：`downloader.rs:558`（原）`tokio::time::sleep(backoff(...)).await` 不响应 cancel——用户取消时最多等 backoff 时长（指数退避，attempt 1=1s, 2=2s...）才返回（下次循环开头才检测 cancel）。
+
+**修复**：`tokio::select!` 包 sleep + `c.cancelled()`，cancel 时立即返回 `DownloadError::Cancelled`。cancel=None 时裸 await（无 select 开销）。
+
+### 🟡 P3-3 · sidecar save 吞错 ✅ 已修
+
+**核实**：`downloader.rs:240`（原）`let _ = crate::core::resume::save(d, &snapshot)` 吞掉 sidecar 持久化错误——磁盘满/权限失败时用户无感知，断点续传进度可能丢失（下载仍继续，仅续传失效）。
+
+**修复**：改 `if let Err(e) = save(...) { log::warn!(...) }`——错误可观测，不影响下载主流程（sidecar 失败非致命）。
+
+### 留后续更新
+
+#### P2-2 cloud watchdog 死循环（更新根因描述，仍留后续）
+
+第三十三轮 P2-1（spec :1664）的根因已精确化：cloud_pipeline 的 onset 检测（`cloud_pipeline.rs:195-225`）依赖 `tick(samples, ...)` 喂入的 samples。cpal 断推后 samples 空 → onset 永不触发 → WSS 永不重开。watchdog（`lifecycle.rs:246-251`）每 tick 命中 stall→skip restart→还原 stage→return→循环，stage 永久 Streaming，托盘常亮。修法仍需产品决策（cloud 走 audio 重连 or 文档化手动恢复），留后续。
+
+#### 未修 P3 群（低优先）
+
+- `discovery.rs:17` DB Err 静默返空 + `:26` size_mb 永远 0（仅影响 UI 展示）
+- `downloader.rs:234` poisoned mutex unwrap_or_else(into_inner) 强取（理论，panic 不应发生）
+- `opus_mt.rs:140-178` decoder 锁全程持有无 KV cache（已知性能代价）
+- `opus_mt.rs:194-196` 二次 encode 取 token_count（冗余计算）
+- `engine.rs:24-29` 缓存 TOCTOU 并发重复加载（wasteful 非 corrupting）
+- `scroll.rs:716/778` phys_height 除零（scale=0 理论）+ `:708/765` preview_h u32 溢出（canvas 高 >10M 理论）
+- coordinator P3：tick.rs WaitingCompletion 无超时兜底 / lifecycle.rs TRANSLATION_ACTIVE 语义 / agent.rs spawn hide/show 不对称 / cloud close 30s timeout 偏长
+
+### 验证
+
+- `cargo build -p octopus-download -p octopus-translation` —— 0 error 0 warning
+- `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
+- `cargo test -p octopus-download --lib` —— 34 过 0 失败
+- `cargo test -p octopus-translation` —— 0 失败（real-model ignored）
+- `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 541 过 0 失败

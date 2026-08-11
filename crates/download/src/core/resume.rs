@@ -14,7 +14,6 @@ pub struct ResumeState {
     pub r#type: String,
     pub url_hash: String,
     pub total_bytes: u64,
-    pub etag: Option<String>,
     pub segments: Vec<Segment>,
 }
 
@@ -88,12 +87,15 @@ pub fn remove(dest: &Path) {
 }
 
 /// 从已有参数造一个 ResumeState（初始 downloaded 由调用方设置的 segments 决定）。
-pub(crate) fn new_state(dest: &Path, total_bytes: u64, etag: Option<String>, segments: Vec<Segment>) -> ResumeState {
+///
+/// 第三十五轮 P2-3：删除 etag 字段——downloader 从未实现 If-Range（etag 探测后存
+/// sidecar 但续传时不发头、不比对），是纯 dead code。对齐 verify.rs 第二十三轮 P2-dl1
+/// 删 Etag 变体的先例（所有 manifest 配 Sha256，无一配 Etag）。
+pub(crate) fn new_state(dest: &Path, total_bytes: u64, segments: Vec<Segment>) -> ResumeState {
     ResumeState {
         r#type: SIDECAR_TYPE.to_string(),
         url_hash: dest_hash(dest),
         total_bytes,
-        etag,
         segments,
     }
 }
@@ -111,19 +113,18 @@ mod tests {
     fn save_load_roundtrip_passes_triple_check() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("model.onnx");
-        let state = new_state(&dest, 1000, Some("etag1".into()), vec![seg(0, 999, 300)]);
+        let state = new_state(&dest, 1000, vec![seg(0, 999, 300)]);
         save(&dest, &state).unwrap();
         let loaded = load(&dest, 1000).expect("三重校验应通过");
         assert_eq!(loaded.segments.len(), 1);
         assert_eq!(loaded.segments[0].downloaded, 300);
-        assert_eq!(loaded.etag.as_deref(), Some("etag1"));
     }
 
     #[test]
     fn load_total_mismatch_returns_none() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("model.onnx");
-        save(&dest, &new_state(&dest, 1000, None, vec![seg(0, 999, 0)])).unwrap();
+        save(&dest, &new_state(&dest, 1000, vec![seg(0, 999, 0)])).unwrap();
         assert!(load(&dest, 2000).is_none(), "total 不符应丢弃");
     }
 
@@ -131,7 +132,7 @@ mod tests {
     fn load_wrong_type_returns_none() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("model.onnx");
-        let mut state = new_state(&dest, 1000, None, vec![seg(0, 999, 0)]);
+        let mut state = new_state(&dest, 1000, vec![seg(0, 999, 0)]);
         state.r#type = "something-else".into();
         // 直接写坏 type
         let path = sidecar_path(&dest);
@@ -157,7 +158,7 @@ mod tests {
     fn remove_deletes_sidecar() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("model.onnx");
-        save(&dest, &new_state(&dest, 1000, None, vec![seg(0, 999, 0)])).unwrap();
+        save(&dest, &new_state(&dest, 1000, vec![seg(0, 999, 0)])).unwrap();
         assert!(sidecar_path(&dest).exists());
         remove(&dest);
         assert!(!sidecar_path(&dest).exists());

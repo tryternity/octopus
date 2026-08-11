@@ -420,7 +420,11 @@ fn build_coordinator_loop(
                         } else if pending_prepare.is_some() {
                             // 等待态（已 emit prepare-record）再按 Toggle → 取消等待。
                             // 看门狗的 FallbackStart 到达时 prepare_id 不匹配被丢弃，不会重复开录音。
+                            // 第三十五轮 P2-1：进入 pending_prepare 时已 set_recording_mode(1)（:466），
+                            // 取消时必须清回 0——否则 RECORDING_MODE 残留 → ptt.rs next_on_keydown
+                            // 读 mode==1 走 ToggleInWait 分支，与实际 stage=Idle 失步（FSM 错乱）。
                             pending_prepare = None;
+                            set_recording_mode(0);
                             debug!("Toggle: cancel pending prepare (user re-press)");
                         } else {
                             // Idle → 开录音前检查 AX 权限（macOS）。

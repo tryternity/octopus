@@ -76,7 +76,6 @@ impl Default for DownloadTask {
 pub struct ProbeResult {
     pub total: Option<u64>,
     pub accept_ranges: bool,
-    pub etag: Option<String>,
 }
 
 pub struct Downloader {
@@ -138,12 +137,9 @@ impl Downloader {
             .get("accept-ranges")
             .map(|v| v.to_str().map(|s| s.eq_ignore_ascii_case("bytes")).unwrap_or(false))
             .unwrap_or(false);
-        let etag = resp
-            .headers()
-            .get("etag")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        Ok(ProbeResult { total, accept_ranges, etag })
+        // 第三十五轮 P2-3：删除 etag 探测——downloader 从未实现 If-Range（存了不校验），
+        // 是纯 dead code。对齐 verify.rs 第二十三轮 P2-dl1 删 Etag 变体先例。
+        Ok(ProbeResult { total, accept_ranges })
     }
 
     /// 预分配 .part 文件到 total（sparse）。若已存在且 size!=total 则重新分配。
@@ -237,7 +233,11 @@ impl Downloader {
                     }
                     g.clone()
                 };
-                let _ = crate::core::resume::save(d, &snapshot);
+                // 第三十五轮 P3：sidecar 持久化失败（磁盘满/权限）需 warn——原 let _ 吞错，
+                // 用户无感知，断点续传进度可能丢失（下载仍继续，仅续传失效）。
+                if let Err(e) = crate::core::resume::save(d, &snapshot) {
+                    log::warn!("[download] sidecar save 失败（续传进度可能丢失）: {}", e);
+                }
             }
             results[i] = Some(seg);
         }
@@ -329,7 +329,7 @@ impl Downloader {
             Ok(p) => p,
             Err(e) if task.expected_size.is_some() => {
                 log::warn!("[download] probe 失败（{}），用 manifest expected_size 继续: {}", task.dest.display(), e);
-                ProbeResult { total: None, accept_ranges: false, etag: None }
+                ProbeResult { total: None, accept_ranges: false }
             }
             Err(e) => return Err(e),
         };
@@ -377,7 +377,6 @@ impl Downloader {
         let state = Arc::new(std::sync::Mutex::new(crate::core::resume::new_state(
             &task.dest,
             total,
-            probe.etag.clone(),
             segs.clone(),
         )));
 
@@ -560,7 +559,18 @@ async fn download_segment_with_client(
                         message: format!("segment exhausted after {attempt} attempts"),
                     });
                 }
-                tokio::time::sleep(backoff(cfg.backoff_base, attempt)).await;
+                // 第三十五轮 P3：backoff sleep 期间响应 cancel——原裸 sleep 用户取消后
+                // 最多等 backoff 时长（指数退避）才返回。select! 让 cancel 立即生效。
+                let sleep = tokio::time::sleep(backoff(cfg.backoff_base, attempt));
+                tokio::pin!(sleep);
+                if let Some(c) = cancel {
+                    tokio::select! {
+                        _ = &mut sleep => {}
+                        _ = c.cancelled() => return Err(DownloadError::Cancelled),
+                    }
+                } else {
+                    sleep.await;
+                }
             }
             Err(other) => return Err(other),
         }
@@ -734,14 +744,12 @@ mod tests {
             then.status(206)
                 .header("Content-Range", "bytes 0-0/12345")
                 .header("Accept-Ranges", "bytes")
-                .header("ETag", "\"abc\"")
                 .body("x");
         });
         let dl = Downloader::new(DownloadConfig::default()).unwrap();
         let p = dl.probe(&server.url("/m.onnx")).await.unwrap();
         assert_eq!(p.total, Some(12345));
         assert!(p.accept_ranges);
-        assert_eq!(p.etag.as_deref(), Some("\"abc\""));
     }
 
     #[tokio::test]
@@ -1055,7 +1063,6 @@ mod tests {
         let multi = crate::core::resume::new_state(
             &dest,
             total,
-            None,
             vec![
                 Segment { begin: 0, end: 49, downloaded: 0 },
                 Segment { begin: 50, end: 99, downloaded: 0 },
