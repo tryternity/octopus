@@ -488,8 +488,10 @@ pub fn unregister_ptt(app: &AppHandle) -> Result<(), String> {
         .send(ManagerCommand::Unregister { response: tx })
         .map_err(|_| "[ptt] failed to send unregister command".to_string())?;
 
-    rx.recv()
-        .map_err(|_| "[ptt] failed to receive unregister response".to_string())?
+    // 第三十二轮 P2-2（对称第三十一轮 B2 register_ptt recv_timeout）：unregister_ptt
+    // 也是同步 pub fn（set_config:176 调），recv 无超时 manager 卡住时冻结主线程。
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("[ptt] failed to receive unregister response: {}", e))?
 }
 
 #[cfg(test)]

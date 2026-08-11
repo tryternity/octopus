@@ -418,7 +418,8 @@
 | 29 | `21e70af8` | 第二十九轮数据完整性复查：修 3（P2-F1 paraformer enc_slice 越界离线+流式 + P2-F3 canvas 黑图改 Result + P3-LLM1 单候选契约闭合）+ 留后续系统性短板（P3 F-2~F-8 ONNX 边界） |
 | 29b | `409291e4` | 第二十九轮补充（代理 C 补跑）：修 3（P2-C1 md5 补 ref_data/segments/is_rich + P2-C2 voice 吞错致物理删改 fail-safe + P3-CF9 set_sync_md5 改 warn）+ 留后续 P3 群 |
 | 30 | `744add56` | 第三十轮全覆盖复查：修 3（**F1 stitch uniform scroll 永久锁定** + **L1-2 热词挖掘 ORDER BY id DESC 迁移回归** + P3 focus_tracker 重复 log）+ 留后续性能群（Zipformer clone / vault 全量 export / pipeline 双读 / hotword 全表 filter） |
-| 31 | （本轮，待 commit） | 第三十一轮资源/并发/panic 专项：修 5（**P1-1 helper 无超时+kill_on_drop** + P2-1 frame_size=0 除零 3 处 + ptt B1 线程死亡恢复 + ptt B2 recv_timeout + P2-3 cgimage bpr ensure）+ 留后续 4（std Mutex 中毒 / reap 超时 / attempt_guard / dead code） |
+| 31 | `426737ea` | 第三十一轮资源/并发/panic 专项：修 5（**P1-1 helper 无超时+kill_on_drop** + P2-1 frame_size=0 除零 3 处 + ptt B1 线程死亡恢复 + ptt B2 recv_timeout + P2-3 cgimage bpr ensure）+ 留后续 4（std Mutex 中毒 / reap 超时 / attempt_guard / dead code） |
+| 32 | （本轮，待 commit） | 第三十二轮 sync+db/LLM/commands/FFI 全覆盖：修 4（P2-1 get_model_detail 漏解密 + P2-2 unregister recv_timeout + P2-4 clipboard export 超期过滤 + P2-5 generate_subtitle spawn_blocking）+ 留后续 5（set_config block_on / vault export 过滤 / terminal_list_dir / pin_screenshot / probe_permission） |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1583,3 +1584,56 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 - `cargo build` record/capx —— 0 error 0 warning
 - `cargo test`：record 50 / asr-local 170 / capx 55 / desktop 525 全过
+
+## 36. 第三十二轮——sync+db/LLM/commands/FFI 全覆盖复查（2026-08-11，修 4 + 留后续 5）
+
+### 触发
+
+收到第三十二轮全代码审查报告（3 代理 sync+db / LLM-polish-translation-ocr / tauri-commands + 亲审 FFI/安全边界）。A 部分确认第三十一轮 5/5 修复落地。
+
+### 修复明细（4 处）
+
+#### P2-1 · get_model_detail 漏解密 secret_key
+
+**根因**：model_commands.rs:964 `get_model_source_key(id)` 返回 raw secret_key 直接返前端。vault 启用后 DB 存 v1: 密文——前端编辑表单拿到密文（UX 困惑 + trim 损坏密文）。同文件 edit_cloud_model:774 已显式 `try_decrypt_secret_global` 解密，此处对称遗漏。
+
+**修复**：get_model_detail 加 `try_decrypt_secret_global(&secret_key)?`（与 :774 对称）。
+
+#### P2-2 · ptt B3 unregister_ptt recv 无超时
+
+**根因**：ptt.rs:491 `rx.recv()` 无超时——第三十一轮 B2 只修了 register_ptt :461 的 recv_timeout，unregister 对称遗漏。unregister_ptt 也是同步 pub fn（set_config:176 调），manager 卡住冻结主线程。
+
+**修复**：recv() 改 recv_timeout(5s)（对称 B2）。
+
+#### P2-4（clipboard）· export 不过滤超期 tombstone
+
+**根因**：clipboard.rs export_all_favorites 循环不过滤超期 tombstone（对比 hotword export_all_hotwords_with :444 有 is_tombstone_expired 过滤）。GC 启用后 A 机硬删超期 tombstone，B 机 export 仍写文件 → A 机 pull 复活。当前潜伏（clipboard GC 未注册 scheduler）。
+
+**修复**：export 循环加 `is_tombstone_expired(retention, fav.is_deleted, now)` 过滤（对称 hotword）。超期 tombstone 不写文件 + 不进 outline + 不进 keep_keys → 孤儿清理删其文件。
+
+**注**：vault export（store.rs:542-570）同型但留后续——vault 用独立路径（非 trait），改动较复杂，当前同样潜伏（GC 未启用）。
+
+#### P2-5 · generate_subtitle ASR 未 spawn_blocking
+
+**根因**：postprocess.rs:518 `transcribe_segments_with_timestamps` 同步调（async 函数内），注释自称「通常 < ffmpeg 暂不 spawn_blocking」——但长录屏 ASR 可远超 ffmpeg（几十秒）。同文件 :490 ffmpeg 已 spawn_blocking，不一致。
+
+**修复**：包 `tokio::task::spawn_blocking`（对齐 :490 ffmpeg 范式）。
+
+### 留后续（5 项）
+
+| 项 | 原因 |
+|---|---|
+| P2-3（set_config block_on 主线程）| 改 set_config 为 async 影响面大（多处调用 + 前端 invoke），录屏中改快捷键低频，block_on <1s |
+| P2-4 vault export 超期过滤 | vault 独立路径（非 trait），改动较复杂；当前潜伏（GC 未启用） |
+| P2-6 terminal_list_dir sync fs 遍历 | 深目录/网络卷阻塞，改 async 影响调用方 |
+| P2-7 pin_screenshot recv_timeout 阻塞 | 同步阻塞 tokio worker，置信度 75 |
+| P2-8 probe_permission osascript 轮询 | spawn + sleep 阻塞 worker，置信度 75 |
+
+### 纠正第三十一轮 P2-2 名单
+
+实际 std-Mutex 中毒面仅 3 模块（focus_tracker / paste_stack / action_hotkey），非 6——activation/ptt/action_bar_commands 都是 parking_lot（误报）。维持 P3 防御性批量替换。
+
+### 验证
+
+- `cargo check -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error
+- `cargo test`：sync 155 / desktop 525 全过

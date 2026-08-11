@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::outline::OutlineEntry;
-use crate::pipeline::{merge_three_way, MergeReport, SyncEntity};
+use crate::pipeline::{is_tombstone_expired, merge_three_way, MergeReport, SyncEntity};
 use crate::store::{iso_to_unix_ms, md5_hex, now_secs, shard_dir, sync_root, write_atomically};
 
 // === 路径辅助 ===
@@ -452,11 +452,22 @@ pub fn export_all_favorites() -> Result<ClipboardOutline> {
     std::fs::create_dir_all(&fav_dir)
         .with_context(|| format!("创建 favorites 目录失败：{}", fav_dir.display()))?;
 
-    // 每个 favorite 写文件 + 进 outline + 收集 keep_keys（含 active + tombstone，
+    // 每个 favorite 写文件 + 进 outline + 收集 keep_keys（含 active + 未超期 tombstone，
     // 两者都写文件，都需保留，孤儿清理时以此判定）
     let mut entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
     let mut keep_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 第三十二轮 P2-4：超期 tombstone 不写文件 + 不进 outline（对齐 hotword
+    // export_all_hotwords_with :444 is_tombstone_expired 过滤）。GC 启用后 A 机硬删超期
+    // tombstone，若 export 仍写文件 → B 机 pull 复活。超期 tombstone 的文件靠孤儿清理删。
+    let now_s = now_secs();
+    let retention = <ClipboardFavoriteEntity as SyncEntity>::tombstone_retention_secs();
     for fav in &favs {
+        // 超期 tombstone 跳过（不写文件、不进 outline、不进 keep_keys → 孤儿清理删其文件）
+        if fav.is_deleted > 0 && retention > 0
+            && is_tombstone_expired(retention, fav.is_deleted, now_s)
+        {
+            continue;
+        }
         if fav.is_deleted > 0 {
             // tombstone——不需要 payload（内容已无意义，pull 方只看 is_deleted）。
             // encrypted_payload 留空，md5 用空内容固定值。
