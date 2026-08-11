@@ -13,7 +13,8 @@
   - 2026-08-04（第 2 次）：根据讨论修订剪贴板加密策略——字段级加密 → 整库加密（绑定 sync）
   - **2026-08-04（第 3 次）**：双向同步到 `origin/main` HEAD `14b29713`（含 main 推过来的 6 commit「too_many_arguments struct 治理」+ 第八~十三轮审查修复）后，全面复核 9 大模块描述与代码一致性。结论：**报告内容总体仍准确**，唯一需要精化的是 VAD v6 描述（补充官方 16k_op15 精简版、ONNX 签名破坏性变更细节、commit `3f6fd519` 锚定）。其余模块（ASR 引擎清单 7 族+4 家、ActionBar agent claude/codex/gemini/pi、OCR PP-OCRv6-small、vault folder 软删同步）核对后均与代码一致。main 带来的多是 refactor（stitch 拆分 / 内联资源集中化 / too_many_arguments struct 化）+ fix（hotword spawn_blocking / vault folder 软删同步 P0 / rAF 背压等），不引入新功能模块。
   - **2026-08-05（第 4 次）**：剪贴板模块两项落地后同步报告状态——① Paste Stack（P1 粘贴队列）已实现；② ConcealedType 检测（P3）已实现。
-  - **2026-08-05（第 5 次，本次）**：ConcealedType 检测从 macOS 扩展到 Windows + Linux 跨平台（`ExcludeClipboardContentFromMonitorProcessing` / `x-kde-passwordManagerHint`），§0.3 / §3.4 / §3.5 对应「仅 macOS」描述更新为「跨平台」。
+  - **2026-08-05（第 5 次）**：ConcealedType 检测从 macOS 扩展到 Windows + Linux 跨平台（`ExcludeClipboardContentFromMonitorProcessing` / `x-kde-passwordManagerHint`），§0.3 / §3.4 / §3.5 对应「仅 macOS」描述更新为「跨平台」。
+  - **2026-08-10（第 6 次，本次）**：截图模块大幅补齐——① 3 种模糊（Pixelate/Gaussian Stackblur/Redact）；② 平铺水印（density+angle+color，6 config 字段）；③ 工具栏归组（形状/线条合并，6 标注按钮）；④ ImagePreview 图片编辑器同步归组 + 水印。§0.4 / §2.1 / §2.2（标注工具+马赛克+水印行）/ §2.4 第 3 项 / §2.5 第 5 项 全部更新。
 
 ---
 
@@ -46,7 +47,7 @@
 | 模块 | 最独特的价值 | 最大的不足 | P0 改进方向 |
 |---|---|---|---|
 | 1. ASR | 本地 7 族 + 云端 4 家国内服务商统一 trait，热词单记录 + git 软删，Silero VAD v6（2026-08-04 升级） | 无说话人分离、无词级时间戳 / SRT、Whisper 仅 small.en | 词级时间戳导出 + 集成 sherpa-onnx 分离 |
-| 2. 截图 | 三平台原生贴图（NSWindow / Win32 LAYERED / GTK3）+ 自研滚动 NCC 拼接（2026-08-04 拆分为 5 模块） | 截图翻译 UI 缺（通路就绪）、无窗口/元素截图入口、贴图能力弱于 PixPin | 截图翻译 UI 接线 + 贴图能力补齐 |
+| 2. 截图 | 三平台原生贴图 + 自研滚动 NCC 拼接 + **3 种模糊（Pixelate/Gaussian Stackblur/Redact）+ 平铺水印（density+angle）**（2026-08-10 新增） | 截图翻译 UI 缺（通路就绪）、无窗口/元素截图入口、贴图能力弱于 PixPin | 截图翻译 UI 接线 + 贴图能力补齐 |
 | 3. 剪贴板 | text/voice/ocr/image/file 统一表 + FTS5 trigram，与 ASR/OCR 联动；粘贴队列（2026-08-05 新增） | 无云同步、无 macro、富文本仅标记不存原文（明文存储与 Maccy/EcoPaste 同档位，加 sync 前不构成缺口） | sync 接入（同步前先做 sqlite3mc 整库加密） |
 | 4. 翻译 | Opus-MT + m2m100 + CloudLlm 5+1 provider 三引擎统一 trait + 兜底降级 | 无 glossary、无 OCR/截图翻译 pipeline、双语对照弱 | glossary 表 + OCR→translate 接线 |
 | 5. Action Bar | OCR/ASR/translate/clipboard/terminal/vault 全栈聚合 + agent CLI 启动 + CompactEditor tab | 仅 macOS、无扩展生态、跨屏焦点问题 | AX 直读选中文本 + 扩展注册中心 |
@@ -201,7 +202,7 @@ AGENTS.md 明确写了「物理/逻辑坐标转换 ⚠️ 已踩坑 6+ 次」（
 
 **标注**
 
-工具栏（`frontend/src/components/Annotation/`，Screenshot 与 RecordAnnotation 共用）：矩形 / 椭圆 / 菱形 / 直线 / 箭头 / 画笔 / 荧光笔 / 文字 / 序号 / 马赛克 + 橡皮擦 / 清空 / 撤销重做 + OCR + 二维码识别。标注在选区内 Canvas clip 绘制，工具栏位置三选算法（下方 → 上方 → 内部底部）。
+工具栏（`frontend/src/components/Annotation/`，Screenshot 与 RecordAnnotation 共用）：**2026-08-10 归组**——形状（矩形/椭圆/菱形合并）+ 线条（直线/箭头/画笔/荧光/序号合并）+ 文字 + 模糊 + 水印 + 橡皮擦 / 撤销重做 / 清空 + OCR + 二维码识别。子模式在 ToolPropsPopover 浮层切换（图标随当前子模式变化）。**模糊 3 种**（Pixelate 像素化 / Gaussian Stackblur 纯 JS 像素操作 / Redact 黑条），blurMode 字段切换。**平铺水印**（density 密度 + angle 旋转 + color 颜色 + opacity 透明度，6 config 字段，工具栏水印按钮弹浮层输入）。ImagePreview 图片编辑器工具栏同步归组 + 水印。标注在选区内 Canvas clip 绘制，工具栏位置三选算法（下方 → 上方 → 内部底部）。
 
 **OCR-on-screenshot**
 
@@ -233,8 +234,9 @@ AGENTS.md 明确写了「物理/逻辑坐标转换 ⚠️ 已踩坑 6+ 次」（
 | 窗口截图 | ⚠️ 仅内部用 | ✅ 可换背景 | ✅ Smart Element | ❌ | ✅ UI 元素识别 | ❌ | ❌ | — |
 | 滚动截图 | ✅ Canvas-NCC 自研 | ✅ 全应用通用 | ✅ 子系统 | ✅ 模板匹配 + 任意方向 | ✅ + 超长 200 万像素 | ❌ | ✅ 自动滚动 | ❌ |
 | 多屏 | ✅ 并行 + 三级匹配 | ✅ | ✅ | ✅ | ✅ | 单屏为主 | ✅ | ✅ |
-| 标注工具 | 10 种 + 橡皮/撤销 | 15+（含聚光灯/取色/旋转） | 15 种 + 8 种模糊 + Mockup | 6 种 + 模糊 | 11 种 + 聚光灯 + 水印 | 6 种 + 马赛克 | 11 种 | 画笔为主 + 形状吸附 |
-| 马赛克 | ✅ | ✅ 像素化+模糊 | ✅ 8 种效果 | ✅ | ✅ + 智能擦除 | ✅ | ✅ | ❌ |
+| 标注工具 | **归组 6 按钮**（形状/线条/text/blur/水印/eraser）+ 撤销 | 15+（含聚光灯/取色/旋转） | 15 种 + 8 种模糊 + Mockup | 6 种 + 模糊 | 11 种 + 聚光灯 + 水印 | 6 种 + 马赛克 | 11 种 | 画笔为主 + 形状吸附 |
+| 马赛克 | ✅ **3 种**（Pixelate/Gaussian/Redact，2026-08-10） | ✅ 像素化+模糊 | ✅ 8 种效果 | ✅ | ✅ + 智能擦除 | ✅ | ✅ | ❌ |
+| 水印 | ✅ **平铺**（density+angle+color，2026-08-10） | ❌ | ❌ | ❌ | ✅ 单水印 | ❌ | ❌ | ❌ |
 | 序号标注 | ✅ | ✅ Counter | ✅ Counter | ❌ | ✅ 序列号 | ❌ | ✅ 标号 | ❌ |
 | 贴图 / 浮动 | ✅ 三平台原生 | ✅ 锁定+透明度+方向键 | ✅ Pin + 锁定穿透 | ✅ Ding + CSS 滤镜 | ✅ 文本/文件/LaTeX | ✅ 置顶图 | ❌ | 窗口定格 |
 | OCR | ✅ PaddleOCR 离线 | ✅ Vision 设备端 24+ 语种 | ✅ Vision + 远程端点 | ✅ PaddleOCR + 在线 | ✅ + 公式识别 | ✅ PP-OCRv6 50 语种 | ❌ | ❌ |
@@ -258,7 +260,7 @@ AGENTS.md 明确写了「物理/逻辑坐标转换 ⚠️ 已踩坑 6+ 次」（
 
 1. **截图翻译 UI 缺失**：架构文档明确标注「数据通路已支持，UI 后续」。eSearch 的「屏幕翻译」（贴图窗内文字替换为译文 + 定时翻译适合视频）和 PixPin 内置翻译是明显的体验差距。
 2. **没有窗口截图入口**：`capture_window_region` + `find_window_id_by_pid` 实现完备，但只用于滚动模式排除 overlay，用户层没有「截活动窗口」「Smart Element 检测」这类一键操作（CleanShot/Snapzy/PixPin 都有 UI 元素识别）。
-3. **标注工具相对单薄**：缺 CleanShot/Snapzy 的聚光灯、取色器、Mockup 背景、旋转翻转、多图合并；缺 PixPin 的水印、放大镜；缺 Snapzy 的 8 种模糊效果（Octopus 只有像素化马赛克，无高斯/结晶/半调）。
+3. **~~标注工具相对单薄~~（2026-08-10 大幅补齐）**：~~缺 PixPin 的水印、放大镜；缺 Snapzy 的 8 种模糊效果~~ → **已补齐 3 种模糊**（Pixelate/Gaussian Stackblur/Redact）+ **平铺水印**（density+angle+color）。工具栏归组精简（形状/线条合并，6 个标注按钮）。仍缺：CleanShot/Snapzy 的聚光灯、取色器、Mockup 背景、旋转翻转、多图合并、放大镜。
 4. **贴图能力弱于 PixPin**：Octopus pin 只支持拖拽 + 缩放 + 关闭。PixPin 贴图支持透明度调节、锁定、鼠标穿透、取色、缩略图模式、文本/文件/LaTeX 贴图、批量操作、阴影颜色状态指示——是矩阵中贴图功能最全的。Octopus 贴图甚至没有透明度滑块和键盘方向键微调（CleanShot 有）。
 5. **无云分享 / 团队流**：CleanShot Cloud、Snapzy BYOS（S3/R2/GDrive）都没有。若面向团队场景是缺口；若定位纯本地工具则可忽略。
 6. **无 Quick Access Overlay**：截图后没有 CleanShot/Snapzy/HushSnap 都有的「右下角浮动卡片 → 拖拽到应用 / 一键 OCR / 编辑」快速动作面板。Octopus 截图后只能进标注工具栏或直接确认，少了一层「先看一眼再决定」的轻交互。
@@ -271,7 +273,7 @@ AGENTS.md 明确写了「物理/逻辑坐标转换 ⚠️ 已踩坑 6+ 次」（
 2. **暴露窗口 / UI 元素截图入口**（高收益中投入）：`capture_window_region` + `find_window_id_by_pid` 现成。加一个工具栏按钮或快捷键，截图模式下按 `W` 切到「窗口模式」，用 `CGWindowListCopyWindowInfo` 列出可见窗口让用户点选。Snapzy 的 Smart Element（AX 查询自动检测 UI 元素）是更进一步的方案但 macOS 限定。
 3. **贴图能力补齐**（中收益低投入）：pin_window 加透明度调节（`Ctrl+滚轮`）、锁定模式（`L` 键 + `setIgnoresMouseEvents`）、方向键微调位置。PixPin 的功能集是直接抄的模板，三平台原生实现已经在手里，主要是 UI/快捷键层补全。
 4. **Quick Access Overlay**（中收益中投入）：截图确认后不立即关窗，右下角弹一张可拖拽缩略卡片，提供「复制 / 保存 / OCR / 翻译 / pin / 编辑」六动作。HushSnap 的「缩略图 → 左键 OCR / 悬停按钮 / 拖放」交互是很好的范本。这一层能显著降低「截完才发现要 OCR」的返工。
-5. **标注工具扩充**（中收益中投入）：聚光灯（高亮一区域其他变暗）、取色器（`C` 键复制 HEX/RGB）、文字段落数样式预设——CleanShot/Snapzy/PixPin 都有，复用现有 Canvas clip 框架，逐个加。模糊变体（高斯 / 智能擦除）可作为 Nice-to-have。
+5. **~~标注工具扩充~~（部分完成 2026-08-10）**：~~模糊变体（高斯 / 智能擦除）可作为 Nice-to-have~~ → **已做 3 种模糊**（Pixelate/Gaussian Stackblur/Redact）+ **平铺水印** + **工具栏归组**。仍可扩充：聚光灯（高亮一区域其他变暗）、取色器（`C` 键复制 HEX/RGB）、文字段落数样式预设、智能擦除（自动检测敏感区域）。
 6. ~~**`stitch.rs` 拆分 + 抽象**（低收益高投入但减债）：把 123KB 拆成 `strip_extract.rs` / `ncc_match.rs` / `fallback_chain.rs` / `canvas_heal.rs`，每层加单测。~~ **✅ 已完成（2026-08-04）**：拆分为 `stitch/{mod, canvas_heal, fallback_chain, graybuf, ncc_match}.rs`（命名与原建议略异——实际多了 `graybuf.rs` 抽象灰度缓冲，无独立 `strip_extract`）。下一步可继续：每模块补单测覆盖（stitch-refactor plan task 5 已开始补 `FallbackStep` 单测，可继续推进）。
 7. **滚动截图跨平台验证**（中收益中投入）：把 macOS 专属的 `CGEvent` 鼠标追踪 + `set_ignore_cursor_events` 在 Windows/Linux 上找等价（Win32 `SetWindowDisplayAffinity` + 低级鼠标钩子，RecEasy 已有参考；X11/Wayland 较难）。或退一步：非 mac 平台只支持「手动滚动 + 自动拼接」，不做穿透激活下层 app。
 8. **截图历史浏览器**（低收益低投入）：Snapzy/PixPin/CleanShot 都有「按时间/类型过滤的历史」恢复可编辑状态。Octopus 剪贴板历史已含图片条目，只需在 CompactEditor 加「截图历史」入口即可复用。
