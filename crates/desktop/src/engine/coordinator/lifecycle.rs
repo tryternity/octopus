@@ -616,7 +616,14 @@ pub(crate) fn handle_cloud_streaming_done(
             // close 返回的是整个 session 的完整文本，非空则 apply_engine_full 喂回（前缀追加；diverted 重算基准）
             // Err 时提取错误信息传给 finalize_cloud 落 meta_info.cloud_close_error（P2-2 诊断落库）。
             let cloud_error = match &text {
-                Ok(text) if !text.is_empty() => { transcript.apply_engine_full(text); None }
+                // 第三十三轮 P1-2：close 返回的 text 含在途 partial（provider Text=stable+sep+partial），
+                // apply_engine_full 已把 sep+partial 追加进 transcript。若不在此清 current_partial，
+                // finalize_cloud :506-511 会再次 append current_partial → partial 重复。
+                Ok(text) if !text.is_empty() => {
+                    transcript.apply_engine_full(text);
+                    *current_partial = String::new(); // 清空防 finalize_cloud 重复 append
+                    None
+                }
                 Ok(_) => None,
                 Err(e) => {
                     warn!("CloudStreaming close WSS failed: {}", e);

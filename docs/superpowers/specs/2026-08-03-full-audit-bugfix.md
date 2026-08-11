@@ -419,7 +419,8 @@
 | 29b | `409291e4` | 第二十九轮补充（代理 C 补跑）：修 3（P2-C1 md5 补 ref_data/segments/is_rich + P2-C2 voice 吞错致物理删改 fail-safe + P3-CF9 set_sync_md5 改 warn）+ 留后续 P3 群 |
 | 30 | `744add56` | 第三十轮全覆盖复查：修 3（**F1 stitch uniform scroll 永久锁定** + **L1-2 热词挖掘 ORDER BY id DESC 迁移回归** + P3 focus_tracker 重复 log）+ 留后续性能群（Zipformer clone / vault 全量 export / pipeline 双读 / hotword 全表 filter） |
 | 31 | `426737ea` | 第三十一轮资源/并发/panic 专项：修 5（**P1-1 helper 无超时+kill_on_drop** + P2-1 frame_size=0 除零 3 处 + ptt B1 线程死亡恢复 + ptt B2 recv_timeout + P2-3 cgimage bpr ensure）+ 留后续 4（std Mutex 中毒 / reap 超时 / attempt_guard / dead code） |
-| 32 | （本轮，待 commit） | 第三十二轮 sync+db/LLM/commands/FFI 全覆盖：修 4（P2-1 get_model_detail 漏解密 + P2-2 unregister recv_timeout + P2-4 clipboard export 超期过滤 + P2-5 generate_subtitle spawn_blocking）+ 留后续 5（set_config block_on / vault export 过滤 / terminal_list_dir / pin_screenshot / probe_permission） |
+| 32 | `43bf2298` | 第三十二轮 sync+db/LLM/commands/FFI 全覆盖：修 4（P2-1 get_model_detail 漏解密 + P2-2 unregister recv_timeout + P2-4 clipboard export 超期过滤 + P2-5 generate_subtitle spawn_blocking）+ 留后续 5（set_config block_on / vault export 过滤 / terminal_list_dir / pin_screenshot / probe_permission） |
+| 33 | （本轮，待 commit） | 第三十三轮 coordinator/infra/pty 核实：修 2 P1（**开录音失败残留 mode 5 路径** + **cloud close 重复 append partial**）+ 留后续 P2 群 6 项 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -1637,3 +1638,37 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 - `cargo check -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error
 - `cargo test`：sync 155 / desktop 525 全过
+
+## 37. 第三十三轮——coordinator/infra+actor/pty 核实复查（2026-08-11，修 2 P1 + 留后续 P2 群）
+
+### 触发
+
+收到第三十三轮审查阶段核实报告（3/5 agent 完成：coordinator / infra+actor / pty）。A 部分确认第三十二轮 4/4 修复落地。
+
+### 🔴 P1-1 · 开录音失败 INSTANT_MODE/recording_mode 残留 ✅ 已修
+
+**根因**：set_recording_mode(1/2/3) 在 begin_recording 之前设（mod.rs:466/789/841），但 begin_recording 内部 5 条失败 return 路径（audio.start 失败 / cloud pipeline / streaming engine×3 / vad init）全不清 INSTANT_MODE + recording_mode。残留 mode → ptt.rs next_on_keydown 读残留 mode 走停止分支 → PTT 按键卡死；INSTANT_MODE 残留致下次 Toggle 走错浮窗。对比：cancel/discard/PasteDone 等出口全清，唯独开录音失败路径漏。
+
+**修复**：提取 `reset_mode_flags_on_start_failure()` helper（清 INSTANT_MODE + set_recording_mode(0)），5 处失败 return 前调。
+
+### 🔴 P1-2 · cloud close finalize_cloud 重复 append partial ✅ 已修
+
+**根因**：cloud close 路径——close_async 返回完整文本（含在途 partial，provider Text=stable+sep+partial）。handle_cloud_streaming_done :619 apply_engine_full(text) 把 sep+partial 追加进 transcript，但未清 current_partial。:627 take current_partial 传给 finalize_cloud :506-511，又 append_segment(current_partial) → partial 重复。触发：cloud + 用户快速停止（PTT/instant 松开话音未落）—— cloud PTT 主场景，高频。
+
+**修复**：:619 Ok(text) 非空分支后 `*current_partial = String::new()`——清空防 finalize_cloud 重复 append。
+
+### 留后续（P2 群 6 项）
+
+| 项 | 原因 |
+|---|---|
+| P2-1 cloud 看门狗断流不 finalize | 需设计断流后的 finalize/restart 路径 |
+| P2-2 paste_stack 持锁 with_db | <1ms DB 读持锁，低影响 |
+| P2-3 pty Drop 不检查 exited | 边界场景 |
+| P2-4 hotword SystemTime unwrap_or(0) | 时钟异常主线不可触发（纯理论加固） |
+| P2-5 command_index 子进程无超时 | spawn+wait_timeout 改动 |
+| P2-6 pty kill 仅 SIGHUP 无 SIGKILL | portable-pty 上游限制 |
+
+### 验证
+
+- `cargo check -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error
+- `cargo test`：desktop 525 全过
