@@ -94,6 +94,12 @@ export default function Translate() {
         >
           {copied ? t("common.copied") : t("common.copy")}
         </button>
+        <button
+          onClick={() => getCurrentWindow().hide()}
+          className="px-3 py-1 text-xs rounded bg-muted text-muted-foreground hover:bg-muted/80"
+        >
+          {t("common.close")}
+        </button>
       </footer>
     </div>
   );
