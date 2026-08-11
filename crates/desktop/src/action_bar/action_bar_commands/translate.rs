@@ -150,6 +150,8 @@ pub(crate) async fn do_translate(text: &str, config: &octopus_infra::config::App
 pub(crate) enum TranslateEmitTarget {
     Result,
     CompactEditor { session_id: String },
+    /// 截图翻译只读浮窗（emit_to translate_window，走 ready 机制防丢事件）。
+    Float,
 }
 
 impl TranslateEmitTarget {
@@ -168,6 +170,9 @@ impl TranslateEmitTarget {
                 // 缓存 progress 会让 invoke 回调的旧快照覆盖 listener 更新的译文（瑕疵 1）。
                 // progress 增量实时性交给 listener；缓存只兜 done 终止态（瑕疵 3：避免残留）。
             }
+            TranslateEmitTarget::Float => {
+                crate::ui::translate_window::emit_float_progress(app, text);
+            }
         }
     }
 
@@ -183,6 +188,9 @@ impl TranslateEmitTarget {
                     TranslateSessionPayload { session_id: session_id.clone(), text: text.to_string() },
                 );
                 cache_translate_done(session_id, text);
+            }
+            TranslateEmitTarget::Float => {
+                crate::ui::translate_window::emit_float_done(app, text);
             }
         }
     }
@@ -334,6 +342,7 @@ pub fn translate_text(text: String, target_type: String, app: AppHandle) -> Resu
     let session_id = match &target {
         TranslateEmitTarget::CompactEditor { session_id } => session_id.clone(),
         TranslateEmitTarget::Result => String::new(),
+        TranslateEmitTarget::Float => String::new(),
     };
     let app_clone = app.clone();
     std::thread::spawn(move || {

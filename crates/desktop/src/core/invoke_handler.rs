@@ -41,6 +41,7 @@ macro_rules! handler {
             // ── result_window ──
             crate::ui::result_window::result_window_ready,
             crate::ui::result_window::set_result_click_through,
+            crate::ui::translate_window::set_translate_window_ready,
             // ── settings_window / onboarding_window ──
             crate::ui::settings_window::open_settings,
             crate::ui::settings_window::get_initial_page,

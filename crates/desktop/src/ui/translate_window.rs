@@ -1,0 +1,102 @@
+//! 截图翻译只读译文浮窗——显示流式翻译结果，不获取键盘焦点。
+//!
+//! 复用 overlay_window 的最简建窗范式 + result_window 的 ready 机制（防 emit 早于
+//! React mount 丢事件）。职责单一：只读展示译文 + 复制 + Esc/外击关闭 + 可拖拽。
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use parking_lot::Mutex;
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::ui::window_factory::{build_float_window, FloatWindowSpec};
+
+pub const WINDOW_LABEL: &str = "translate_window";
+
+const WIN_W: f64 = 400.0;
+const WIN_H: f64 = 300.0;
+
+/// 前端 React mount 完成 + listener 注册后置 true。emit 早于 mount 时存 PENDING。
+static WINDOW_READY: AtomicBool = AtomicBool::new(false);
+/// 未 ready 时暂存最新译文（progress 覆盖，done 终态）。
+static PENDING_TEXT: Mutex<Option<(String, bool)>> = Mutex::new(None); // (text, is_done)
+
+/// 创建浮窗（启动期调用，visible=false）。
+pub fn create_translate_window(app: &AppHandle) {
+    if app.get_webview_window(WINDOW_LABEL).is_some() {
+        return;
+    }
+    let _ = build_float_window(app, FloatWindowSpec {
+        label: WINDOW_LABEL,
+        url: "translate.html",
+        title: "",
+        inner_size: (WIN_W, WIN_H),
+        visible: false,
+        resizable: true,
+        position: None,
+        focused: Some(false),           // 不抢键盘焦点（同 result_window）
+        accept_first_mouse: Some(true), // 非激活窗首次点击可靠（同 result_window）
+    });
+}
+
+/// 在鼠标附近 show 窗口 + emit reset 清空上次译文。
+pub fn show_at_mouse(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+        let (win_x, win_y) = match crate::action_bar::action_bar_commands::get_mouse_position(app) {
+            Some((mx, my)) => (mx - WIN_W / 2.0, my - WIN_H - 20.0), // 鼠标上方居中
+            None => {
+                // fallback：主屏中心偏上（同 overlay_window 范式）
+                app.primary_monitor()
+                    .ok()
+                    .flatten()
+                    .map(|m| {
+                        let scale = m.scale_factor();
+                        let pos = m.position();
+                        let sz = m.size();
+                        ((pos.x as f64 / scale + sz.width as f64 / scale / 2.0) - WIN_W / 2.0,
+                         (pos.y as f64 / scale + sz.height as f64 / scale / 3.0) - WIN_H / 2.0)
+                    })
+                    .unwrap_or((400.0, 300.0))
+            }
+        };
+        let _ = win.set_position(tauri::Position::Logical(
+            tauri::LogicalPosition::new(win_x, win_y),
+        ));
+        // 重置 ready（防上次 hide 后 ready 残留 true，新翻译 emit 早于 listener 重注册）
+        WINDOW_READY.store(false, Ordering::SeqCst);
+        *PENDING_TEXT.lock() = None;
+        let _ = win.show();
+        // 通知前端清空上次译文（listener 已注册，reset 不参与 ready 机制）
+        let _ = app.emit_to(WINDOW_LABEL, "translate-window://reset", ());
+    }
+}
+
+/// ready-gated emit progress（供 TranslateEmitTarget::Float 调）。
+pub fn emit_float_progress(app: &AppHandle, text: &str) {
+    if WINDOW_READY.load(Ordering::SeqCst) {
+        let _ = app.emit_to(WINDOW_LABEL, "translate-window://progress", text);
+    } else {
+        *PENDING_TEXT.lock() = Some((text.to_string(), false));
+    }
+}
+
+/// ready-gated emit done（供 TranslateEmitTarget::Float 调）。
+pub fn emit_float_done(app: &AppHandle, text: &str) {
+    if WINDOW_READY.load(Ordering::SeqCst) {
+        let _ = app.emit_to(WINDOW_LABEL, "translate-window://done", text);
+    } else {
+        *PENDING_TEXT.lock() = Some((text.to_string(), true));
+    }
+}
+
+/// 前端 mount 完成 + listener 注册后调用：flush pending + 标记 ready。
+#[tauri::command]
+pub fn set_translate_window_ready(app: AppHandle) {
+    WINDOW_READY.store(true, Ordering::SeqCst);
+    let pending = PENDING_TEXT.lock().take();
+    if let Some((text, is_done)) = pending {
+        if is_done {
+            let _ = app.emit_to(WINDOW_LABEL, "translate-window://done", &text);
+        } else {
+            let _ = app.emit_to(WINDOW_LABEL, "translate-window://progress", &text);
+        }
+    }
+}
