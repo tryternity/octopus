@@ -1126,7 +1126,7 @@ imagePreview:
     diamond: 菱形
     line: 直线
     arrow: 箭头
-    pen: 画笔（自由曲线）
+    pen: 画笔
     highlight: 荧光笔
     text: 文字
     number: 序号

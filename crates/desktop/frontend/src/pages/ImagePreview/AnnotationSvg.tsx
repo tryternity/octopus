@@ -127,17 +127,30 @@ function AnnotationSvgImpl({ ann }: { ann: Annotation }) {
       const y = Math.min(ann.y1, ann.y2);
       const w = Math.abs(ann.x2 - ann.x1);
       const h = Math.abs(ann.y2 - ann.y1);
-      // 粗细映射为不透明度（1=几乎透明 … 10=几乎不透明）
+      const mode = ann.blurMode ?? "pixelate";
+      if (mode === "redact") {
+        // 黑条预览
+        return <rect x={x} y={y} width={w} height={h} fill="#000" opacity={0.85} />;
+      }
+      if (mode === "gaussian") {
+        // 高斯预览：半透明灰 + 虚线边框
+        return (
+          <g>
+            <rect x={x} y={y} width={w} height={h} fill="#808080" opacity={0.5} />
+            <rect x={x} y={y} width={w} height={h} fill="none" stroke="#808080" strokeWidth={1} strokeDasharray="4 4" opacity={0.8} />
+          </g>
+        );
+      }
+      // pixelate 预览：色块网格（原有逻辑）
       const opacity = ((ann.lineWidth || 5) / 10) * 0.85 + 0.1;
-      const cell = Math.max(8, Math.min(w, h) / 8);  // 马赛克块大小
+      const cell = Math.max(8, Math.min(w, h) / 8);
       const cols = Math.ceil(w / cell);
       const rows = Math.ceil(h / cell);
       const blocks: React.ReactNode[] = [];
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-          // 每块用伪随机色调（基于坐标 hash），模拟马赛克色块
           const hash = (c * 73856093 ^ r * 19349663) >>> 0;
-          const variance = ((hash % 100) - 50) / 200;  // ±0.25 色调偏移
+          const variance = ((hash % 100) - 50) / 200;
           blocks.push(
             <rect
               key={`${r}-${c}`}

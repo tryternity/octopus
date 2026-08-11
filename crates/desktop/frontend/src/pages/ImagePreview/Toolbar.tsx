@@ -74,6 +74,14 @@ export default function Toolbar(props: {
   zoom: number; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
   onZoomFitWidth: () => void; onZoomFitWindow: () => void;
   filled: boolean; setFilled: (f: boolean) => void;
+  // 合并工具子模式（与截图 AnnotationToolbar 一致）
+  shapeMode: "rect" | "oval" | "diamond"; setShapeMode: (m: "rect" | "oval" | "diamond") => void;
+  lineMode: "line" | "arrow" | "pen" | "highlight" | "number"; setLineMode: (m: "line" | "arrow" | "pen" | "highlight" | "number") => void;
+  blurMode: "pixelate" | "gaussian" | "redact"; setBlurMode: (m: "pixelate" | "gaussian" | "redact") => void;
+  toolCircleSize: number; setToolCircleSize: (n: number) => void;
+  // 水印——Toolbar 内部渲染输入 popover（不用 window.prompt，WKWebView 不支持）
+  watermarkColor: string; watermarkDensity: number; watermarkAngle: number;
+  onWatermarkConfirm: (text: string, color: string, density: number, angle: number) => void;
   popoverDismissKey: number;  // 变化时收起浮窗
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -84,16 +92,41 @@ export default function Toolbar(props: {
   useEffect(() => { setShowPopover(false); }, [props.popoverDismissKey]);
 
   const [popoverLeft, setPopoverLeft] = useState(0);
+  // 水印输入 popover（WKWebView 不支持 window.prompt，Toolbar 内部渲染）
+  const [showWatermarkPopover, setShowWatermarkPopover] = useState(false);
+  const [watermarkInput, setWatermarkInput] = useState("");
+  const [watermarkColor, setWatermarkColor] = useState("#ffffff");
+  const [watermarkDensity, setWatermarkDensity] = useState(0.5);
+  const [watermarkAngle, setWatermarkAngle] = useState(0);
+  const watermarkBtnRef = useRef<HTMLDivElement>(null);
+  const watermarkPopoverRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showWatermarkPopover) return;
+    const handler = (e: MouseEvent) => {
+      if (watermarkPopoverRef.current?.contains(e.target as Node)) return;
+      if (watermarkBtnRef.current?.contains(e.target as Node)) return;
+      setShowWatermarkPopover(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showWatermarkPopover]);
   const t = useT();
 
   const isText = props.tool === "text";
   const isBlur = props.tool === "blur";
+  const isNumber = props.tool === "number";
+  const isShape = props.tool === "rect" || props.tool === "oval" || props.tool === "diamond";
+  const isLine = props.tool === "line" || props.tool === "arrow" || props.tool === "pen" || props.tool === "highlight" || props.tool === "number";
   const showProps = showPopover && props.tool !== "none";
-  const sizeValue = isText ? props.toolFontSize : props.toolWidth;
-  const setSize = isText ? props.setToolFontSize : props.setToolWidth;
-  const min = isText ? 10 : 1;
-  const max = isText ? 48 : 10;
-  const label = isText ? t("imagePreview.props.fontSize") : isBlur ? t("imagePreview.props.mosaic") : t("imagePreview.props.thickness");
+  const sizeValue = isText ? props.toolFontSize : isNumber ? props.toolCircleSize : props.toolWidth;
+  const setSize = isText ? props.setToolFontSize : isNumber ? props.setToolCircleSize : props.setToolWidth;
+  const min = isText ? 10 : isNumber ? 16 : 1;
+  const max = isText ? 48 : isNumber ? 60 : 10;
+  const label = isText ? t("imagePreview.props.fontSize") : isNumber ? t("imagePreview.props.circle") : t("imagePreview.props.thickness");
+
+  // 形状/线条子模式图标映射（图标随当前子模式变化）
+  const shapeIcons: Record<string, string> = { rect: "icons/square.svg", oval: "icons/circle.svg", diamond: "icons/diamond.svg" };
+  const lineIcons: Record<string, string> = { line: "icons/straight-line.svg", arrow: "icons/arrow-line.svg", pen: "icons/sketching.svg", highlight: "icons/highlighter.svg", number: "icons/sequence-note.svg" };
 
   // 标注工具点击：已激活→收起浮窗+切回 none；未激活→切换工具+弹出浮窗
   const onToolClick = (key: Tool, e: React.MouseEvent<HTMLButtonElement>) => {
@@ -120,17 +153,9 @@ export default function Toolbar(props: {
     }
   };
 
+  // 非合并工具：text / blur
   const tools: { key: Tool; icon: React.ReactNode; title: string }[] = [
-    { key: "none", icon: <SvgIcon src="icons/arrow-pointer.svg" alt={t("imagePreview.tool.select")} active={props.tool === "none"} />, title: t("imagePreview.tool.select") },
-    { key: "rect", icon: <SvgIcon src="icons/square.svg" alt={t("imagePreview.tool.rect")} active={props.tool === "rect"} />, title: t("imagePreview.tool.rect") },
-    { key: "oval", icon: <SvgIcon src="icons/circle.svg" alt={t("imagePreview.tool.ellipse")} active={props.tool === "oval"} />, title: t("imagePreview.tool.ellipse") },
-    { key: "diamond", icon: <SvgIcon src="icons/diamond.svg" alt={t("imagePreview.tool.diamond")} active={props.tool === "diamond"} />, title: t("imagePreview.tool.diamond") },
-    { key: "line", icon: <SvgIcon src="icons/straight-line.svg" alt={t("imagePreview.tool.line")} active={props.tool === "line"} />, title: t("imagePreview.tool.line") },
-    { key: "arrow", icon: <SvgIcon src="icons/arrow-line.svg" alt={t("imagePreview.tool.arrow")} active={props.tool === "arrow"} />, title: t("imagePreview.tool.arrow") },
-    { key: "pen", icon: <SvgIcon src="icons/sketching.svg" alt={t("imagePreview.tool.pen")} active={props.tool === "pen"} />, title: t("imagePreview.tool.pen") },
-    { key: "highlight", icon: <SvgIcon src="icons/highlighter.svg" alt={t("imagePreview.tool.highlight")} active={props.tool === "highlight"} />, title: t("imagePreview.tool.highlight") },
     { key: "text", icon: <SvgIcon src="icons/text.svg" alt={t("imagePreview.tool.text")} active={props.tool === "text"} />, title: t("imagePreview.tool.text") },
-    { key: "number", icon: <SvgIcon src="icons/sequence-note.svg" alt={t("imagePreview.tool.number")} active={props.tool === "number"} />, title: t("imagePreview.tool.number") },
     { key: "blur", icon: <SvgIcon src="icons/mosaic.svg" alt={t("imagePreview.tool.mosaic")} active={props.tool === "blur"} />, title: t("imagePreview.tool.mosaic") },
   ];
 
@@ -173,13 +198,92 @@ export default function Toolbar(props: {
 
         <Divider />
 
-        {/* 标注工具：选择/矩形/椭圆/直线/箭头/画笔/文字/撤销 */}
-        {tools.map((t) => (
-          <ToolButton key={t.key} title={t.title} active={props.tool === t.key}
-            onClick={(e) => onToolClick(t.key, e)}>
-            {t.icon}
+        {/* 选择工具 */}
+        <ToolButton title={t("imagePreview.tool.select")} active={props.tool === "none"}
+          onClick={(e) => onToolClick("none", e)}>
+          <SvgIcon src="icons/arrow-pointer.svg" alt={t("imagePreview.tool.select")} active={props.tool === "none"} />
+        </ToolButton>
+
+        {/* 形状按钮（rect/oval/diamond 合并）——图标随当前子模式变化 */}
+        <ToolButton title={t("imagePreview.tool.rect")} active={isShape}
+          onClick={(e) => onToolClick(props.shapeMode, e)}>
+          <SvgIcon src={shapeIcons[props.shapeMode]} alt={t("imagePreview.tool.rect")} active={isShape} />
+        </ToolButton>
+
+        {/* 线条按钮（line/arrow/pen/highlight/number 合并）——图标随当前子模式变化 */}
+        <ToolButton title={t("imagePreview.tool.line")} active={isLine}
+          onClick={(e) => onToolClick(props.lineMode, e)}>
+          <SvgIcon src={lineIcons[props.lineMode]} alt={t("imagePreview.tool.line")} active={isLine} />
+        </ToolButton>
+
+        {/* 标注工具：text / blur */}
+        {tools.map((tt) => (
+          <ToolButton key={tt.key} title={tt.title} active={props.tool === tt.key}
+            onClick={(e) => onToolClick(tt.key, e)}>
+            {tt.icon}
           </ToolButton>
         ))}
+
+        {/* 水印按钮——弹输入框 popover（WKWebView 不支持 window.prompt） */}
+        <div style={{ position: "relative" }}>
+          <div ref={watermarkBtnRef}>
+            <ToolButton title={t("screenshot.tool.watermark")} active={false}
+              onClick={() => { setShowWatermarkPopover(v => !v); }}>
+              <img src="icons/water-mark.svg" alt={t("screenshot.tool.watermark")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
+            </ToolButton>
+          </div>
+          {showWatermarkPopover && (
+            <div ref={watermarkPopoverRef} style={{
+              position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", marginTop: 4,
+              padding: 8, background: "var(--color-surface)", color: "var(--color-foreground)", borderRadius: 8,
+              boxShadow: "0 8px 24px -4px rgba(0,0,0,0.2), 0 2px 8px -2px rgba(0,0,0,0.1)",
+              zIndex: 102, display: "flex", flexDirection: "column", gap: 6, minWidth: 200,
+            }}>
+              <input type="text" value={watermarkInput} autoFocus
+                onChange={(e) => setWatermarkInput(e.target.value)}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === "Enter") { e.preventDefault(); props.onWatermarkConfirm(watermarkInput, watermarkColor, watermarkDensity, watermarkAngle); setShowWatermarkPopover(false); }
+                  else if (e.key === "Escape") { setShowWatermarkPopover(false); }
+                }}
+                placeholder={t("screenshot.watermark.placeholder")}
+                autoCapitalize="off" autoCorrect="off" spellCheck={false}
+                style={{ padding: "5px 8px", border: "1px solid var(--color-border)", borderRadius: 5, background: "transparent", color: "inherit", fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box" }}
+              />
+              {/* 预设色 + 调色板（可选） */}
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                {PRESET_COLORS.map((c) => (
+                  <button key={c} onClick={(e) => { e.stopPropagation(); setWatermarkColor(c); }}
+                    style={{ width: 16, height: 16, borderRadius: 4, background: c, border: c === "#ffffff" ? "1px solid #e0e0e0" : "none", cursor: "pointer", padding: 0, opacity: watermarkColor.toLowerCase() === c.toLowerCase() ? 1 : 0.45, transform: watermarkColor.toLowerCase() === c.toLowerCase() ? "scale(1.1)" : "scale(1)" }} />
+                ))}
+                <label style={{ cursor: "pointer", display: "flex", alignItems: "center", flexShrink: 0, marginLeft: 2 }}>
+                  <div style={{ width: 16, height: 16, borderRadius: 4, background: "conic-gradient(from 0deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)", border: "1px solid rgba(0,0,0,0.1)" }} />
+                  <input type="color" value={watermarkColor} onChange={(e) => setWatermarkColor(e.target.value)} style={{ width: 0, height: 0, opacity: 0, position: "absolute" }} />
+                </label>
+              </div>
+              {/* 密度滑块 */}
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 32, flexShrink: 0 }}>{t("settings.general.watermarkDensity")}</span>
+                <input type="range" min={0} max={1} step={0.1} value={watermarkDensity}
+                  onChange={(e) => setWatermarkDensity(Number(e.target.value))}
+                  style={{ flex: 1, height: 4, cursor: "pointer" }} />
+                <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 24, textAlign: "center" }}>{watermarkDensity.toFixed(1)}</span>
+              </div>
+              {/* 角度滑块 */}
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 32, flexShrink: 0 }}>{t("settings.general.watermarkAngle")}</span>
+                <input type="range" min={0} max={360} step={15} value={watermarkAngle}
+                  onChange={(e) => setWatermarkAngle(Number(e.target.value))}
+                  style={{ flex: 1, height: 4, cursor: "pointer" }} />
+                <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 24, textAlign: "center" }}>{Math.round(watermarkAngle)}°</span>
+              </div>
+              <button onClick={(e) => { e.stopPropagation(); props.onWatermarkConfirm(watermarkInput, watermarkColor, watermarkDensity, watermarkAngle); setShowWatermarkPopover(false); }}
+                style={{ padding: "5px 8px", border: "none", borderRadius: 5, background: "var(--color-voice)", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 500 }}>
+                {t("screenshot.watermark.confirm")}
+              </button>
+            </div>
+          )}
+        </div>
         {/* 橡皮擦：不弹 popover，直接切工具 */}
         <ToolButton title={t("imagePreview.tool.eraser")} active={props.tool === "eraser"}
           onClick={() => {
@@ -254,6 +358,68 @@ export default function Toolbar(props: {
             display: "flex", flexDirection: "column", gap: 10, width: POPOVER_W,
           }}
         >
+          {/* blur 模式选择（仅 blur 工具显示，置顶） */}
+          {isBlur && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {(["pixelate", "gaussian", "redact"] as const).map((m) => (
+                  <button key={m} onClick={() => props.setBlurMode(m)} style={{
+                    flex: 1, padding: "4px 6px", border: "none", borderRadius: 5, cursor: "pointer",
+                    fontSize: 11, fontWeight: 500, transition: "background 0.15s",
+                    background: props.blurMode === m ? "var(--color-voice)" : "var(--color-accent, rgba(0,0,0,0.06))",
+                    color: props.blurMode === m ? "#fff" : "var(--color-foreground)",
+                  }}>{t(`screenshot.tool.blur_${m}`)}</button>
+                ))}
+              </div>
+              <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
+            </>
+          )}
+
+          {/* 形状子模式（仅形状工具） */}
+          {isShape && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {(["rect", "oval", "diamond"] as const).map((m) => (
+                  <button key={m} onClick={() => { props.setShapeMode(m); props.setTool(m); }} style={{
+                    flex: 1, padding: "4px 6px", border: "none", borderRadius: 5, cursor: "pointer",
+                    fontSize: 11, fontWeight: 500, transition: "background 0.15s",
+                    background: props.shapeMode === m ? "var(--color-voice)" : "var(--color-accent, rgba(0,0,0,0.06))",
+                    color: props.shapeMode === m ? "#fff" : "var(--color-foreground)",
+                  }}>{t(`imagePreview.tool.${m === "oval" ? "ellipse" : m}`)}</button>
+                ))}
+              </div>
+              {/* 实心填充 toggle */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", fontWeight: 500 }}>{t("imagePreview.props.solidFill")}</span>
+                <button onClick={() => props.setFilled(!props.filled)} style={{
+                  width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
+                  background: props.filled ? "var(--color-voice)" : "var(--color-accent, rgba(0,0,0,0.15))",
+                  position: "relative", transition: "background 0.15s",
+                }}>
+                  <div style={{ position: "absolute", top: 2, left: props.filled ? 16 : 2, width: 14, height: 14, borderRadius: "50%", background: "#fff", transition: "left 0.15s" }} />
+                </button>
+              </div>
+              <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
+            </>
+          )}
+
+          {/* 线条子模式（仅线条工具） */}
+          {isLine && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                {(["line", "arrow", "pen", "highlight", "number"] as const).map((m) => (
+                  <button key={m} onClick={() => { props.setLineMode(m); props.setTool(m); }} style={{
+                    flex: 1, padding: "4px 4px", border: "none", borderRadius: 5, cursor: "pointer",
+                    fontSize: 10, fontWeight: 500, whiteSpace: "nowrap", transition: "background 0.15s",
+                    background: props.lineMode === m ? "var(--color-voice)" : "var(--color-accent, rgba(0,0,0,0.06))",
+                    color: props.lineMode === m ? "#fff" : "var(--color-foreground)",
+                  }}>{t(`imagePreview.tool.${m}`)}</button>
+                ))}
+              </div>
+              <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
+            </>
+          )}
+
           {/* 行 1：粗细/字号滑轨 + 当前色（最右） */}
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 20, fontWeight: 500, flexShrink: 0 }}>{label}</span>
@@ -295,30 +461,6 @@ export default function Toolbar(props: {
               );
             })}
           </div>
-          {/* 行 3：实心开关（仅 rect/oval） */}
-          {(props.tool === "rect" || props.tool === "oval" || props.tool === "diamond") && (
-            <>
-              <div style={{ height: 1, background: "var(--color-border)", margin: "0 -4px" }} />
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", fontWeight: 500 }}>{t("imagePreview.props.solidFill")}</span>
-                <button
-                  type="button"
-                  onClick={() => props.setFilled(!props.filled)}
-                  style={{
-                    width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
-                    background: props.filled ? "var(--color-voice)" : "var(--color-muted-foreground)",
-                    position: "relative", transition: "background 0.2s",
-                  }}
-                >
-                  <span style={{
-                    position: "absolute", top: 2, left: props.filled ? 16 : 2,
-                    width: 14, height: 14, borderRadius: "50%", background: "#fff",
-                    transition: "left 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
-                  }} />
-                </button>
-              </div>
-            </>
-          )}
         </div>
       )}
     </div>

@@ -1116,7 +1116,7 @@ imagePreview:
     diamond: Diamond
     line: Line
     arrow: Arrow
-    pen: Pen (free draw)
+    pen: Pen
     highlight: Highlight
     text: Text
     number: Number

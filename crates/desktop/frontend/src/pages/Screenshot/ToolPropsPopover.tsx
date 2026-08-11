@@ -2,16 +2,18 @@ import { PRESET_COLORS } from "@/lib/annotation";
 import { useT } from "@/lib/i18n";
 
 export function ToolPropsPopover({
-  x, y, color, width, fontSize, circleSize, isText, isNumber, isShape, isBlur, blurMode, filled, onColorChange, onWidthChange, onFontSizeChange, onCircleSizeChange, onFilledChange, onBlurModeChange,
+  x, y, color, width, fontSize, circleSize, isText, isNumber, isShape, isLine, isBlur, blurMode, shapeMode, lineMode, highlightVisible, filled, onColorChange, onWidthChange, onFontSizeChange, onCircleSizeChange, onFilledChange, onBlurModeChange, onShapeModeChange, onLineModeChange,
 }: {
   x: number; y: number;
-  color: string; width: number; fontSize: number; circleSize: number; isText: boolean; isNumber: boolean; isShape: boolean; isBlur: boolean; blurMode: "pixelate" | "gaussian" | "redact"; filled: boolean;
+  color: string; width: number; fontSize: number; circleSize: number; isText: boolean; isNumber: boolean; isShape: boolean; isLine: boolean; isBlur: boolean; blurMode: "pixelate" | "gaussian" | "redact"; shapeMode: "rect" | "oval" | "diamond"; lineMode: "line" | "arrow" | "pen" | "highlight" | "number"; highlightVisible: boolean; filled: boolean;
   onColorChange: (c: string) => void;
   onWidthChange: (w: number) => void;
   onFontSizeChange: (s: number) => void;
   onCircleSizeChange: (s: number) => void;
   onFilledChange: (f: boolean) => void;
   onBlurModeChange: (m: "pixelate" | "gaussian" | "redact") => void;
+  onShapeModeChange: (m: "rect" | "oval" | "diamond") => void;
+  onLineModeChange: (m: "line" | "arrow" | "pen" | "highlight" | "number") => void;
 }) {
   const t = useT();
   const sizeValue = isText ? fontSize : isNumber ? circleSize : width;
@@ -61,6 +63,86 @@ export function ToolPropsPopover({
                 }}
               >
                 {t(`screenshot.tool.blur_${m}`)}
+              </button>
+            ))}
+          </div>
+          <div style={{ height: 1, background: "var(--color-border)", margin: "0 -4px" }} />
+        </>
+      )}
+
+      {/* 形状子模式选择（仅形状工具显示）：矩形 / 椭圆 / 菱形 */}
+      {isShape && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {(["rect", "oval", "diamond"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => onShapeModeChange(m)}
+                style={{
+                  flex: 1,
+                  padding: "4px 6px",
+                  border: "none",
+                  borderRadius: 5,
+                  background: shapeMode === m ? "var(--color-voice)" : "var(--color-accent, rgba(0,0,0,0.06))",
+                  color: shapeMode === m ? "#fff" : "var(--color-foreground)",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 500,
+                  transition: "background 0.15s",
+                }}
+              >
+                {t(`screenshot.tool.${m === "oval" ? "ellipse" : m}`)}
+              </button>
+            ))}
+          </div>
+          {/* 实心填充 toggle */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", fontWeight: 500 }}>{t("screenshot.props.solidFill")}</span>
+            <button
+              onClick={() => onFilledChange(!filled)}
+              style={{
+                width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
+                background: filled ? "var(--color-voice)" : "var(--color-accent, rgba(0,0,0,0.15))",
+                position: "relative", transition: "background 0.15s",
+              }}
+            >
+              <div style={{
+                position: "absolute", top: 2, left: filled ? 16 : 2,
+                width: 14, height: 14, borderRadius: "50%", background: "#fff",
+                transition: "left 0.15s",
+              }} />
+            </button>
+          </div>
+          <div style={{ height: 1, background: "var(--color-border)", margin: "0 -4px" }} />
+        </>
+      )}
+
+      {/* 线条子模式选择（仅线条工具显示）：直线 / 箭头 / 画笔 / 荧光 / 序号 */}
+      {isLine && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            {(highlightVisible
+              ? (["line", "arrow", "pen", "highlight", "number"] as const)
+              : (["line", "arrow", "pen", "number"] as const)
+            ).map((m) => (
+              <button
+                key={m}
+                onClick={() => onLineModeChange(m)}
+                style={{
+                  flex: 1,
+                  padding: "4px 4px",
+                  border: "none",
+                  borderRadius: 5,
+                  background: lineMode === m ? "var(--color-voice)" : "var(--color-accent, rgba(0,0,0,0.06))",
+                  color: lineMode === m ? "#fff" : "var(--color-foreground)",
+                  cursor: "pointer",
+                  fontSize: 10,
+                  fontWeight: 500,
+                  transition: "background 0.15s",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {t(`screenshot.tool.${m}`)}
               </button>
             ))}
           </div>
@@ -126,31 +208,6 @@ export function ToolPropsPopover({
           />
         </label>
       </div>
-
-      {/* 行 3：实心开关（仅 rect/oval） */}
-      {isShape && (
-        <>
-          <div style={{ height: 1, background: "var(--color-border)", margin: "0 -4px" }} />
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", fontWeight: 500 }}>{t("screenshot.props.solidFill")}</span>
-            <button
-              type="button"
-              onClick={() => onFilledChange(!filled)}
-              style={{
-                width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
-                background: filled ? "var(--color-voice)" : "var(--color-muted-foreground)",
-                position: "relative", transition: "background 0.2s",
-              }}
-            >
-              <span style={{
-                position: "absolute", top: 2, left: filled ? 16 : 2,
-                width: 14, height: 14, borderRadius: "50%", background: "#fff",
-                transition: "left 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
-              }} />
-            </button>
-          </div>
-        </>
-      )}
     </div>
   );
 }
