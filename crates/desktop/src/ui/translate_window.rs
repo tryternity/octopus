@@ -70,20 +70,40 @@ pub fn show_at_mouse(app: &AppHandle) {
 }
 
 /// ready-gated emit progress（供 TranslateEmitTarget::Float 调）。
+///
+/// 「判 ready + 写 pending」收进同一把 PENDING_TEXT 锁，与 set_translate_window_ready 的
+/// store(true)+take 互斥——消除「load(false) 后、写 pending 前 ready 已 take 走 None」
+/// 导致该文本滞留（译文丢失）的 TOCTOU 竞态。对齐 result_window.rs:256-264。
 pub fn emit_float_progress(app: &AppHandle, text: &str) {
-    if WINDOW_READY.load(Ordering::SeqCst) {
+    let need_emit = {
+        let mut guard = PENDING_TEXT.lock();
+        if WINDOW_READY.load(Ordering::SeqCst) {
+            true
+        } else {
+            *guard = Some((text.to_string(), false));
+            false
+        }
+    };
+    if need_emit {
         let _ = app.emit_to(WINDOW_LABEL, "translate-window://progress", text);
-    } else {
-        *PENDING_TEXT.lock() = Some((text.to_string(), false));
     }
 }
 
 /// ready-gated emit done（供 TranslateEmitTarget::Float 调）。
+///
+/// 同 emit_float_progress：判 ready + 写 pending 收进同一锁，防 ready 横插导致最终译文滞留。
 pub fn emit_float_done(app: &AppHandle, text: &str) {
-    if WINDOW_READY.load(Ordering::SeqCst) {
+    let need_emit = {
+        let mut guard = PENDING_TEXT.lock();
+        if WINDOW_READY.load(Ordering::SeqCst) {
+            true
+        } else {
+            *guard = Some((text.to_string(), true));
+            false
+        }
+    };
+    if need_emit {
         let _ = app.emit_to(WINDOW_LABEL, "translate-window://done", text);
-    } else {
-        *PENDING_TEXT.lock() = Some((text.to_string(), true));
     }
 }
 
