@@ -422,6 +422,64 @@ Brief Step 1「路径可见性说明」担心 glob re-export 对 `pub(crate)` �
 
 ### 9.7 Self-review 补充：未踩坑的点
 
-- **hide 复用单例竞态**：每次 show 前 `WINDOW_READY.store(false)` + 清 PENDING + emit reset——ready 重走，listener 已在前次 mount 注册（除非窗口销毁，但 hide 不销毁），reset 事件不丢。
+- ~~**hide 复用单例竞态**：每次 show 前 `WINDOW_READY.store(false)` + 清 PENDING + emit reset——ready 重走，listener 已在前次 mount 注册（除非窗口销毁，但 hide 不销毁），reset 事件不丢。~~ **〔2026-08-11 更正，见 §9.8 C1〕此判断错误**：`set_translate_window_ready` 只在 React mount 时调一次，hide≠destroy 不重 mount → reset 后 ready 永不回 true → 所有后续 emit 进 PENDING 永不 flush。该 reset 必须删除。
 - **`close_all_screenshot_windows` 时序**：`run_on_main_thread` 内执行（同 ocr_screenshot），与 show translate_window 同一闭包，顺序执行无竞态。
 - **OCR `recognize_with_blocks_from_image`**：与 ocr_screenshot 共用同一 `DynamicImage`（已在 ocr_screenshot 双重解码消除优化中实现），截图翻译天然继承此优化。
+
+### 9.8 全分支 review 修复（2026-08-11）
+
+合并前最终 review 发现两处缺陷，已修复（commit `9cbae2dc` 代码 + `18602bfc` 本文档）。
+
+#### C1（Critical）：`show_at_mouse` 的 ready reset 导致后续翻译永远卡在「⏳ 翻译中...」
+
+**症状**：每次 `show_at_mouse` 都 `WINDOW_READY.store(false, Ordering::SeqCst)` + 清 PENDING。但 `set_translate_window_ready`（唯一把 ready 设回 true 的入口）只在 `pages/Translate/index.tsx` 的 `useEffect(..., [])` 里调一次——React mount 时。浮窗启动期 hidden 创建，hide≠destroy，React 只 mount 一次。故 `show_at_mouse` 把 ready 翻 false 后，**没有任何路径把它翻回 true**。后续 `emit_float_progress` / `emit_float_done` 全部命中 `WINDOW_READY == false` 分支写 PENDING，而 PENDING 只在 `set_translate_window_ready`（永不再次调用）里 flush——译文永久滞留，用户看空「⏳ 翻译中...」。
+
+**根因**：误以为 listener 在每次 show 时重注册。实际 `listen()` 是 React 的 `useEffect` 副作用，依赖 `[]` → 只注册一次。hide≠destroy，React 不 unmount，listener 跨 show 复用。所以 ready 一旦 initial mount 设 true，就不应该再 reset——对齐 `result_window.rs`（grep `WINDOW_READY.store` 只在 `set_*_ready` 命令里有 `store(true)`，无任何 `store(false)`）。
+
+**修复**（`crates/desktop/src/ui/translate_window.rs::show_at_mouse`）：删除两行
+```rust
+WINDOW_READY.store(false, Ordering::SeqCst);
+*PENDING_TEXT.lock() = None;
+```
+保留 `set_position` / `win.show()` / `emit reset`。reset 事件单独负责清空前端 UI 文本（listener 已注册，收到 reset 即清 state）。
+
+**对照范式**：`result_window.rs` 从不 reset WINDOW_READY——其 `show_at_mouse` 等价函数（result_window 无此函数，但 `show_result_window` 类逻辑）直接 emit，ready 机制靠 initial mount 单次 set true + reset 事件清空 UI。translate_window 现与之一致。
+
+#### I1（Important）：OCR 空文本 `emit_float_done` 与 `show_at_mouse` 竞态
+
+**症状**：`translate_screenshot` 里空文本路径：
+```rust
+let _ = app_handle.run_on_main_thread(move || {
+    close_all_screenshot_windows(&ah);
+    crate::ui::translate_window::show_at_mouse(&ah);   // 异步排队到 main thread
+});
+if text_empty {
+    crate::ui::translate_window::emit_float_done(&app_handle, "❌ 未识别到文本");   // 立即执行
+}
+```
+`run_on_main_thread` 是异步排队——emit_float_done 在调用方线程**立即**执行，可能在 show_at_mouse 跑之前就到达前端 listener。若到达时刻 listener 尚未因 show 重置（reset 事件还没 emit），错误文本先写入 state；随后 show_at_mouse 的 reset 事件清空它 → 用户看到空窗。
+
+**修复**（`crates/desktop/src/record/screenshot_commands/area.rs::translate_screenshot`）：把空文本的 `emit_float_done` 移进 `run_on_main_thread` 闭包内、`show_at_mouse` **之后**：
+```rust
+let text_empty = text.trim().is_empty();
+let ah = app_handle.clone();
+let _ = app_handle.run_on_main_thread(move || {
+    close_all_screenshot_windows(&ah);
+    crate::ui::translate_window::show_at_mouse(&ah);
+    if text_empty {
+        crate::ui::translate_window::emit_float_done(&ah, "❌ 未识别到文本");
+    }
+});
+if !text_empty {
+    let app_clone = app_handle.clone();
+    std::thread::spawn(move || { /* do_translate_streaming */ });
+}
+```
+
+**正确性论证（与 C1 修复联动）**：
+1. 闭包按序执行：`show_at_mouse` 先跑（含 emit reset），然后 emit_float_done 跑。
+2. C1 修复后 `WINDOW_READY` 不再被 show_at_mouse reset → ready 仍为 initial mount 设的 true。
+3. 前端 listener 收到事件顺序：`translate-window://reset`（清空 UI）→ `translate-window://done`（写错误文本）。
+4. 顺序与预期一致（先清后写），用户看到「❌ 未识别到文本」。✅
+
+**为什么要 move 进闭包而非保留外面**：`run_on_main_thread` 闭包在 main thread 上同步执行，闭包内调用顺序即执行顺序——无任何异步竞态。闭包外的 `if text_empty { emit }` 与排队中的 show_at_mouse 之间是跨线程时序，非确定。
