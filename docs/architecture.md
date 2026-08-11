@@ -643,8 +643,7 @@ portable-pty 封装 + OSC agent 状态感知，2026-07-31 新增（Task 1-4）�
 
 通用文件下载 crate（分块并发 + 断点续传 sidecar + SHA256 校验 + 镜像 fallback），解终端用户下载大模型的三痛点：需装 Python + huggingface-cli、国内需切镜像、无参数 hf-cli 拉整个仓库（实际只需 int8 量化文件）。两模块：
 
-- **`core`（通用，零 HF 知识）**：`Downloader` 走 probe（GET Range bytes=0-0 取 total/accept-ranges/etag）→ 规划分段 → 并发 Range+seek-write → 进度聚合（mpsc）→ 校验 → 原子 rename。`DownloadTask { url, mirrors, dest, expected_hash }`。sidecar `<dest>.part.resume.json` 记录各段进度（`url_hash` 基于 dest、镜像无关，故镜像源可复用进度），支持崩溃续传；最终整文件 SHA256 校验兜底（不注入 If-Range，避免不支持它的镜像回退 200 全文重传）。
-- **`hf`（HuggingFace 适配层）**：`fetch_siblings`（GET /api/models/{repo} 解析 rfilename/etag/lfs.oid）、`should_download`（手写 fnmatch，`*` 跨 `/`，对齐 hf-cli，已 Python golden 验证）、`resolve_tasks`（构造每文件 DownloadTask：镜像 URL 在前 + 官方 fallback + LFS→Sha256(lfs.oid) / 非 LFS→Etag）。
+- **`core`（通用，零 HF 知识）**：`Downloader` 走 probe（GET Range bytes=0-0 取 total/accept-ranges/etag）→ 规划分段 → 并发 Range+seek-write → 进度聚合（mpsc）→ 校验 → 原子 rename。`DownloadTask { url, mirrors, dest, expected_hash }`。sidecar `<dest>.part.resume.json` 记录各段进度（`url_hash` 基于 dest、镜像无关，故镜像源可复用进度），支持崩溃续传；最终整文件 SHA256 校验兜底（不注入 If-Range，避免不支持它的镜像回退 200 全文重传）。**HF 适配层已移除**——crate 现是纯通用下载器（单 `core` 模块），模型下载由调用方提供 manifest（infra/model_manifests.rs 编译期内联 JSON，含每文件 source URL + sha256 + size），逐文件驱动 DownloadTask，URL 模板替换（`{huggingface}`/`{modeloscope}`）由调用方完成。
 
 下载到 `target_dir/{repo}/{path}`（由调用方决定）。**已接入模型管理（阶段1）**：cli `download` 子命令薄封装此 crate（构 `HfRequest` → `resolve_tasks` 解析 siblings + glob 过滤 → 逐文件 `Downloader::download`，进度经 mpsc 推送打印），`target_dir = ~/.octopus/models`，落 `~/.octopus/models/<repo>/<path>/`；`resolve_model_dir` 已加该路径为查找级（见下节）。镜像优先级 `--mirror` > config `download_mirror` > 官方源。详见 spec `superpowers/specs/2026-06-21-archived-spec.md#download-model-integration-design`。
 
