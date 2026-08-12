@@ -114,7 +114,7 @@ pub trait SyncEntity {
     fn write_file(row: &Self::Row) -> Result<()>;
 
     // ── merge 操作 ──
-    fn upsert_db_from_file(row: &Self::Row) -> Result<bool>;  // false = 拒绝复活
+    fn upsert_db_from_file(row: &Self::Row) -> Result<bool>;  // false = 拒绝复活 / 拒覆盖（含第三十六轮 P2-C TOCTOU：本地比远程新则拒 pull）
 
     // ── GC（默认 noop）──
     fn purge_expired_tombstones(_now: i64) -> Result<usize> { Ok(0) }

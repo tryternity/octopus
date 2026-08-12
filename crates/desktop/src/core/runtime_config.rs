@@ -53,7 +53,8 @@ fn engine_label(source_type: i64, category: &str, provider: &str, name: &str) ->
 pub(crate) const FALLBACK_ASR_ENGINE: &str = "zipformer-small";
 
 /// API Key 脱敏：显示前 4 位 + ****** + 后 4 位（长度 <= 8 时全掩码）。
-fn mask_key(key: &str) -> String {
+/// 第三十六轮 P2-B：提为 pub(crate) 供 model_commands 复用（translate cloud 路径漏脱敏）。
+pub(crate) fn mask_key(key: &str) -> String {
     if key.is_empty() { return String::new(); }
     if key.len() <= 8 { return "********".to_string(); }
     let chars: Vec<char> = key.chars().collect();

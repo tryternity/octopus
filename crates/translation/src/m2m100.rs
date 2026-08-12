@@ -115,9 +115,13 @@ impl M2M100Engine {
                 .try_extract_tensor::<f32>()?;
             let vocab_size = logits_shape[2] as usize;
             let offset = (dec_len - 1) * vocab_size;
-            let last_logits = &logits_data[offset..offset + vocab_size];
+            // 第三十八轮 P2-新2：复用 opus_mt 的 apply_penalties（repetition penalty +
+            // no-repeat-3-gram）。原 m2m100 仅连续 8-token 检测，对 2-cycle 振荡（A B A B）
+            // 无效且无 penalty。分布外输入退化概率高于 opus_mt。需拷贝 logits 副本（apply_penalties 原地改）。
+            let mut logits: Vec<f32> = logits_data[offset..offset + vocab_size].to_vec();
+            crate::opus_mt::apply_penalties(&mut logits, &decoder_ids);
 
-            let next_token = last_logits
+            let next_token = logits
                 .iter()
                 .enumerate()
                 .max_by(|(_, a), (_, b)| {

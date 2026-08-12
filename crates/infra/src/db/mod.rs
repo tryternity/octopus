@@ -268,6 +268,18 @@ fn init_schema(conn: &Connection) -> Result<()> {
         return Ok(());
     }
 
+    // 第三十六轮 P2-F：DB 版本高于 binary——用户用更高版本 binary 建库后回退。
+    // 表结构可能含新 binary 不认识的列/类型变更（如 is_deleted bool→i64），老 binary
+    // 按旧语义读会数据错乱（cipher 被当软删态静默"消失"）。必须 bail 而非静默放行。
+    if v > CURRENT_SCHEMA_VERSION {
+        anyhow::bail!(
+            "DB schema v{} is newer than this binary supports (v{}). \
+             The DB was likely created by a newer app version. \
+             Run: rm ~/.octopus/octopus.db* (then restart to rebuild) or upgrade the app.",
+            v, CURRENT_SCHEMA_VERSION
+        );
+    }
+
     if v == 0 {
         // 全新库：db.sql 建表 + seed + manifest + 外置 seed + yaml 配置迁移
         conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
@@ -1048,6 +1060,21 @@ mod tests {
     fn init_schema_bails_on_very_old_version() {
         let conn = open_with_version(53, "false");
         assert!(init_schema(&conn).is_err(), "v53 旧库应 bail 提示清库");
+    }
+
+    /// 第三十六轮 P2-F：v > CURRENT_SCHEMA_VERSION → bail（防版本回退静默数据错乱）。
+    /// 用户用 v61 binary 建库后回退 v60 binary：v=61 > 60，老 binary 按 v60 语义读 v61
+    /// 表结构（如 is_deleted 类型变更）会错乱。必须 bail 而非静默 Ok。
+    #[test]
+    fn init_schema_bails_on_newer_than_binary_version() {
+        let conn = open_with_version(CURRENT_SCHEMA_VERSION + 1, "false");
+        let err = init_schema(&conn);
+        assert!(err.is_err(), "v > CURRENT 应 bail 而非静默放行");
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("newer than this binary"),
+            "错误信息应说明 DB 版本高于 binary，实际: {}", msg
+        );
     }
 
     // ── FTS5 搜索测试见 db/transcription.rs ──

@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 use octopus_asr_local::manifest::{bootstrap_manifest, Manifest};
 
-use crate::core::runtime_config::SharedRuntimeConfig;
+use crate::core::runtime_config::{mask_key, SharedRuntimeConfig};
 
 /// 一个可下载模型的列表项。
 #[derive(Serialize)]
@@ -863,7 +863,10 @@ pub fn list_translate_cloud_models() -> Result<Vec<TranslateCloudModel>, String>
         category: r.category,
         model_name: r.model_name,
         source: r.source,
-        secret_key: r.secret_key,
+        // 第三十六轮 P2-B：脱敏 secret_key——原样返回云端翻译 API Key（sk-xxx）明文进
+        // webview JS 上下文（devtools 可读）。对齐 LLM 路径（runtime_config.rs:110/236
+        // 已用 mask_key）。前端编辑时通过 get_model_detail 按 id 取完整 key 回填表单。
+        secret_key: mask_key(&r.secret_key),
         is_streaming: r.is_streaming,
         is_thinking: r.is_thinking,
         is_enabled: r.is_enabled,

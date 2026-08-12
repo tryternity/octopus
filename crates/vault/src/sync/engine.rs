@@ -30,7 +30,7 @@ use octopus_infra::db::{self, VaultMeta, VaultMetaInput};
 use octopus_sync::error::SyncError;
 use octopus_sync::git;
 use octopus_sync::outline::OutlineEntry;
-use octopus_sync::pipeline::{merge_three_way, MergeReport, SyncEntity};
+use octopus_sync::pipeline::{is_tombstone_expired, merge_three_way, MergeReport, SyncEntity};
 use octopus_sync::privacy::{self, PrivacyVerdict};
 use octopus_sync::store::{iso_to_unix_ms, now_secs};
 use zeroize::Zeroizing;
@@ -1140,12 +1140,31 @@ impl SyncEntity for VaultFolderEntity {
     /// 文件行 → upsert DB。返 `Ok(false)` 表示拒绝复活（本地已软删 + 远程 active）。
     /// 保留原 merge_vault 阶段 B 的「拒绝复活守卫」（第十四轮 P2-2，对齐 hotword）。
     fn upsert_db_from_file(row: &Self::Row) -> Result<bool> {
+        // 第三十七轮 P2-1：超期 tombstone 不复活（同 cipher 路径，对称 hotword 守卫）。
+        if is_tombstone_expired(
+            <Self as SyncEntity>::tombstone_retention_secs(),
+            row.is_deleted,
+            now_secs(),
+        ) {
+            log::debug!("[sync] merge: folder {} 超期 tombstone，skip pull", row.id);
+            return Ok(false);
+        }
         if row.is_deleted == 0 {
             // 远程 active——查 DB 是否已软删（tombstone）。若 DB 已软删，拒绝 pull（防复活）。
             if let Some(db_f) = db::load_vault_folder(&row.id)? {
                 if db_f.is_deleted > 0 {
                     log::info!(
                         "[sync] merge: folder {} 本地已软删，远程 active，拒绝复活",
+                        row.id
+                    );
+                    return Ok(false);
+                }
+                // 第三十六轮 P2-C：TOCTOU 重判（同 cipher 路径）——sync 窗口内用户编辑了
+                // 同一 folder，本地 ts 推进，merge 按 stale 快照判 pull 会覆盖。实时 ts
+                // 比对：本地新则拒 pull。
+                if iso_to_unix_ms(&db_f.updated_at) > iso_to_unix_ms(&row.updated_at) {
+                    log::info!(
+                        "[sync] merge: folder {} 本地比远程新（TOCTOU 重判），拒 pull 防覆盖",
                         row.id
                     );
                     return Ok(false);
@@ -1254,11 +1273,35 @@ impl SyncEntity for VaultCipherEntity {
     /// 文件行 → upsert DB。返 `Ok(false)` 表示拒绝复活（本地已软删 + 远程 active）。
     /// 保留原 merge_vault 阶段 C 的「拒绝复活守卫」（第十四轮 P2-2）。
     fn upsert_db_from_file(row: &Self::Row) -> Result<bool> {
+        // 第三十七轮 P2-1：超期 tombstone 不复活——vault GC 硬删超期 tombstone DB 行，
+        // 但 vault GC 不调 export（文件层由下次 sync 重建），outline 仍含超期 tombstone
+        // → merge_three_way None 分支 pull → upsert 复活。对称 hotword upsert_set_from_row
+        // 入口守卫（hotword.rs:1042）。active（is_deleted=0）is_tombstone_expired 返 false 不受影响。
+        if is_tombstone_expired(
+            <Self as SyncEntity>::tombstone_retention_secs(),
+            row.is_deleted,
+            now_secs(),
+        ) {
+            log::debug!("[sync] merge: cipher {} 超期 tombstone，skip pull", row.id);
+            return Ok(false);
+        }
         if row.is_deleted == 0 {
             if let Some(db_c) = db::load_vault_cipher(&row.id)? {
                 if db_c.is_deleted > 0 {
                     log::info!(
                         "[sync] merge: cipher {} 本地已软删，远程 active，拒绝复活",
+                        row.id
+                    );
+                    return Ok(false);
+                }
+                // 第三十六轮 P2-C：TOCTOU 重判——merge 循环外 list_db_rows 取的快照 ts
+                // 可能已过期（sync 窗口内用户编辑了同一 cipher，本地 ts 推进到 T1 > 快照 T0）。
+                // merge 按 stale 快照判 pull（remote_updated > local_updated_at_snapshot），
+                // 但 upsert 时本地实际已比远程新——覆盖会丢用户编辑。此处补实时 ts 比对：
+                // 本地新则拒 pull（本地是真相源，下次 sync 会 push 出去）。
+                if iso_to_unix_ms(&db_c.updated_at) > iso_to_unix_ms(&row.updated_at) {
+                    log::info!(
+                        "[sync] merge: cipher {} 本地比远程新（TOCTOU 重判），拒 pull 防覆盖",
                         row.id
                     );
                     return Ok(false);
@@ -2307,7 +2350,9 @@ mod tests {
         let g = IntegrationGuard::new();
 
         use octopus_infra::db::VaultCipher;
-        // 文件系统写一个软删密码（is_deleted = true）
+        // 文件系统写一个软删密码（is_deleted = 近期 epoch，未超期）
+        // 第三十七轮 P2-1：is_deleted 必须未超期（30 天 retention），否则 upsert 守卫 skip pull。
+        // 原 1_700_000_000（2023 年）已超期，改用 now - 10s。
         let soft_deleted = VaultCipher {
             id: "soft-delete-test-uuid".to_string(),
             folder_id: None,
@@ -2319,7 +2364,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: 1_700_000_000, // tombstone epoch（软删）
+            is_deleted: now_secs() - 10, // tombstone epoch（软删，10 秒前未超期）
             sync_md5: None,
             created_at: "2026-07-24T00:00:00".into(),
             updated_at: "2026-07-24T12:00:00".into(),
@@ -2362,6 +2407,63 @@ mod tests {
         let _ = g;
     }
 
+    /// 第三十七轮 P2-1 回归：超期 tombstone 不应被 pull 复活。
+    ///
+    /// 场景：vault GC 删超期 tombstone DB 行，但 outline 文件仍含该 tombstone
+    /// （vault GC 不调 export）→ merge_three_way None 分支 → pull_entity → upsert。
+    /// 修复前：upsert 无超期守卫 → 复活。修复后：upsert 入口 is_tombstone_expired → skip。
+    #[test]
+    fn pull_skips_expired_tombstone_cipher() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        use octopus_infra::db::VaultCipher;
+        // 超期 tombstone：is_deleted = 1（1970-01-01，远超 30 天 retention）
+        let expired_tombstone = VaultCipher {
+            id: "expired-tombstone-uuid".to_string(),
+            folder_id: None,
+            favorite: false,
+            atype: 1,
+            name: "v1:expired".into(),
+            notes: None,
+            data: "v1:expired-data".into(),
+            fields: None,
+            password_history: None,
+            reprompt: 0,
+            is_deleted: 1, // 1970-01-01 epoch，超期
+            sync_md5: None,
+            created_at: "2026-01-01T00:00:00".into(),
+            updated_at: "2026-01-01T00:00:00".into(),
+        };
+        store::write_cipher_file(&expired_tombstone).unwrap();
+
+        // outline 含这个超期 tombstone
+        use octopus_sync::outline::{Outline, OutlineEntry};
+        use std::collections::BTreeMap;
+        let md5 = crate::sync::fingerprint::cipher_md5(&expired_tombstone);
+        let outline = Outline {
+            version: 1,
+            vault_version: 1,
+            ciphers: BTreeMap::from([(
+                "expired-tombstone-uuid".to_string(),
+                OutlineEntry { md5, updated_ms: 0 },
+            )]),
+            folders: BTreeMap::new(),
+        };
+        store::write_outline_file(&outline).unwrap();
+
+        write_stamp_matching_meta();
+        let r = merge_vault().expect("merge should succeed");
+        // 超期 tombstone 不应被 pull（pulled=0），也不应在 DB 复活
+        assert_eq!(r.pulled, 0, "P2-1: 超期 tombstone 不应被 pull 复活");
+        let db_cipher = octopus_infra::db::load_vault_cipher("expired-tombstone-uuid").unwrap();
+        assert!(
+            db_cipher.is_none(),
+            "P2-1: 超期 tombstone 不应在 DB 复活"
+        );
+        let _ = g;
+    }
+
     /// 第八轮 P0：folder 软删跨设备同步回归测试（对齐 cipher H2 的 pull_preserves_soft_deleted_at）。
     /// A 软删 folder → write_folder_file(is_deleted=true) → B pull → DB 应保留 is_deleted=true。
     /// 修复前：upsert_folder_with_sort SQL 不含 is_deleted → INSERT DEFAULT 0 / UPDATE 不碰 → 复活。
@@ -2371,12 +2473,13 @@ mod tests {
         let g = IntegrationGuard::new();
 
         use octopus_infra::db::VaultFolder;
-        // 文件系统写一个软删 folder（is_deleted = true）
+        // 文件系统写一个软删 folder（is_deleted = 近期 epoch，未超期）
+        // 第三十七轮 P2-1：同 cipher 测试，is_deleted 必须未超期。
         let soft_deleted_folder = VaultFolder {
             id: "folder-soft-delete-test".to_string(),
             name: "v1:deleted-folder".into(),
             sort_order: 0,
-            is_deleted: 1_700_000_000, // tombstone epoch
+            is_deleted: now_secs() - 10, // tombstone epoch（10 秒前未超期）
             sync_md5: None,
             created_at: "2026-08-03T00:00:00".into(),
             updated_at: "2026-08-03T12:00:00".into(),
@@ -2438,7 +2541,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            is_deleted: 1_700_000_000, // tombstone epoch
+            is_deleted: now_secs() - 10, // tombstone epoch（10 秒前未超期）
             sync_md5: None,
             created_at: "2026-07-24T00:00:00".into(),
             updated_at: "2026-07-24T10:00:00".into(),

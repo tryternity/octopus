@@ -235,36 +235,92 @@ impl<'a> AppSetup<'a> {
             // → 下次 sync 把 X 当新增拉回 → 已删 set 复活。vault feature 下取
             // try_sync_lock（无 vault 时无 sync_now，无并发，不需锁）。
             scheduler.register_task("hotword_tombstone_gc", 86400, std::sync::Arc::new(|| {
-                std::thread::spawn(|| {
-                    // vault feature：取 SYNC_LOCK，锁忙则跳过本次 GC（下次 scheduler tick 再试）
-                    #[cfg(feature = "vault")]
-                    {
-                        let _guard = match octopus_vault::sync::engine::try_sync_lock() {
-                            Ok(g) => g,
-                            Err(_) => {
-                                log::info!("[hotword-gc] SYNC_LOCK 忙（sync 进行中），跳过本次 GC");
-                                return;
-                            }
-                        };
-                        // guard 在作用域内持有
-                    }
-
-                    let now_secs = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    match octopus_infra::db::purge_expired_hotword_tombstones(now_secs) {
-                        Ok(n) if n > 0 => {
-                            log::info!("[hotword-gc] purged {} expired tombstones, rebuilding .sync", n);
-                            // 清 .sync：export 不含超期 tombstone（is_tombstone_expired 过滤）
-                            if let Err(e) = octopus_sync::hotword::export_all_hotwords() {
-                                log::warn!("[hotword-gc] export 重建失败（不阻断 GC）：{}", e);
-                            }
+                // 第三十八轮 P2-新3：去掉内层 thread::spawn——scheduler 的 run_due_tasks 已
+                // spawn 独立 task 线程 + recv_timeout(300s) + catch_unwind。原内层 spawn 让
+                // 闭包毫秒级返回，scheduler 超时名存实亡，真正 GC 工作无守护。
+                // vault feature：取 SYNC_LOCK，锁忙则跳过本次 GC（下次 scheduler tick 再试）
+                #[cfg(feature = "vault")]
+                {
+                    let _guard = match octopus_vault::sync::engine::try_sync_lock() {
+                        Ok(g) => g,
+                        Err(_) => {
+                            log::info!("[hotword-gc] SYNC_LOCK 忙（sync 进行中），跳过本次 GC");
+                            return;
                         }
-                        Ok(_) => {} // 无超期 tombstone，no-op
-                        Err(e) => log::warn!("[hotword-gc] purge 失败：{}", e),
+                    };
+                    // guard 在作用域内持有
+                }
+
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                match octopus_infra::db::purge_expired_hotword_tombstones(now_secs) {
+                    Ok(n) if n > 0 => {
+                        log::info!("[hotword-gc] purged {} expired tombstones, rebuilding .sync", n);
+                        // 清 .sync：export 不含超期 tombstone（is_tombstone_expired 过滤）
+                        if let Err(e) = octopus_sync::hotword::export_all_hotwords() {
+                            log::warn!("[hotword-gc] export 重建失败（不阻断 GC）：{}", e);
+                        }
                     }
-                });
+                    Ok(_) => {} // 无超期 tombstone，no-op
+                    Err(e) => log::warn!("[hotword-gc] purge 失败：{}", e),
+                }
+            }));
+            // 第三十六轮 P2-D：clipboard favorite tombstone GC（对称 hotword_tombstone_gc）。
+            // clipboard_favorites 表的超期 tombstone 此前永不硬删（run_sync_pipeline 无生产
+            // 调用方），DB 无限堆积。DB GC 后调 export_all_favorites 重建 .sync 清文件层。
+            scheduler.register_task("clipboard_favorite_gc", 86400, std::sync::Arc::new(|| {
+                // 第三十八轮 P2-新3：去掉内层 thread::spawn（同 hotword GC）。
+                #[cfg(feature = "vault")]
+                {
+                    let _guard = match octopus_vault::sync::engine::try_sync_lock() {
+                        Ok(g) => g,
+                        Err(_) => {
+                            log::info!("[clipboard-gc] SYNC_LOCK 忙（sync 进行中），跳过本次 GC");
+                            return;
+                        }
+                    };
+                }
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                match octopus_infra::db::purge_expired_clipboard_favorites(now_secs) {
+                    Ok(n) if n > 0 => {
+                        log::info!("[clipboard-gc] purged {} expired favorites, rebuilding .sync", n);
+                        if let Err(e) = octopus_sync::clipboard::export_all_favorites() {
+                            log::warn!("[clipboard-gc] export 重建失败（不阻断 GC）：{}", e);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("[clipboard-gc] purge 失败：{}", e),
+                }
+            }));
+            // 第三十六轮 P2-D：vault tombstone GC（对称 hotword_tombstone_gc）。
+            // vault_ciphers / vault_folders 超期 tombstone 此前永不硬删。DB GC 后文件层
+            // 由下次 merge（incremental_export 删 SQLite 无的）自愈重建。
+            #[cfg(feature = "vault")]
+            scheduler.register_task("vault_tombstone_gc", 86400, std::sync::Arc::new(|| {
+                // 第三十八轮 P2-新3：去掉内层 thread::spawn（同 hotword GC）。
+                let _guard = match octopus_vault::sync::engine::try_sync_lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        log::info!("[vault-gc] SYNC_LOCK 忙（sync 进行中），跳过本次 GC");
+                        return;
+                    }
+                };
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                match octopus_infra::db::purge_expired_vault_tombstones(now_secs) {
+                    Ok(n) if n > 0 => {
+                        log::info!("[vault-gc] purged {} expired vault tombstones (文件层由下次 sync 重建)", n);
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("[vault-gc] purge 失败：{}", e),
+                }
             }));
             scheduler.spawn();
         }

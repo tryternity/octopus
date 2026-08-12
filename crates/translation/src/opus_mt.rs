@@ -9,10 +9,10 @@ use crate::engine::TranslationEngine;
 /// MarianMT decoder 上限 512（config model_max_length），留余量
 const MAX_ENCODER_TOKENS: usize = 500;
 const MAX_DECODER_LENGTH: usize = 500;
-/// 禁止 3-gram 重复（标准 HF 默认值）
-const NO_REPEAT_NGRAM_SIZE: usize = 3;
+/// 禁止 3-gram 重复（标准 HF 默认值）。第三十八轮 P2-新2：pub(crate) 供 m2m100 复用。
+pub(crate) const NO_REPEAT_NGRAM_SIZE: usize = 3;
 /// 重复惩罚因子（logit / penalty，>1 降低已出现 token 概率）
-const REPETITION_PENALTY: f32 = 1.3;
+pub(crate) const REPETITION_PENALTY: f32 = 1.3;
 
 /// Opus-MT MarianMT 引擎。按翻译方向加载对应子目录（zh-en / en-zh）。
 pub struct OpusMTEngine {
@@ -172,6 +172,17 @@ impl OpusMTEngine {
 
             if next_token == self.eos_id {
                 break;
+            }
+            // 第三十八轮 P2-新1：连续相同 token 检测（对齐 m2m100 :132-138）——分布外
+            // 输入（emoji/罕见符号）可能不产生 EOS，apply_penalties 的 no-repeat-3-gram
+            // 只禁完全重复三元组，连续重复（AAAA...）可绕过。8 连同 token 触发 break，
+            // 防跑满 MAX_DECODER_LENGTH × O(n²) MarianMT 拖垮流式翻译。
+            if decoder_ids.len() >= 10 {
+                let last8 = &decoder_ids[decoder_ids.len() - 8..];
+                if last8.iter().all(|&id| id == next_token) {
+                    log::warn!("[opus-mt] 连续 8 相同 token 检测触发，停止解码（防振荡退化）");
+                    break;
+                }
             }
             decoder_ids.push(next_token);
         }
@@ -344,10 +355,10 @@ fn normalize_cjk_spaces(text: &str) -> String {
 }
 
 /// 对 decoder logits 施加 repetition penalty + no-repeat-ngram 惩罚（原地修改）。
-/// 纯函数，不依赖 ONNX，便于单测。
+/// 纯函数，不依赖 ONNX，便于单测。第三十八轮 P2-新2：提为 pub(crate) 供 m2m100 复用。
 /// - `logits`：当前步 logits 副本（vocab_size 长度）
 /// - `decoder_ids`：含 decoder_start_id 的完整序列（index 0 = start_id）
-fn apply_penalties(logits: &mut [f32], decoder_ids: &[i64]) {
+pub(crate) fn apply_penalties(logits: &mut [f32], decoder_ids: &[i64]) {
     // 1) Repetition penalty：已生成 token（不含 decoder_start_id prompt）
     let generated: std::collections::HashSet<i64> =
         decoder_ids[1..].iter().copied().collect();

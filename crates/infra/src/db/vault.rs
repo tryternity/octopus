@@ -485,11 +485,15 @@ pub const VAULT_TOMBSTONE_RETENTION_SECS: i64 = 30 * 86400;
 /// 跨设备自洽：sync merge 按年龄过滤（pull 拒绝复活超期 tombstone），GC 后 export
 /// 不含超期 tombstone → 对端 pull 时即使旧 outline 有也 skip → 收敛。
 ///
-/// **FK 约束**：cipher.folder_id 引用 folder.id——若 folder 被硬删但 cipher 仍在
-/// 引用，cipher 的 folder_id 变悬空引用（FK 是 non-deferring，但本表 schema 实际
-/// 未声明 FK，仅逻辑约束——见 `vault_ciphers` CREATE TABLE）。删除顺序上先 cipher
-/// 后 folder 不影响正确性（cipher 删完后再删 folder，无引用残留），但即使有残留
-/// cipher 也无 FK 报错。返回值含两侧硬删总数。
+/// **FK 约束**（第三十七轮 P2-2 修正）：schema.sql:334 声明
+/// `FOREIGN KEY (folder_id) REFERENCES vault_folders(id) ON DELETE SET NULL`，
+/// 生产连接开 `PRAGMA foreign_keys = ON`（mod.rs:83/153）——FK 真生效。GC 硬删 folder
+/// tombstone 时，FK 隐式把引用它的活跃 cipher 的 folder_id 置 NULL（密码条目脱离文件夹）。
+/// 原注释（2026-08-05）错误声称「schema 实际未声明 FK」——已修正。
+///
+/// GC 显式在删 folder 前置活跃 cipher folder_id=NULL（对称 FK 语义，但显式可控 + 可 log），
+/// 避免依赖 FK pragma（测试连接可能不开 FK）。folder 已软删 30 天（用户明确删除），
+/// 活跃 cipher 引用残留无意义，置 NULL 让 cipher 留在「无文件夹」是正确语义。
 pub fn purge_expired_vault_tombstones(now_secs: i64) -> Result<usize> {
     ensure_db()?;
     with_db(|conn| purge_expired_vault_tombstones_at(conn, now_secs))
@@ -501,13 +505,22 @@ pub(crate) fn purge_expired_vault_tombstones_at(
     now_secs: i64,
 ) -> Result<usize> {
     let cutoff = now_secs - VAULT_TOMBSTONE_RETENTION_SECS;
-    // 先 cipher 后 folder（逻辑 FK 顺序——cipher 是 folder 的引用方，
-    // 删 cipher tombstone 不影响 folder；反之 folder tombstone 删掉后 cipher 引用
-    // 悬空也无害——schema 无 FK 约束）。
+    // 先 cipher 后 folder（cipher 是 folder 的引用方，先删 cipher tombstone）。
     let n_ciphers = conn.execute(
         "DELETE FROM vault_ciphers WHERE is_deleted > 0 AND is_deleted < ?1",
         params![cutoff],
     )?;
+    // 第三十七轮 P2-2：删 folder tombstone 前先显式置引用它的活跃 cipher folder_id=NULL。
+    // schema 声明 FK ON DELETE SET NULL 会隐式做这事，但显式做不依赖 PRAGMA foreign_keys
+    // （测试连接可能不开），且可 log 观测。folder 已软删 30 天，活跃 cipher 引用无意义。
+    let detached = conn.execute(
+        "UPDATE vault_ciphers SET folder_id = NULL WHERE folder_id IN \
+         (SELECT id FROM vault_folders WHERE is_deleted > 0 AND is_deleted < ?1)",
+        params![cutoff],
+    )?;
+    if detached > 0 {
+        log::info!("[vault-gc] {} 活跃 cipher 因 folder tombstone GC 脱离文件夹（folder_id=NULL）", detached);
+    }
     let n_folders = conn.execute(
         "DELETE FROM vault_folders WHERE is_deleted > 0 AND is_deleted < ?1",
         params![cutoff],

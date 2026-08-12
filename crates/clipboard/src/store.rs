@@ -375,6 +375,21 @@ pub fn permanent_delete_item(conn: &Connection, id: &str) -> Result<usize> {
         |r| r.get::<_, Option<String>>(0),
     ).ok().flatten();
 
+    // 第三十六轮 P2-A：物理删 history 前先软删对应 active favorite（写 tombstone）。
+    // 否则 favorite 成孤儿（history_id 指向已删行）→ export_all_favorites 对孤儿走
+    // build_history_row None 分支写空 content 占位 → md5 振荡 ping-pong（多设备 sync
+    // 时 outline.md5 在 placeholder↔hello 间反复冲突）。软删写 tombstone 让删除通过
+    // sync 传播到对端，updated_at 推进防 ping-pong。
+    let now_secs: i64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let _ = conn.execute(
+        "UPDATE clipboard_favorites SET is_deleted = ?1, updated_at = datetime('now') \
+         WHERE history_id = ?2 AND is_deleted = 0",
+        params![now_secs, id],
+    );
+
     let rows = conn.execute("DELETE FROM clipboard_history WHERE id = ?", params![id])?;
 
     if let Some(hash) = ref_data.as_deref() {
@@ -462,6 +477,25 @@ fn clear_voice_aware(conn: &Connection, select_where: &str, delete_where: &str) 
     // 3. voice 回收站容量上限（INV-1）
     if voice_rows > 0 {
         enforce_voice_trash_limit(conn, VOICE_TRASH_MAX)?;
+    }
+
+    // 第三十六轮 P2-A：清理 favorite 孤儿——history 被物理删/软删后，对应的 active
+    // favorite 变孤儿（history_id 指向已删/已软删行）。软删这些 favorite 写 tombstone，
+    // 防 export_all_favorites 对孤儿写空 content 占位 → md5 振荡 ping-pong。
+    // 条件：favorite 仍 active（is_deleted=0）且其 history_id 在 clipboard_history 中
+    // 已无 active 行（物理删=行不存在；voice 软删=is_deleted=1）。
+    let now_secs: i64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let orphan_favs = conn.execute(
+        "UPDATE clipboard_favorites SET is_deleted = ?1, updated_at = datetime('now') \
+         WHERE is_deleted = 0 AND history_id NOT IN \
+         (SELECT id FROM clipboard_history WHERE is_deleted = 0)",
+        params![now_secs],
+    )?;
+    if orphan_favs > 0 {
+        log::info!("[clipboard] 清理 {} 个孤儿 favorite（对应 history 已删）", orphan_favs);
     }
 
     Ok(non_voice_rows + short_voice + voice_rows)
@@ -1004,5 +1038,32 @@ mod tests {
             filter: "all".into(), search: Some("中文搜索".into()), page: 1, size: 10,
         }).unwrap();
         assert_eq!(count, 1, "P1-1: FTS5 count 应为 1");
+    }
+
+    /// 第三十六轮 P2-A：permanent_delete_item 物理删 history 时应软删对应 active favorite，
+    /// 否则 favorite 成孤儿 → export_all_favorites 写空 content 占位 → md5 振荡 ping-pong。
+    #[test]
+    fn permanent_delete_soft_deletes_orphan_favorite() {
+        let conn = open_test_db();
+        // 插入 history + 收藏它
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: "hist-p2a".into(), item_type: ItemType::Text, content: "p2a content".into(),
+            ref_data: None, meta_info: None, created_at: iso_now(),
+            has_thumbnail: None, is_rich: false,
+        }).unwrap();
+        conn.execute(
+            "INSERT INTO clipboard_favorites (history_id, is_deleted, updated_at) VALUES (?1, 0, datetime('now'))",
+            params!["hist-p2a"],
+        ).unwrap();
+
+        // 物理删 history
+        permanent_delete_item(&conn, "hist-p2a").unwrap();
+
+        // favorite 应被软删（is_deleted > 0 = epoch），不是残留 active 孤儿
+        let fav_is_deleted: i64 = conn.query_row(
+            "SELECT is_deleted FROM clipboard_favorites WHERE history_id = ?1",
+            params!["hist-p2a"], |r| r.get(0),
+        ).unwrap();
+        assert!(fav_is_deleted > 0, "P2-A: permanent_delete 后 favorite 应被软删（tombstone），而非残留 active 孤儿");
     }
 }

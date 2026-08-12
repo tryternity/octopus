@@ -1834,3 +1834,158 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 - `cargo test -p octopus-download --lib` —— 34 过 0 失败
 - `cargo test -p octopus-translation` —— 0 失败（real-model ignored）
 - `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 541 过 0 失败
+
+## 40. 第三十六轮——schema 回退保护/secret_key 脱敏/scroll 守卫/GC 注册/vault TOCTOU/clipboard 孤儿（2026-08-11，修 6 P2 + 2 回归测试）
+
+### 触发
+
+收到第三十六轮审查报告（5 agent 分片 + 亲自逐条 P2 核实）。上轮（第三十五轮）5 项修复全部确认落地于 `bb7e7d28`。本轮 6 条 P2（A-F）逐一直读代码核实，**全部成立**。
+
+### 🟡 P2-F · schema v > CURRENT 静默放行（版本回退数据错乱） ✅ 已修 + 回归测试
+
+**核实**：`init_schema`（infra/db/mod.rs:267）`if v == CURRENT_SCHEMA_VERSION { return Ok }` 只判等。用户用更高版本 binary（v61）建库后回退到当前 binary（v60）：v=61 > 60，while 循环（`while cur < CURRENT`）不执行，267 也不匹配，静默 `Ok(())`——表结构是 v61（可能含 is_deleted bool→i64 等类型变更），老 binary 按 v60 语义读 → cipher 被当软删态静默"消失"。
+
+**修复**：`if v == CURRENT` 后、`if v == 0` 前插入 `if v > CURRENT_SCHEMA_VERSION { bail!(...) }`。回归测试 `init_schema_bails_on_newer_than_binary_version`。
+
+### 🟡 P2-B · list_translate_cloud_models secret_key 泄漏 webview（安全） ✅ 已修
+
+**核实**：`TranslateCloudModel`（model_commands.rs:839）`secret_key: String` + list_translate_cloud_models（:866）`secret_key: r.secret_key` 原样返回。云端翻译 API Key（sk-xxx）明文进 webview JS 上下文（devtools 可读）。对照 LLM 路径（runtime_config.rs:110/236）已用 `mask_key`——translate 路径漏了同一脱敏。
+
+**修复**：`mask_key` 提为 `pub(crate)`，list_translate_cloud_models 改 `secret_key: mask_key(&r.secret_key)`。前端编辑时通过 `get_model_detail` 按 id 取完整 key 回填（CloudModelForm.tsx:163-166 既有机制）。
+
+### 🟡 P2-E · scroll ESC/右键 handler 无 recording 守卫 → Save 被改 Copy ✅ 已修
+
+**核实**：ESC handler（scroll.rs:75）+ 右键 handler（:558）无条件设 `SCROLL_STOP_MODE = Copy`。用户点「保存」（`_with_mode(Save)` 设 mode=Save + recording=false）后，任务体读到 mode（:784）前的 ~50-100ms 窗口按 ESC/右键 → mode 被覆写为 Copy → 用户得 Copy 非 Save。ESC/右键注销发生在任务体收尾，窗口内仍注册着。
+
+**修复**：两 handler 设 mode 前各加 `if !SCROLL_RECORDING.load(SeqCst) { return; }` 守卫——recording 已 false（保存/停止已触发）时不覆写 mode。
+
+### 🟡 P2-D · clipboard favorite + vault tombstone GC 生产永不触发（系统性） ✅ 已修
+
+**核实**：`run_sync_pipeline`（pipeline.rs:282，含唯一 purge 调用）零生产调用方——三模块 merge 入口全直调 `merge_three_way`。`purge_expired` 生产调用仅 setup.rs:256 的 hotword_tombstone_gc（每日）。**无 clipboard favorite GC，无 vault tombstone GC**——clipboard/vault 的 tombstone retention 形同虚设，超期软删行永不硬删，DB 无限堆积。
+
+**修复**：setup.rs 对称补两个 scheduler 任务（每日）：`clipboard_favorite_gc`（purge + `export_all_favorites` 重建 .sync）+ `vault_tombstone_gc`（purge DB，文件层由下次 merge `incremental_export` 自愈）。均取 SYNC_LOCK 防 GC 与 sync 并发（对齐 hotword GC 范式）。vault GC 仅 vault feature 下注册。
+
+### 🟡 P2-C · vault merge_three_way 快照 TOCTOU（upsert 缺 ts 重判） ✅ 已修
+
+**核实**：`merge_three_way`（pipeline.rs:143）循环外 `list_db_rows` 取快照，`local_updated`（:160）从快照读。若 sync 进行中用户编辑同一 cipher（本地 ts 推进到 T1 > 快照 T0），而远程 ts > T0 → merge 按陈旧快照判 pull → `upsert_db_from_file`（engine.rs:1256）只判 is_deleted 拒复活，不重判 ts → 覆盖 T1 编辑，用户编辑丢失。folder 同构（:1142）。
+
+**修复**：cipher + folder 两处 `upsert_db_from_file` 补实时 ts 重判——load 当前 DB 行的 `updated_at`，若 `iso_to_unix_ms(db.updated_at) > iso_to_unix_ms(row.updated_at)` 则拒 pull（本地是真相源，下次 sync push）。
+
+### 🟡 P2-A · clipboard 收藏孤儿 → 空占位 ping-pong ✅ 已修 + 回归测试
+
+**核实**：`permanent_delete_item`（store.rs:372）+ `clear_history`（:388）物理删 clipboard_history 不碰 clipboard_favorites → 孤儿 active favorite 残留。`export_all_favorites`（clipboard.rs:509）对孤儿调 `build_history_row`（:822 None 分支）写空 content 占位加密进 outline。多设备 A 删 history 后：A 算 md5_placeholder，B 算 md5_hello，双方 favorite.updated_at 都不变 → outline.md5 永在 placeholder↔hello 间振荡，每次 sync conflict+push（git log 无限膨胀）。
+
+**修复**：① `permanent_delete_item` 物理删 history 前先 soft_delete 对应 active favorite（写 tombstone + updated_at 推进，通过 sync 传播对端）；② `clear_voice_aware`（clear_history/clear_history_by_filter 共用）末尾补孤儿清理——soft_delete 所有 history_id 在 clipboard_history 中已无 active 行的 favorite。回归测试 `permanent_delete_soft_deletes_orphan_favorite`。
+
+### 留后续（采信 agent，本轮未修）
+
+| 项 | 严重度 | 原因 |
+|---|---|---|
+| P2-G hotword list_db_rows O(N²) 全表扫 | P2 | 需改 SQL WHERE set_id，10×3000 词用户每次 sync 卡秒级 |
+| P2-H hotword 同秒冲突 ping-pong | P2 低 | datetime('now') 秒精度，需跨设备同秒编辑 |
+| P2-I vault_sync_now spawn drop 不 await | P2 | catch_unwind 兜底 emit（closure panic → UI 永久 syncing） |
+| P2-J git.rs 全模块无超时 | P2 | 远程挂起/SSH 阻塞 → sync_now 阻塞 → SYNC_LOCK 永占 |
+| P2-K 迁移链 v55/v56/v59 未包事务 | P2 | 断电/kill -9 留不一致（WHERE 幂等兜底但时间戳非同次） |
+| P3 群（export 批量化/pull 重复解密/discovery size_mb/now_string UTC/scroll clone churn 等） | P3 | 防御/性能，不阻断 |
+
+### 验证
+
+- `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
+- `cargo test -p octopus-infra --lib` —— 24 过（含新增 P2-F 回归测试）
+- `cargo test -p octopus-clipboard --lib` —— 25 过（含新增 P2-A 回归测试）
+- `cargo test -p octopus-vault` —— 267 过
+- `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 541 过 0 失败
+
+## 41. 第三十七轮——vault/clipboard GC 复活链 + vault FK SET NULL 损坏修复（2026-08-11，修 3 P2 + 1 回归测试 + P2-4 留后续）
+
+### 触发
+
+收到第三十七轮审查报告（全新全模块核查，上轮 6 项修复核实全部落地）。本轮发现第三十六轮新加的 vault/clipboard GC 引入了复活链——**上轮 P2-D 修 GC 永不触发，但 vault GC 不调 export + upsert 缺超期守卫 → GC 删后被 sync 复活，retention 形同虚设**。逐一直读代码核实。
+
+### 🟡 P2-1 · vault GC 删的 tombstone 被下次 sync 复活（upsert 缺超期守卫） ✅ 已修 + 回归测试
+
+**核实**：第三十六轮 vault_tombstone_gc 每日硬删超期（30 天）tombstone DB 行，但 vault GC 不调 export（setup.rs 注释「文件层由下次 sync 重建」）。下次 hourly vault_sync → `merge_three_way` None 分支（pipeline.rs:155-157 **无超期过滤**）→ `pull_entity` → `upsert_db_from_file`：无超期守卫 → 复活 tombstone。
+
+**对比**：hotword `upsert_set_from_row`（hotword.rs:1042）入口有 `is_tombstone_expired` 守卫（注释明确说「DB-无分支 None=>pull 不过滤，故本守卫对 DB-无路径仍是必要的」）。vault/clipboard pull 缺这个守卫——系统性不对称。
+
+**后果**：cipher/folder 软删 30 天后，GC 删 → sync(1h 内) 复活 → 下次 GC 又删 → 循环。tombstone 永久残留 DB、retention 失效——与第三十六轮 P2-D「防 DB 堆积」目标背道而驰。本机单设备即可触发。
+
+**修复**：vault cipher + folder 两处 `upsert_db_from_file` 入口加 `is_tombstone_expired(retention, row.is_deleted, now_secs())` 守卫（对称 hotword :1042）。active（is_deleted=0）不受影响（is_tombstone_expired 返 false）。回归测试 `pull_skips_expired_tombstone_cipher`（超期 tombstone is_deleted=1 → merge 后 pulled=0 + DB 不复活）。
+
+### 🟡 P2-2 · vault GC 硬删 folder tombstone 触发 FK SET NULL，活跃 cipher 静默脱离文件夹 ✅ 已修
+
+**核实**：schema.sql:334 声明 `FOREIGN KEY (folder_id) REFERENCES vault_folders(id) ON DELETE SET NULL`，生产连接 `PRAGMA foreign_keys = ON`（mod.rs:83/153）——FK 真生效。vault.rs:488-492 注释错误声称「schema 实际未声明 FK，仅逻辑约束」。
+
+**场景**：用户建 folder F → 放活跃 cipher C 进 F → 软删 F（软删 folder 不动 cipher.folder_id）→ 30 天后 F tombstone 超期，GC 硬删 F 行 → FK 触发 → C.folder_id 被置 NULL（密码条目静默脱离文件夹）。单设备自触发。
+
+**修复**：① `purge_expired_vault_tombstones_at` 删 folder tombstone 前先显式 `UPDATE vault_ciphers SET folder_id=NULL WHERE folder_id IN (待删 folders)`（显式可控 + 可 log，不依赖 PRAGMA foreign_keys）；② 修正 vault.rs:488-492 错误注释（FK 确实声明 + 生效）。folder 已软删 30 天，活跃 cipher 引用残留无意义，置 NULL 让 cipher 留在「无文件夹」是正确语义。
+
+### 🟡 P2-3 · clipboard GC 跨设备复活超期 tombstone（pull_favorite 缺超期守卫） ✅ 已修
+
+**核实**：clipboard `pull_favorite`（clipboard.rs:680）的 tombstone 分支（三个子分支：active→软删 / None→INSERT / 已tombstone→skip）均无超期守卫。本机不复活（clipboard GC 调 export 清本机 outline），但**跨设备时序**：A GC 删+export 但未 push → B fetch 到 A 的 GC 前 outline（含 X 超期 tombstone）→ None 分支 INSERT 复活。
+
+**修复**：`pull_favorite` 入口加 `is_tombstone_expired(retention, fav.is_deleted, now_secs())` 守卫（同 P2-1 vault 范式），短路所有 tombstone 子分支。defense-in-depth（本机已不复活，此守卫防跨设备时序窗口）。
+
+### 留后续
+
+#### P2-4 scroll 录制跨任务竞态（guard drop 杀死 B 的录制）
+
+`ScrollRecordingGuard::drop`（scroll.rs:128）无条件 `SCROLL_RECORDING.store(false)`。任务 A 停止后进入收尾（PNG 编码+DB+Save 对话框，2-5 秒），guard 仍持有；用户启动 B（swap 返回 false 成功进入）；A 收尾完成 drop guard → 置 false → 杀死 B 的 producer 循环。触发需「A 收尾窗口内用户快速启动 B」，概率中低。修法：guard 用 generation counter CAS，仅当本任务仍 owns recording 时 reset。需 generation 设计 + 测试，留后续。
+
+#### 第三十六轮 vault GC「不调 export」的设计取舍
+
+P2-1 的 upsert 守卫已防复活（即使 outline 含超期 tombstone，pull 时也拒绝）。更彻底的方案是让 vault export 也过滤超期 tombstone（对齐 hotword/clipboard export :438/:467），但 vault export 走 `export_all_to_files`（全量重建），改动大。当前 upsert 守卫是 defense-in-depth，已足够防复活——retention 现在真正生效。
+
+### 验证
+
+- `cargo build -p octopus-vault -p octopus-sync -p octopus-infra` —— 0 error
+- `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
+- `cargo test -p octopus-vault` —— 268 过 0 失败（含新增 `pull_skips_expired_tombstone_cipher` 回归测试）
+- `cargo test -p octopus-sync` —— 155 过
+- `cargo test -p octopus-infra --lib` —— 194 过
+- `cargo test -p octopus-clipboard --lib` —— 25 过
+- `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 541 过 0 失败
+
+## 42. 第三十八轮——GC 双层 spawn 超时失效 + 翻译引擎振荡退化（2026-08-11，修 3 P2）
+
+### 触发
+
+收到第三十八轮审查报告（上轮 3 项修复核实全部落地 + 3 agent 覆盖 12 crate）。本轮 3 条新发现逐一直读代码核实，全部成立。
+
+### 🟡 P2-新3 · GC 任务两层 spawn 致 scheduler 超时兜底失效 ✅ 已修
+
+**核实**：scheduler `run_due_tasks`（scheduler/lib.rs:210）已为每任务 `thread::spawn` + `catch_unwind` + `recv_timeout(300s)`。但三个 GC 任务（hotword/clipboard/vault）的闭包内部**又 `thread::spawn`**——内层 spawn 立即返回 JoinHandle → 外层闭包 `run()` 毫秒级完成 → scheduler 的 `recv_timeout` 立即收到 Ok，**300s 超时名存实亡**。真正 GC 工作（purge + export，可能几十秒）在内层线程跑，无超时、无 panic 守护。
+
+**后果**：GC 内层 hang（export 死循环/IO 阻塞）时，孤儿线程持续持 SYNC_LOCK → 下次 sync_now 永久拿不到锁。概率低但 scheduler 超时机制对 GC 任务完全失效。
+
+**预存模式**：hotword GC（第三十三轮加的，已进 main）也有此问题。我第三十六轮的 clipboard/vault GC 复制了该模式。本轮三个统一修。
+
+**修复**：三个 GC 闭包去掉内层 `thread::spawn`，让 GC 工作直接在 scheduler 的 task 线程跑（scheduler 已 spawn 线程 + catch_unwind + recv_timeout）。内层 spawn 是多余且有害的。
+
+### 🟡 P2-新1 · opus_mt decoder 缺 EOS 退路，分布外输入跑满 500 步 ✅ 已修
+
+**核实**：opus_mt decoder greedy loop（opus_mt.rs:142-177）唯一退出条件是 `next_token == eos_id`。`apply_penalties` 的 no-repeat-3-gram 只禁完全重复三元组——连续重复（AAAA...）和交叉序列（A B C D A B C E）可绕过。分布外输入（emoji/罕见符号/错位 token）不产生 EOS → 跑满 MAX_DECODER_LENGTH=500 步 × O(n²) MarianMT → 单段翻译从 ~1s 拖到 30s+，流式翻译前端译文区迟迟不更新。
+
+**对比**：m2m100 有「连续 8 相同 token」检测（m2m100.rs:132-138），opus_mt 没有。
+
+**修复**：opus_mt decoder loop 加连续 8-token 检测（对齐 m2m100 :132-138），触发即 break。
+
+### 🟡 P2-新2 · m2m100 无 apply_penalties，振荡退化概率高 ✅ 已修
+
+**核实**：m2m100 decoder loop（m2m100.rs:102-140）有连续 8-token 检测，但：①对 2-cycle 振荡（A B A B...）无效（8 连同 token 不触发）；②无 opus_mt 的 `apply_penalties`（repetition penalty + no-repeat-3-gram）。分布外输入退化概率高于 opus_mt。
+
+**修复**：`apply_penalties` + `REPETITION_PENALTY` + `NO_REPEAT_NGRAM_SIZE` 提为 `pub(crate)`（opus_mt.rs），m2m100 decoder loop 复用——`crate::opus_mt::apply_penalties(&mut logits, &decoder_ids)`。两引擎现在共享同一套防御（apply_penalties + 连续 token 检测）。
+
+### 留后续（P3 群，本轮未修）
+
+- pty reader/flusher spawn 失败路径与 waiter 不对称（session.rs:267/302）——降 P3，session Arc drop 触发 killer 兜底
+- vault GC 三条 SQL 无事务（vault.rs:509/516/524 autocommit）——瞬态不一致，无功能影响
+- paraformer 缓冲累积依赖外部 reset 契约（streaming_paraformer.rs:260）——已知设计，5 个 reset 调用点正确，建议加 debug_assert
+- scroll guard 竞态（P2-4）——仍未修，已知技术债
+- 其余 dlp/download/OCR/P2-4 等 P3 见报告
+
+### 验证
+
+- `cargo build -p octopus-translation -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
+- `cargo test -p octopus-translation` —— 25 过（real-model ignored）
+- `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 541 过 0 失败

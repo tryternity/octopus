@@ -71,6 +71,12 @@ fn register_scroll_esc(app: &tauri::AppHandle) -> Result<(), String> {
                 return;
             }
             log::info!("[scroll] ESC 全局快捷键触发 → 停止 scroll（焦点在下层应用，DOM 收不到）");
+            // 第三十六轮 P2-E：recording 守卫——用户已点「保存」/「复制」按钮（_with_mode
+            // 设 mode + recording=false）后，任务体读到 mode 前（~50-100ms 窗口）ESC 仍
+            // 注册着（注销发生在任务体收尾），无守卫会覆写 mode=Copy → 用户得 Copy 非 Save。
+            if !SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             // 默认 copy 模式（与 stop_scroll_recording 命令一致；用户用按钮时走 _with_mode 设其他模式）
             SCROLL_STOP_MODE.store(ScrollStopMode::Copy as u8, std::sync::atomic::Ordering::SeqCst);
             SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -548,10 +554,16 @@ pub async fn start_scroll_recording(
                             && mouse_y >= mon_sel_y
                             && mouse_y <= mon_sel_y + mon_sel_h;
                         if !in_sel {
-                            log::info!("[scroll] 选区外右键按下 → 停止 scroll");
-                            SCROLL_STOP_MODE.store(ScrollStopMode::Copy as u8, std::sync::atomic::Ordering::SeqCst);
-                            SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
-                            // 不 break——让循环条件自然退出（保持与其他停止路径一致）
+                            // 第三十六轮 P2-E：recording 守卫（同 ESC handler）——防用户已点
+                            // 保存/复制按钮后，右键覆写 mode=Copy。
+                            if !SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
+                                // 已停止，跳过（不 break，让循环条件自然退出）
+                            } else {
+                                log::info!("[scroll] 选区外右键按下 → 停止 scroll");
+                                SCROLL_STOP_MODE.store(ScrollStopMode::Copy as u8, std::sync::atomic::Ordering::SeqCst);
+                                SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
+                                // 不 break——让循环条件自然退出（保持与其他停止路径一致）
+                            }
                         }
                     }
                     prev_right_down = curr_right_down;

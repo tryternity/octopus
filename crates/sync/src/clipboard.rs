@@ -678,6 +678,18 @@ impl From<MergeReport> for ClipboardMergeReport {
 /// - UPSERT favorite（is_deleted=0）
 /// - history.is_favorite=1
 fn pull_favorite(fav: &octopus_infra::db::ClipboardFavorite) -> Result<bool> {
+    // 第三十七轮 P2-3：超期 tombstone 不复活（对称 vault P2-1 + hotword upsert 守卫）。
+    // 本机不复活（clipboard GC 调 export 清本机 outline），但跨设备时序：A GC 删+export
+    // 但未 push → B fetch 到 A 的 GC 前 outline（含 X 超期 tombstone）→ None 分支 INSERT
+    // 复活。入口守卫短路所有 tombstone 子分支，defense-in-depth。
+    if fav.is_deleted > 0 {
+        let retention = <ClipboardFavoriteEntity as SyncEntity>::tombstone_retention_secs();
+        if is_tombstone_expired(retention, fav.is_deleted, now_secs()) {
+            log::debug!("[sync] 收藏 pull: {} 超期 tombstone，skip", fav.history_id);
+            return Ok(false);
+        }
+    }
+
     let history_id = &fav.history_id;
 
     if fav.is_deleted > 0 {

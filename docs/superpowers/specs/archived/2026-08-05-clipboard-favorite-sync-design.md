@@ -299,6 +299,11 @@ if remote_is_tombstone {
 
 ### 5.3 不做 GC
 
+> ⚠️ **已过时（2026-08-11 第三十六轮 P2-D）**：clipboard favorite tombstone GC 已实现——
+> scheduler 每日 `purge_expired_clipboard_favorites`（30 天 retention）+ `export_all_favorites`
+> 重建 .sync，对齐 hotword GC 范式。跨设备复活风险通过 merge 按年龄过滤（`is_tombstone_expired`）
+> 缓解。详见全量审查 spec §40 + architecture.md「octopus-scheduler」。以下为历史决策记录。
+
 与热词（10 天 retention）不同，clipboard favorite tombstone **不做 GC 硬删**——理由：
 - favorite 数量小（几十条级别），tombstone 永久保留不占空间
 - 避免 GC 后跨设备「DB 无 + outline 无 → push 复活」路径（热词 GC 后仍有此风险，靠 GC 时机 + retention 缓解）
