@@ -379,8 +379,9 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                     .unwrap_or(false);
                 match resolve_translate_strategy(&config).await {
                     TranslateStrategy::LocalModel { .. } | TranslateStrategy::CloudModel { .. } => {
-                        // 本地 / 云端模型都走流式翻译（CompactEditor contrast tab，体验更好）。
-                        // 隐藏浮窗（仅 ActionBar 可见时）+ 打开 contrast tab。
+                        // 本地 / 云端模型都走流式翻译，输出到 translate_window 只读浮窗
+                        //（与截图翻译一致，行为统一）。
+                        // 隐藏 ActionBar 浮窗（仅可见时）+ show 译文浮窗。
                         if action_bar_visible {
                             if let Some(win) = app.get_webview_window(crate::action_bar::action_bar_window::WINDOW_LABEL) {
                                 let _ = win.hide();
@@ -391,28 +392,13 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         }
 
                         let original_text = text.clone();
-                        // 生成 sessionId——写入 TempTabPayload 让前端 open-tab 时知道这次翻译的 session，
-                        // 同时传给 do_translate_streaming 的 CompactEditor target。
-                        // 解决发现 1（竞态）：payload 带 sessionId，前端按 sessionId 路由而非依赖
-                        // translatingTabKeyRef 时序，spawn emit 早于 open-tab emit 也能正确路由。
-                        let session_id = uuid::Uuid::new_v4().to_string();
-                        let payload = crate::commands::compact_editor_commands::TempTabPayload {
-                            text: "【翻译】\n⏳ 正在翻译…".into(),
-                            mode: Some("contrast".into()),
-                            original_text: Some(original_text.clone()),
-                            translated_text: Some("⏳ 正在翻译…".into()),
-                            translate_session_id: Some(session_id.clone()),
-                            ..Default::default()
-                        };
-                        // 投递主线程——create_compact_editor_window 内含 set_dock_icon
-                        // 需主线程的 MainThreadMarker，worker 线程直接调会被跳过
-                        let app_for_editor = app.clone();
+                        let ah = app.clone();
                         let _ = app.run_on_main_thread(move || {
-                            crate::commands::compact_editor_commands::open_temp_compact_editor(&app_for_editor, &payload);
+                            crate::ui::translate_window::show_at_mouse(&ah);
                         });
 
                         let app_clone = app.clone();
-                        let target = TranslateEmitTarget::CompactEditor { session_id };
+                        let target = TranslateEmitTarget::Float;
                         std::thread::spawn(move || {
                             do_translate_streaming(&original_text, &app_clone, target);
                         });
@@ -433,7 +419,14 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         }).await
                             .map_err(|e| e2s_ctx("LLM 线程异常: {}", e))?
                             .map_err(e2s)?;
-                        action_bar_show_result(result, text, "translate".into(), app.clone(), true);
+                        // FallbackLlm 非流式：show 浮窗后一次性 emit done
+                        //（与流式分支 + 截图翻译行为统一，不再开 CompactEditor contrast tab）
+                        let result_text = result.clone();
+                        let ah = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            crate::ui::translate_window::show_at_mouse(&ah);
+                            crate::ui::translate_window::emit_float_done(&ah, &result_text);
+                        });
                         return Ok(true);
                     }
                 }

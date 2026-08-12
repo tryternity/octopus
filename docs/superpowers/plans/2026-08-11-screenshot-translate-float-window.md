@@ -786,17 +786,22 @@ compact_editor_window 截图翻译状态更新；spec/plan 实施注记 + 状态
 | 3. translate_screenshot 命令 | ✅ | `do_translate_streaming` / `TranslateEmitTarget` 经 glob `pub use translate::*;` 短路径可达（§9.6），无需显式 re-export |
 | 4. 前端浮窗页面 | ✅ | (a) clipboard 改 `navigator.clipboard.writeText`（plugin 未装，§9.3）；(b) `getCurrentWindow` 从 `@tauri-apps/api/window`（§9.4）；(c) CSS var 名修正 `bg-background/90 text-foreground ... bg-primary text-primary-foreground`（§9.5） |
 | 5. 工具栏按钮 + i18n | ✅ | — |
-| 6. 联调 + 文档 | ✅ | Step 1 全量构建 0 error 0 warning；Step 2 GUI e2e 待用户手动；Step 3-5 文档已同步（screenshot.md §11、architecture.md translate_window 行 + compact_editor 截图翻译状态、spec §9 实现注记、本表） |
+| 6. 联调 + 文档 | ✅ | Step 1 全量构建 0 error 0 warning；Step 2 GUI e2e 待用户手动；Step 3-5 文档已同步 |
+| 7. 浮窗去 blur 关闭 + 置顶常驻 | ✅ | 用户反馈：弹窗后点击其他地方就消失体验不好。删 `onFocusChanged` blur 监听，仅 Esc/✕ 关闭；`always_on_top` 已由 build_float_window 默认启用 |
+| 8. footer 加「关闭」按钮 | ✅ | 复制按钮旁加关闭按钮（bg-muted 次级样式） |
+| 9. ActionBar 选中翻译改走浮窗 | ✅ | `script.rs::auto_translate` 两分支（流式 + FallbackLlm）从 CompactEditor contrast 改为 show_at_mouse + Float target，与截图翻译行为统一。详见 spec §9.9 |
 
 **构建验证**（2026-08-11）：`touch crates/desktop/src/main.rs && cargo build -p octopus-desktop` → 0 error 0 warning。
 
-**Step 2 e2e 验证清单**（用户后续手动跑）：
+**e2e 验证清单**（用户后续手动跑）：
 - [ ] 截图选区 → 工具栏出现「翻译」按钮（OCR 旁）
 - [ ] 点翻译按钮 → 截图窗关闭，鼠标上方弹出 translate_window
 - [ ] 浮窗显示「⏳ 翻译中...」→ 译文流式更新
 - [ ] 翻译完成 → 头部状态变「翻译完成」
 - [ ] 点「复制」→ 按钮变「已复制」→ 粘贴验证译文进剪贴板
-- [ ] Esc → 浮窗 hide
+- [ ] 点「关闭」/ Esc / ✕ → 浮窗 hide
+- [ ] **点击浮窗外其他窗口 → 浮窗不消失**（置顶常驻，Task 7）
 - [ ] 再次截图翻译 → 浮窗复用，上次译文清空，新译文流式
 - [ ] OCR 空文本（截空白区）→ 浮窗显示「❌ 未识别到文本」
 - [ ] 快速连点翻译 → 第二次触发 ocrWarn「前一个 OCR 还未完成」
+- [ ] **ActionBar 选中翻译 → 浮窗弹出 + 流式译文**（Task 9，与截图翻译行为一致）

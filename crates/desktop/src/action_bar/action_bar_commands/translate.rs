@@ -281,7 +281,36 @@ pub fn forget_translate_result(session_id: String) {
     TRANSLATE_RESULTS.lock().remove(&session_id);
 }
 
-/// 流式翻译：按段落（换行）切分，逐段翻译，每段完成 emit 累积结果。
+/// 句子边界切分（段内）：按 CJK + Latin 标点（。！？；.!?;）切。
+/// 对齐 translation crate 的 text_split::split_sentences 逻辑，但 desktop 层内联
+/// （不扩大 translation crate 公开 API）。用于 do_translate_streaming 的二级切分。
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        current.push(ch);
+        if matches!(ch, '。' | '！' | '？' | '；' | '.' | '!' | '?' | ';') {
+            sentences.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        sentences.push(current);
+    }
+    if sentences.is_empty() {
+        vec![text.to_string()]
+    } else {
+        sentences
+    }
+}
+
+/// 流式翻译：按段落（换行）切分，段落内再按句子边界切分，逐句翻译逐句 emit。
+///
+/// 两级切分原因：
+/// 1. **换行切段**：保持段落结构，段间补 `\n`。
+/// 2. **句子切分**（段内）：ActionBar 选中文本通常无换行（一整段），Opus-MT 等轻量模型
+///    对长段整段翻译时 decoder 容易过早输出 EOS（尤其技术术语 + 中英混排导致分布偏移），
+///    只译出第一句就停。按句切分让每句独立翻译，短句质量更高 + 不触发过早 EOS。
+///    句子边界：CJK 标点（。！？；）+ Latin 标点（.!?;）。
 ///
 /// `target` 决定 emit 的事件名 + payload 结构（详见 `TranslateEmitTarget`）。
 pub(crate) fn do_translate_streaming(text: &str, app: &AppHandle, target: TranslateEmitTarget) {
@@ -293,32 +322,36 @@ pub(crate) fn do_translate_streaming(text: &str, app: &AppHandle, target: Transl
         }
     };
 
-    // 按换行切分段落，逐段翻译
-    let segments: Vec<&str> = text.split('\n').collect();
-    let total = segments.len();
+    // 按换行切段落，段内再按句子边界切分
+    let paragraphs: Vec<&str> = text.split('\n').collect();
     let mut accumulated = String::new();
 
-    for (i, seg) in segments.iter().enumerate() {
-        if seg.trim().is_empty() {
-            if i < total - 1 { accumulated.push('\n'); }
+    for (para_i, para) in paragraphs.iter().enumerate() {
+        if para_i > 0 { accumulated.push('\n'); }
+        if para.trim().is_empty() {
+            target.emit_progress(app, &accumulated);
             continue;
         }
-        // tauri::async_runtime::block_on 复用 Tauri 全局 tokio runtime（cloud_pipeline.rs:122 同模式）。
-        // 本函数在 std::thread::spawn 的 worker 线程跑（translate_text / execute_action 都这样调），
-        // 非 tokio worker 线程，block_on 不会嵌套 panic。不可用 `tokio::runtime::Runtime::new()`。
-        match tauri::async_runtime::block_on(do_translate(seg, &config)) {
-            Ok(t) => {
-                accumulated.push_str(&t);
+        // 段内按句子边界切分
+        let sentences = split_sentences(para);
+        for sent in &sentences {
+            if sent.trim().is_empty() { continue; }
+            // tauri::async_runtime::block_on 复用 Tauri 全局 tokio runtime（cloud_pipeline.rs:122 同模式）。
+            // 本函数在 std::thread::spawn 的 worker 线程跑（translate_text / execute_action 都这样调），
+            // 非 tokio worker 线程，block_on 不会嵌套 panic。不可用 `tokio::runtime::Runtime::new()`。
+            match tauri::async_runtime::block_on(do_translate(sent, &config)) {
+                Ok(t) => {
+                    accumulated.push_str(&t);
+                }
+                Err(e) => {
+                    accumulated = format!("❌ 翻译失败: {}", e);
+                    target.emit_done(app, &accumulated);
+                    return;
+                }
             }
-            Err(e) => {
-                accumulated = format!("❌ 翻译失败: {}", e);
-                break;
-            }
+            // 每句完成 emit 增量结果（前端实时更新译文区）
+            target.emit_progress(app, &accumulated);
         }
-        if i < total - 1 { accumulated.push('\n'); }
-
-        // 每段完成 emit 增量结果（前端实时更新译文区）
-        target.emit_progress(app, &accumulated);
     }
 
     target.emit_done(app, &accumulated);
@@ -363,4 +396,43 @@ pub(crate) fn url_encode_param(s: &str) -> String {
         .add(b'[').add(b'\\').add(b']').add(b'^').add(b'`').add(b'{').add(b'|')
         .add(b'}');
     utf8_percent_encode(s, ENCODE_SET).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_sentences_cjk_punctuation() {
+        assert_eq!(split_sentences("你好。世界！"), vec!["你好。", "世界！"]);
+    }
+
+    #[test]
+    fn split_sentences_latin_punctuation() {
+        assert_eq!(split_sentences("Hello. World!"), vec!["Hello.", " World!"]);
+    }
+
+    #[test]
+    fn split_sentences_no_punctuation() {
+        // 无标点 → 整段
+        assert_eq!(split_sentences("无标点文本"), vec!["无标点文本"]);
+    }
+
+    #[test]
+    fn split_sentences_mixed_tech_text() {
+        // 用户 bug 场景：中英密集混排长段，含 。；标点
+        let text = "FTS5 trigram 对 CJK 友好。 tokenize='trigram' 不需中文分词器；多数竞品只有 LIKE。";
+        let sentences = split_sentences(text);
+        assert_eq!(sentences.len(), 3);
+        assert!(sentences[0].ends_with("友好。"));
+        assert!(sentences[1].ends_with("分词器；"));
+        assert!(sentences[2].ends_with("LIKE。"));
+    }
+
+    #[test]
+    fn split_sentences_empty_and_whitespace() {
+        assert_eq!(split_sentences(""), vec![""]);
+        // 纯空格/换行 trim 后空 → split_sentences 返回原文本
+        assert_eq!(split_sentences("  "), vec!["  "]);
+    }
 }
