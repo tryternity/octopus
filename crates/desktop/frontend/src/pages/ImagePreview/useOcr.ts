@@ -30,17 +30,14 @@ export function useOcr(imageId: string | null) {
   const [ocrOverlay, setOcrOverlay] = useState<'off' | 'overlay' | 'mask'>('off');
   const [ocrCopied, setOcrCopied] = useState(false);
   const [ocrWarn, setOcrWarn] = useState(false);
-  const [ocrCopiedText, setOcrCopiedText] = useState<string | null>(null);
   const ocrDoneRef = useRef(false);
-  // 第十五轮 P3-组4 #7：三处 setTimeout（ocrCopied / ocrWarn / ocrCopiedText）原裸调用无 ref，
+  // 第十五轮 P3-组4 #7：两处 setTimeout（ocrCopied / ocrWarn）原裸调用无 ref，
   // unmount 后仍 setState + 连续触发 timer stacking。各加独立 ref + 统一 unmount cleanup effect。
   const ocrCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ocrWarnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ocrCopiedTextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (ocrCopiedTimerRef.current) clearTimeout(ocrCopiedTimerRef.current);
     if (ocrWarnTimerRef.current) clearTimeout(ocrWarnTimerRef.current);
-    if (ocrCopiedTextTimerRef.current) clearTimeout(ocrCopiedTextTimerRef.current);
   }, []);
 
   // 截图 OCR 推送事件监听（仅注册 listener，不拉缓存）。
@@ -147,22 +144,11 @@ export function useOcr(imageId: string | null) {
     }
   }, [imageId, ocrOverlay]);
 
-  const handleOcrBlockCopy = useCallback((text: string, label: string) => {
-    navigator.clipboard?.writeText(text).then(() => {
-      setOcrCopiedText(label);
-      if (ocrCopiedTextTimerRef.current) clearTimeout(ocrCopiedTextTimerRef.current);
-      ocrCopiedTextTimerRef.current = setTimeout(() => setOcrCopiedText(null), 2000);
-    }).catch(() => {});
-  }, []);
-
   return {
     ocrBlocks,
     ocrOverlay,
     ocrCopied,
     ocrWarn,
-    ocrCopiedText,
     handleOcr,
-    handleOcrBlockCopy,
-    setOcrCopiedText,
   };
 }

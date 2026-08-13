@@ -100,7 +100,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     setWatermarkPrefs(prev => ({ ...prev, color, density, angle }));
   }, []);
   // OCR/QR 轴：从 hooks 引入（与标注/canvas 零耦合，2026-07-30 拆出）
-  const { ocrBlocks, ocrOverlay, ocrCopied, ocrWarn, ocrCopiedText, handleOcr } = useOcr(imageId);
+  const { ocrBlocks, ocrOverlay, ocrCopied, ocrWarn, handleOcr } = useOcr(imageId);
   const { qrScanning, qrResult, handleQrScan, closeQr } = useQr(imageId);
   // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
   const loadingFullRef = useRef(false);
@@ -820,20 +820,6 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
             <span style={{ opacity: 0.3 }}>·</span>
             <span>{fmt}</span>
           </>}
-        </div>
-      )}
-
-      {/* OCR 双击复制提示浮泡 */}
-      {ocrCopiedText && (
-        <div style={{
-          position: "absolute", top: 50, left: "50%", transform: "translateX(-50%)", zIndex: 200,
-          padding: "6px 14px", borderRadius: 8,
-          background: "rgba(34,197,94,0.95)", color: "#fff",
-          fontSize: 12, fontWeight: 600, fontFamily: "-apple-system, sans-serif",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.2)", pointerEvents: "none",
-          animation: "fadeIn 0.2s ease",
-        }}>
-          {ocrCopiedText}
         </div>
       )}
 
