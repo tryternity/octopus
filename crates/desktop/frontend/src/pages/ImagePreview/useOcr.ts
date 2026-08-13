@@ -7,6 +7,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 
+export interface OcrWord {
+  text: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface OcrBlock {
   text: string;
   x: number;
@@ -14,6 +22,7 @@ export interface OcrBlock {
   w: number;
   h: number;
   score: number;
+  words?: OcrWord[];
 }
 
 export function useOcr(imageId: string | null) {
