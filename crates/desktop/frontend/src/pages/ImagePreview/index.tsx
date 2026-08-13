@@ -100,7 +100,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     setWatermarkPrefs(prev => ({ ...prev, color, density, angle }));
   }, []);
   // OCR/QR 轴：从 hooks 引入（与标注/canvas 零耦合，2026-07-30 拆出）
-  const { ocrBlocks, ocrOverlay, ocrCopied, ocrWarn, ocrCopiedText, handleOcr, handleOcrBlockCopy } = useOcr(imageId);
+  const { ocrBlocks, ocrOverlay, ocrCopied, ocrWarn, ocrCopiedText, handleOcr } = useOcr(imageId);
   const { qrScanning, qrResult, handleQrScan, closeQr } = useQr(imageId);
   // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
   const loadingFullRef = useRef(false);
@@ -691,10 +691,6 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
                     stroke={ocrOverlay === 'mask' ? "rgba(0,0,0,0.1)" : "rgba(59,130,246,0.4)"}
                     strokeWidth={1} rx={2}
                     style={{ pointerEvents: 'none' }}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      handleOcrBlockCopy(b.text, t("imagePreview.copied", { text: b.text.length > 20 ? b.text.slice(0, 20) + '…' : b.text }));
-                    }}
                   />
                 ))}
                 {/* 第二遍：所有文字（保证在前面的 rect 之上） */}

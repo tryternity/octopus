@@ -43,18 +43,12 @@ export function useOcr(imageId: string | null) {
     if (ocrCopiedTextTimerRef.current) clearTimeout(ocrCopiedTextTimerRef.current);
   }, []);
 
-  // 截图 OCR → 推送 OCR blocks。mount 时同时拉后端缓存。
+  // 截图 OCR 推送事件监听（仅注册 listener，不拉缓存）。
+  // 开图流程的缓存拉取 / 自动 OCR 由下方 [imageId] effect 负责——
+  // 那里有意不 setOcrOverlay 以保持图片干净（仅 TextSelectLayer 透明文字层）。
+  // 若此处也拉缓存并 setOcrOverlay('overlay')，首图（mount effect 跑）会显示蓝框，
+  // 后续切图（mount effect 不再跑）不显示 → UX 不一致。
   useEffect(() => {
-    if (imageId != null) {
-      invoke<{ text: string; blocks: OcrBlock[] } | null>("get_last_screenshot_ocr", { imageId })
-        .then((res) => {
-          if (!res || res.blocks.length === 0) return;
-          ocrDoneRef.current = true;
-          setOcrBlocks(res.blocks);
-          setOcrOverlay('overlay');
-        })
-        .catch(() => {});
-    }
     const unlistenOcr = listen<{ text: string; blocks: OcrBlock[] }>("ocr-screenshot://result", (e) => {
       if (e.payload.blocks.length > 0) {
         ocrDoneRef.current = true;
@@ -78,6 +72,9 @@ export function useOcr(imageId: string | null) {
   useEffect(() => {
     if (!imageId || ocrDoneRef.current) return;
     let cancelled = false;
+    // OcrLockGuard 互斥重试 timer——unmount / imageId 切换时需 clearTimeout，
+    // 否则滞后的 retry 会在组件已卸载后仍 invoke + setState。
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     invoke<{ text: string; blocks: OcrBlock[] } | null>("get_last_screenshot_ocr", { imageId })
       .then((cached) => {
         if (cancelled) return;
@@ -98,7 +95,7 @@ export function useOcr(imageId: string | null) {
             const msg = String(e);
             if (msg.includes("还未完成")) {
               // OcrLockGuard 互斥 → 1s 后重试一次（重试前再确认未完成）
-              setTimeout(() => {
+              retryTimer = setTimeout(() => {
                 if (cancelled || ocrDoneRef.current) return;
                 invoke<{ text: string; blocks: OcrBlock[] }>("ocr_image", { id: imageId })
                   .then((r) => {
@@ -114,7 +111,10 @@ export function useOcr(imageId: string | null) {
           });
       })
       .catch(() => { if (!cancelled) ocrDoneRef.current = true; });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [imageId]);
 
   const handleOcr = useCallback(async () => {
