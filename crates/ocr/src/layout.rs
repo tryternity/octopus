@@ -344,7 +344,7 @@ mod tests {
     }
 
     fn mk_block(text: &str, x: f64, y: f64, w: f64, h: f64) -> OcrBlock {
-        OcrBlock { text: text.to_string(), x, y, w, h, score: 0.9 }
+        OcrBlock { text: text.to_string(), x, y, w, h, score: 0.9, words: None }
     }
 
     #[test]
