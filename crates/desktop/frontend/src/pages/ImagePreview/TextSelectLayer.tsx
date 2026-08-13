@@ -4,7 +4,10 @@
 //   - color: transparent（用户看到原图文字，选中 overlay 透明文字）
 //   - user-select: text（浏览器原生选择引擎）
 //   - 容器 transform: scale(zoom) + 自然像素坐标 → zoom 变化零重算
-//   - pointerEvents 受 tool 控制：tool="none" 时接管（拖选），其他工具放行（标注）
+//   - 容器 pointerEvents: none（事件穿透到 wrapper——空白区不挡抓手平移）
+//   - 每个 span pointerEvents 受 tool 控制：tool="none" → auto（接管拖选）；
+//     其他工具 → none（放行到标注层）。原生选择仍工作——mousedown 在 span 启动，
+//     浏览器跨 pointer-events: none 区域扩展选择。
 
 import { memo } from "react";
 import type { OcrBlock, OcrWord } from "./useOcr";
@@ -36,7 +39,7 @@ function TextSelectLayerBase({ blocks, natW, natH, zoom, tool, imgLeft, imgTop }
         height: natH,
         transform: `scale(${zoom})`,
         transformOrigin: "0 0",
-        pointerEvents: tool === "none" ? "auto" : "none",
+        pointerEvents: "none", // 容器穿透到 wrapper——空白区不挡抓手平移
         zIndex: 5,
       }}
     >
@@ -48,12 +51,16 @@ function TextSelectLayerBase({ blocks, natW, natH, zoom, tool, imgLeft, imgTop }
               position: "absolute",
               left: w.x,
               top: w.y,
+              width: w.w,
+              height: w.h,
+              overflow: "hidden",
               fontSize: w.h * 0.85,
               lineHeight: `${w.h}px`,
               color: "transparent",
               userSelect: "text",
               cursor: "text",
               whiteSpace: "pre",
+              pointerEvents: tool === "none" ? "auto" : "none",
             }}
           >
             {w.text}

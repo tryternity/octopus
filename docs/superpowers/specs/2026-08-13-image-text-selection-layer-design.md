@@ -42,9 +42,11 @@ macOS Live Text / PixPin / eSearch 支持「打开图片直接拖选文字」—
    │   color: transparent  ← 看到原图文字
    │   user-select: text   ← 原生拖选
    │   cursor: text        ← I-beam 光标
-   └─ pointerEvents: tool==="none" ? auto : none  ← 仅选择工具时接管
+   │   pointerEvents: tool==="none" ? auto : none  ← 仅选择工具时 span 接管
+   └─ 容器 pointerEvents: none  ← 事件穿透到 wrapper（空白区不挡抓手平移）
    ↓
-[用户拖选] tool="none" + 鼠标在 word 上 → I-beam → 原生拖选
+[用户拖选] tool="none" + 鼠标在 word 上 → I-beam → 原生拖选（mousedown 在 span 启动，
+浏览器跨 pointer-events: none 区域扩展选择）
    ↓ Ctrl+C / 浮动复制提示
 [复制选中文字]
 ```
@@ -164,7 +166,7 @@ export default function TextSelectLayer({ blocks, natW, natH, zoom, tool, imgLef
         width: natW, height: natH,             // 自然像素尺寸
         transform: `scale(${zoom})`,           // 缩放跟随
         transformOrigin: "0 0",
-        pointerEvents: tool === "none" ? "auto" : "none",
+        pointerEvents: "none",                 // 容器穿透——空白区不挡抓手平移
         zIndex: 5,                             // 在图片之上、标注之下
       }}
     >
@@ -183,6 +185,7 @@ export default function TextSelectLayer({ blocks, natW, natH, zoom, tool, imgLef
               cursor: "text",
               whiteSpace: "pre",
               overflow: "hidden",
+              pointerEvents: tool === "none" ? "auto" : "none",  // span 自己控制
             }}
           >
             {w.text}
@@ -219,7 +222,7 @@ useEffect(() => {
 
 **config 开关**：`image_preview_auto_ocr`（默认 true）。config 为 false 时不自动 OCR，保持现有手动按钮行为。
 
-**OcrLockGuard 互斥处理**：`ocr_image` 返回错误含"还未完成"时，1s 后重试一次（最多 3 次）。快速翻多张图片时不阻塞看图。
+**OcrLockGuard 互斥处理**：`ocr_image` 返回错误含"还未完成"时，1s 后重试一次（最多 2 次尝试）。快速翻多张图片时不阻塞看图。
 
 ### 4.3 index.tsx 集成
 
@@ -247,12 +250,14 @@ useEffect(() => {
 
 | 场景 | 事件归谁 | 行为 |
 |---|---|---|
-| `tool="none"` + 鼠标在 word span 上 | TextSelectLayer | I-beam 光标 → 原生拖选 |
-| `tool="none"` + 鼠标在空白区 | wrapper（抓手平移） | 拖拽滚动（文字层 pointerEvents auto 但空白区无 span，事件穿透到 wrapper） |
-| `tool="rect"/"pen"/"text"/...` | AnnotationSvg | TextSelectLayer pointerEvents: none 放行 |
-| 双击 word | TextSelectLayer | 原生双击选词（浏览器默认） |
+| `tool="none"` + 鼠标在 word span 上 | TextSelectLayer span | I-beam 光标 → 原生拖选（span pointerEvents: auto） |
+| `tool="none"` + 鼠标在空白区 | wrapper（抓手平移） | 拖拽滚动——容器 pointerEvents: none，空白区事件穿透到 wrapper |
+| `tool="rect"/"pen"/"text"/...` | AnnotationSvg | span pointerEvents: none 放行（容器仍 none） |
+| 双击 word | TextSelectLayer span | 原生双击选词（浏览器默认） |
 
-**冲突解决**：文字层的 span 只覆盖有文字的区域，空白区无 span → 事件穿透到 wrapper 的 onMouseDown（抓手平移 / 标注 hitTest）。这是 CSS pointerEvents 的天然行为——子元素 `pointer-events: auto` 只在元素自身区域拦截，透明区域不拦截。
+**冲突解决**：容器始终 `pointer-events: none`——事件穿透到下方 wrapper（抓手平移 / 标注 hitTest）。每个 span 在 `tool="none"` 时设 `pointer-events: auto`，只在自身 box 区域拦截 mousedown 启动原生选择。
+
+> **历史教训**（2026-08-13 实施后修正）：初版把 `pointerEvents` 放在容器（`tool==="none" ? auto : none`），误以为容器 `pointer-events: auto` 在空白区会"穿透到 wrapper"。实际 CSS 行为是：`pointer-events: auto` 的 div 在**整个 bounding box**（natW × natH）拦截事件，不论子元素是否覆盖该点。这导致 `tool="none"` 时整张图被透明 div 盖住，wrapper 的 onMouseDown（startPan）永不触发，抓手平移完全失效。修正：容器永远 `none`，pointerEvents 下放到每个 span——span 只在自身 box 区域拦截，空白区天然穿透。原生选择不受影响：mousedown 在 auto span 启动后，浏览器跨 `pointer-events: none` 区域扩展选择高亮。
 
 **注意**：wrapper 的 onMouseDown（`index.tsx:482-515`）不需改——文字层 span 拦截 mousedown 后浏览器原生选择接管，不会冒泡到 wrapper。
 
@@ -269,7 +274,7 @@ useEffect(() => {
 | 场景 | 处理 |
 |---|---|
 | OCR 失败（引擎错误） | 静默降级——无文字层，图片正常显示（不影响看图） |
-| OcrLockGuard 互斥 | 1s 后重试，最多 3 次；超限放弃 |
+| OcrLockGuard 互斥 | 1s 后重试一次（最多 2 次尝试）；超限放弃 |
 | 无 word-level box（旧缓存 / return_word_box 失败） | fallback 用 line-level block 整行作为一个 span（行级选择） |
 | 大图 OCR 延迟（1-3s） | 用户可先看图；OCR 完成后文字层淡入（CSS transition opacity） |
 | 文字层与原图对齐偏差 | 以 word 为单位高亮，容差合理（PixPin/eSearch 同样限制） |
@@ -330,4 +335,12 @@ Tasks 1-5 全部完成（Task 5 跳过 Step 2 手动 e2e——GUI 测试由用�
 - 后端单测：`ocr_output_to_blocks_extracts_word_boxes` + `ocr_output_to_blocks_no_word_boxes` 通过（Task 1 Step 9-10）
 - 编译：`cargo build -p octopus-desktop` + `npx tsc --noEmit` + `npm run build` 全 0 error 0 warning（Task 5 Step 1-2 验证）
 - 手动 e2e：**未跑**（GUI 测试需用户手动），见 plan Task 5 Step 2 验证清单
+
+### 10.4 全分支终审修正（2026-08-13）
+
+整分支 review 发现 3 处问题，已修正：
+
+1. **Important #1：容器 pointerEvents 破坏抓手平移** — 容器原 `pointerEvents: tool === "none" ? "auto" : "none"`，`tool="none"` 时整张图（natW × natH bounding box）被透明 div 盖住，wrapper 的 `onMouseDown`（startPan）永不触发。修正：容器永远 `pointerEvents: "none"`，pointerEvents 下放到每个 span（`tool === "none" ? "auto" : "none"`）。原生选择不受影响——mousedown 在 auto span 启动，浏览器跨 none 区域扩展选择高亮。§2 / §4.1 / §5 文本同步更新（§5 加历史教训）。
+2. **Minor #3：span 缺 width/height/overflow** — §4.1 代码示例早写了 `width: w.w, height: w.h, overflow: "hidden"`，但实现漏了。补回——span box 对齐 OCR word box，I-beam 命中区与图像文字对齐。
+3. **Minor #5：retry count 文档/实现不一致** — §4.2 / §7 写"最多 3 次"重试，实现只重试 1 次（共 2 次尝试）。统一改为"1s 后重试一次（最多 2 次尝试）"匹配实现。
 
