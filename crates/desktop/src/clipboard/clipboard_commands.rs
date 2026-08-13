@@ -463,6 +463,11 @@ pub struct OcrTextBlock {
     pub text: String,
     pub x: f64, pub y: f64, pub w: f64, pub h: f64,
     pub score: f64,
+    /// 词级框（用于前端文本选择层）。return_word_box=false 时为 None。
+    /// `#[serde(skip_serializing_if = "Option::is_none")]` 保证旧前端无感（向后兼容）。
+    /// 复用 `octopus_ocr::engine::OcrWord`（与同文件 OcrEngine/OcrLockGuard 同路径约定）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub words: Option<Vec<octopus_ocr::engine::OcrWord>>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -528,6 +533,7 @@ pub async fn ocr_image(id: String) -> Result<OcrResult, String> {
 
     let blocks = blocks.into_iter().map(|b| OcrTextBlock {
         text: b.text, x: b.x, y: b.y, w: b.w, h: b.h, score: b.score,
+        words: b.words,
     }).collect();
     Ok(OcrResult { text, blocks })
 }
