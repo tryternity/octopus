@@ -152,6 +152,11 @@ impl RecordSession {
             }
             inner.state = SessionState::Starting;
             inner.last_helper_error = None; // 清上次错误
+            // 第四十二轮 P2-5：清 last_stopped——reader task 异步设 last_stopped，stop()
+            // take() 时可能因竞态取到 None（reader 尚未解析完最后一行）→ 返回 dummy；
+            // reader 随后写入真实值残留 → 下次 session stop() 可能 take 到上一会的
+            // StoppedInfo（错 screen_path/duration_ms/file_size 存入 DB）。start 时清掉。
+            inner.last_stopped = None;
             // 存快照供 hotkey/tray stop 入库用（recording_id / source / video / audio）
             inner.last_request = Some(request.clone());
         }

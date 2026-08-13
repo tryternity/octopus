@@ -577,6 +577,11 @@ impl StreamingParaformer {
         // enc [1, T', 512]
         let (enc_shape, enc_data) = outputs[0].try_extract_tensor::<f32>()?;
         let dims: Vec<usize> = enc_shape.iter().map(|&d| d as usize).collect();
+        // 第四十轮 P2-2：rank + 空校验——模型损坏/输出签名变更时 dims.len() < 3 或
+        // enc_len_data 为空会越界 panic。对齐离线 paraformer.rs:150 `if enc_dim.len() != 3 { bail! }`。
+        if dims.len() < 3 {
+            anyhow::bail!("streaming paraformer encoder output rank < 3: {:?}", dims);
+        }
         let enc_len = dims[1];
         let enc_feat = dims[2];
         let enc_tensor =
@@ -584,6 +589,9 @@ impl StreamingParaformer {
 
         // enc_len [1]
         let (_, enc_len_data) = outputs[1].try_extract_tensor::<i32>()?;
+        if enc_len_data.is_empty() {
+            anyhow::bail!("streaming paraformer encoder output enc_len scalar is empty");
+        }
         let enc_len_scalar = enc_len_data[0] as usize;
 
         // alphas [1, T']
@@ -607,8 +615,10 @@ impl StreamingParaformer {
         // 第二十九轮 P2-F1：原 slice 用 enc_len.min(enc_dim1) 截断，但循环仍用原始
         // enc_len——若 enc_len > enc_dim1，循环到 i>=enc_dim1 时 enc_data 越界 panic。
         // 统一 effective_enc_len = enc_len.min(enc_dim1)，slice 和循环都用它。
+        // 第四十轮 P2-1：alphas 同源守卫——alphas（outputs[2]）长度可能 < enc_dim1
+        // （模型损坏/int8 量化异常），循环 :623 alphas[i] 越界 panic。补 .min(alphas.len())。
         let enc_dim1 = enc_tensor.shape()[1];
-        let effective_enc_len = enc_len.min(enc_dim1);
+        let effective_enc_len = enc_len.min(enc_dim1).min(alphas.len());
         let enc_slice = enc_tensor.slice(ndarray::s![0, ..effective_enc_len, ..]);
         let enc_data = enc_slice.as_slice().ok_or_else(|| anyhow::anyhow!(
             "encoder output non-contiguous (shape={:?})", enc_tensor.shape()
@@ -669,8 +679,9 @@ impl StreamingParaformer {
         // 第二十九轮 P2-F1：原 slice 用 enc_len.min(enc_dim1) 截断，但循环仍用原始
         // enc_len——若 enc_len > enc_dim1，循环到 i>=enc_dim1 时 enc_data 越界 panic。
         // 统一 effective_enc_len = enc_len.min(enc_dim1)，slice 和循环都用它。
+        // 第四十轮 P2-1：alphas 同源守卫（同 run_cif），补 .min(alphas.len())。
         let enc_dim1 = enc_tensor.shape()[1];
-        let effective_enc_len = enc_len.min(enc_dim1);
+        let effective_enc_len = enc_len.min(enc_dim1).min(alphas.len());
         let enc_slice = enc_tensor.slice(ndarray::s![0, ..effective_enc_len, ..]);
         let enc_data = enc_slice.as_slice().ok_or_else(|| anyhow::anyhow!(
             "encoder output non-contiguous (shape={:?})", enc_tensor.shape()

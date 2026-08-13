@@ -1989,3 +1989,322 @@ P2-1 的 upsert 守卫已防复活（即使 outline 含超期 tombstone，pull �
 - `cargo build -p octopus-translation -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
 - `cargo test -p octopus-translation` —— 25 过（real-model ignored）
 - `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 541 过 0 失败
+
+## 43. 第三十九轮——GC 事务对称性 + opus_mt truncate 保留 eos（2026-08-12，修 3 P2 + 1 留后续）
+
+### 触发
+
+收到第三十九轮审查报告（上轮 3 项修复核实全部落地 + 3 agent 并行覆盖 + 逐一直读）。本轮 4 条 P2 逐一核实，全部成立（P2-4 偏 P3 留后续）。额外推翻 2 条 agent 高估发现。
+
+### 🟡 P2-1 · vault GC 三条 SQL 无事务（与 hotword GC 不对称） ✅ 已修
+
+**核实**：`purge_expired_vault_tombstones_at`（vault.rs:503-539）三条 `conn.execute`（DELETE cipher / UPDATE folder_id=NULL / DELETE folder）在 with_db 默认 autocommit 下各自独立提交。对比同 crate hotword `purge_expired_hotword_tombstones_at`（hotword.rs:252）已用 `unchecked_transaction`（第三十三轮补的）。vault.rs:488 注释自承「对齐 hotword 范式」但实际没做。中途 panic/崩溃留半 GC（cipher 已删 / folder_id 已 NULL / folder 未删）。
+
+**修复**：三条 SQL 包 `unchecked_transaction`（`let tx = conn.unchecked_transaction()?; ... tx.commit()?;`），对齐 hotword :252 范式。
+
+### 🟡 P2-2 · 手动「清空回收站」无事务（同型不对称） ✅ 已修
+
+**核实**：`purge_all_hotword_tombstones_at`（hotword.rs:320-345）多个 `conn.execute`（连带删词 / word tombstone / hits 孤儿）无 `unchecked_transaction`。对比同文件 `purge_expired_*`（:252）、`delete_hotword_set_at`（:191）均已包事务。手动「清空回收站」触发，中途失败留脏。
+
+**修复**：包 `unchecked_transaction`，对齐同文件 :252 范式。
+
+### 🟡 P2-3 · opus_mt 长输入 truncate 丢 eos（与 m2m100 不对称） ✅ 已修
+
+**核实**：opus_mt `translate_chunk`（opus_mt.rs:107-113）`encode(text, true)` 让 post_processor 补 `</s>`(eos)，紧接 `truncate(..., Right)` 从尾部删——tokenizers 0.21 truncate 不区分 special token，连 eos 一起删。长输入（≥500 token）encoder 无 eos 结尾，偏离 MarianMT 训练分布，翻译质量下降。对比 m2m100.rs:70-75（第三十五轮 P3-1 加的）显式保留 eos（`truncate(MAX-1); push(eos)`）。
+
+**修复**：opus_mt truncate 改在 Vec 上操作——`input_ids.truncate(MAX-1); input_ids.push(self.eos_id)`，对齐 m2m100 :70-75。
+
+### 留后续
+
+#### P2-4 clipboard pull active 分支三步 DB 写无事务（偏 P3）
+
+`pull_favorite` active 分支（clipboard.rs:765-773）`upsert_history_from_payload` / `upsert_favorite_sync` / `set_clipboard_is_favorite` 三步各自独立 with_db（autocommit）。任一成功后续失败致 favorite 表 active 但 history.is_favorite=0。但有自愈：失败 `?` 上抛 → pull 返 Err → log_warn_skip → 下次 sync 重试重建。偏 P3（自愈性不一致），留后续。
+
+#### 推翻的 agent 发现（核实否决）
+
+- sync agent P2-4「merge_vault 改密 TOCTOU 数据锁死」→ 降 P3：`save_vault_meta` 与 `change_master_password` 取同一把 `META_WRITE_LOCK`（ReentrantMutex 跨线程互斥），change 的 save 无法在 sync 持锁期间插入。engine.rs:1455-1472 已加 stamp 重读校验。残留仅几十微秒窗口，且 stamp 校验 bail。P3 防御性。
+- translation agent P2-1「CloudLlmEngine::translate async 陷阱」→ P3：desktop translate.rs:115-118 已绕过该 trait method（直接 spawn_blocking + chat_text_with_prompt），trait impl 仅测试引用。死代码陷阱但无生产调用方。
+
+### 验证
+
+- `cargo build -p octopus-infra -p octopus-translation` —— 0 error 0 warning
+- `cargo test -p octopus-infra --lib` —— 194 过
+- `cargo test -p octopus-translation` —— 0 失败（real-model ignored）
+
+## 44. 第四十轮——streaming_paraformer ONNX 边界 panic 守卫（2026-08-12，修 2 P2）
+
+### 触发
+
+收到第四十轮审查报告（上轮 3 项修复核实全部落地 + 3 agent 并行覆盖 + 逐一直读）。本轮 2 条 P2 都在 streaming_paraformer.rs——ONNX 边界 panic 守卫的同源遗漏。逐一核实全部成立。
+
+### 🟡 P2-1 · CIF 循环 alphas[i] 无长度守卫（同源遗漏） ✅ 已修
+
+**核实**：`run_cif`（streaming_paraformer.rs:610-623）+ `run_cif_final`（:672-685）。`effective_enc_len = enc_len.min(enc_dim1)`（:611/:673）只对 enc_tensor 维度截断，**不校验 alphas.len()**。CIF 循环 `for i in 0..effective_enc_len { let this_alpha = alphas[i]; }`（:623/:685）若 `alphas.len() < effective_enc_len`（模型损坏/int8 量化异常致 alphas 输出短）→ 越界 panic。
+
+注释 :607-609 自承「第二十九轮 P2-F1 修了 enc_data 越界」（effective_enc_len = enc_len.min(enc_dim1)），但同源的 alphas 分支被遗漏——enc_data 和 alphas 都来自 ONNX 输出，都可能异常短，只守了前者。
+
+**修复**：两处 `effective_enc_len` 补 `.min(alphas.len())`——`enc_len.min(enc_dim1).min(alphas.len())`。enc_data 和 alphas 都被守，对称。
+
+### 🟡 P2-2 · run_encoder 缺 rank/空校验（与离线版不对称） ✅ 已修
+
+**核实**：`run_encoder`（:578-593）`:580 let enc_len = dims[1]; :581 let enc_feat = dims[2];` 直接索引 dims[1]/dims[2]，无 rank 校验——若 dims.len() < 3（模型损坏/输出签名变更）越界 panic。`:587 enc_len_data[0]` 无空判——若 enc_len_data 为空越界 panic。
+
+**对比**：离线 paraformer.rs:150-151 有 `if enc_dim.len() != 3 { bail!("Unexpected encoder output rank: {:?}", enc_dim); }` 守卫。流式版缺。
+
+**修复**：加 `if dims.len() < 3 { bail!() }` + `if enc_len_data.is_empty() { bail!() }`，对齐离线 :150 范式。模型损坏时返回明确错误而非 panic。
+
+### 推翻的 agent 发现（核实否决）
+
+- infra agent P2-1「upsert_vault_folder_sync 竞态+冗余」→ 降 P3 死代码：sync pull folder 走 engine.rs insert/update_vault_folder_sync_at（保留远程 ts），不走 vault.rs:686。全 crate grep 零生产调用方。竞态不可达。
+- asr agent P2-3 OCR instance 双重初始化：parking_lot::Mutex 串行后第二次必走 INSTANCE.get 短路。不成立。
+- asr agent P3-3/P3-4/P3-5（aliyun stash / m2m100 lang_id / tencent final code）：逻辑正确，自行收回。
+- desktop agent 全 P3 观察项：均非 bug，注释权衡合理。
+
+### 留后续（P3 群）
+
+- upsert_vault_folder_sync（vault.rs:686）死代码写 datetime('now') 若误用致 ping-pong——建议删除
+- init_schema v56→v57 迁移无事务（mod.rs:353-409）——与 v57→v58（:422 有事务）不对称，幂等自愈
+- streaming_zipformer log_probs_shape/enc_shape 无 rank 校验（:343/789）——对比 firered.rs:130 有 bail!
+- streaming_runner finish_with_tail 在 vad.is_none() 绕过 seen_speech 门控（:309）
+- vault_set_lock_timeout 持锁跨 DB IO（session.rs:102）
+- clipboard pull 三步无事务（P2-4，第三十九轮留后续，自愈性）
+- scroll guard 竞态（P2-4，第三十七轮留后续）
+
+### 验证
+
+- `cargo build -p octopus-asr-local` —— 0 error 0 warning
+- `cargo test -p octopus-asr-local --lib` —— 170 过 0 失败（15 real-model ignored）
+
+## 45. 第四十一轮——离线 paraformer CIF alphas 越界对称漏网 + FallbackLlm timeout（2026-08-13，修 1 P2 + 1 P2-低 + 1 留后续）
+
+### 触发
+
+收到第四十一轮审查报告（上轮 2 项修复核实全部落地 + 3 agent 并行 + 逐一直读）。本轮核心发现 P2-1 是第四十轮修复的**对称漏网**——流式版修了 alphas 越界，离线版漏修。这正是 AGENTS.md 警告的「同型疏忽模式」。逐一核实全部成立。
+
+### 🟡 P2-1 · 离线 paraformer CIF 循环 alphas 越界（流式已修、离线漏修） ✅ 已修
+
+**核实**：离线 `paraformer.rs:175` `effective_enc_len = enc_len_scalar.min(enc_dim1)` 只对 enc_tensor 维度截断，**不校验 alphas.len()**。CIF 循环 :184-185 `for i in 0..effective_enc_len { let this_alpha = alphas[i]; }` 若 `alphas.len() < effective_enc_len`（模型损坏/int8 量化异常）→ 越界 panic。
+
+**铁证**：流式版 `streaming_paraformer.rs:621` 第四十轮 P2-1 已补 `.min(alphas.len())`，离线版漏修。离线版注释 :172-173 自承「对齐流式版...且修流式版循环 :618 仍用原始 enc_len 的不完整修复」——修复者知道流式版历史问题，却没把 `.min(alphas.len())` 反向同步。
+
+**修复**：:175 改 `enc_len_scalar.min(enc_dim1).min(alphas.len())`，一行对称修复。
+
+**教训**：第四十轮修流式版 alphas 越界时，应 grep 全部同型实例（streaming + offline）。这是第三轮「同型疏忽模式」教训的再现——修一类问题要 grep 全部同型实例。
+
+### 🟡 P2-低 · FallbackLlm 自动翻译路径漏 timeout（同函数不对称） ✅ 已修
+
+**核实**：`script.rs:417-421` FallbackLlm 路径 `spawn_blocking(...).await` 无 `tokio::time::timeout` 包裹。同函数 AI 路径（:445-456）有 `timeout(AI_TIMEOUT_SECS=10s)`。FallbackLlm 路径下若 LLM 网络慢，浮窗持续 loading（LLM client 自带 120s timeout 兜底非永久卡死）。
+
+**修复**：补 `tokio::time::timeout(AI_TIMEOUT_SECS, llm_future)` 包裹，对齐同函数 AI 路径范式。超时返回 Err 释放 UI（spawn_blocking 线程继续跑到结束才回收，同步 reqwest 无法中断——但前端立即响应）。
+
+### 留后续
+
+#### P2-低 opus_mt/m2m100 分段翻译单段失败丢全部结果
+
+opus_mt.rs:243 `translate_chunk(&sub)?` + :248 `translate_chunk(sent)?` 双 `?`，任一段失败整篇 Err，前面译成功的段被丢。触发需长文本（>500 tokens 分段）+ 中间某段 ONNX 临时错。m2m100.rs:233 同模式。改法需产品决策（部分成功返回 vs 全失败重试），留后续。
+
+### 推翻的 agent 发现（核实否决）
+
+- sync agent P1-1（vault tombstone 文件永久堆积）→ 推翻：store.rs:543 ciphers 来自 DB 查询，GC 删 DB 行后下次 export 不含该 id → cleanup_orphan_files 清理。逻辑自洽，agent 自身内部矛盾（P2-3 写「自洽」P1-1 写「永久残留」）。
+- sync agent P1-2（clipboard pull_favorite 缺 TOCTOU 重判）→ 降 P3：clipboard.rs:752 反向复活保护 + merge_three_way 时间戳比较双重守护。vault 的 TOCTOU 重判因密码高敏感，clipboard 低敏感，严重度不对称合理。
+- sync agent P2-4（sync_now hotword/clipboard 失败静默）→ 降 P3：engine.rs:786 注释明示有意设计（vault 已 sync 不应因 hotword 失败回滚）。default report 不谎报数据。
+- translation agent P2-3（decoder 每步 vocab clone）→ 降 P3：apply_penalties 需 &mut logits 的固有需求，纯性能优化。
+- desktop agent P3-6（vault_sync 保留内层 spawn）→ P3 设计取舍：vault_sync 故意保留 spawn（sync_now 阻塞 10-30s 起子线程避免阻塞 tick），有意权衡。
+
+## 46. 第四十二轮——全新全模块审查修复（2026-08-13，修 6 P2）
+
+### 触发
+
+第四十二轮全新全模块审查（6 agent 覆盖全工程 20 crate）。6 条 P2 全部亲自核实坐实，本轮全部修复。无 P1。
+
+### 🟡 P2-4 · InstantStart/HandsFreeStart 不清 editing flag → 录音静默损坏 ✅ 已修
+
+**核实**：edit.rs:28-30 `Stage::Idle` 时 `handle_enter_edit_mode` 设 `*editing = true`。tick 循环 `if editing { audio.trim_buffer(5.0) } else { dispatch_tick(...) }`——editing==true 时音频被 trim 不送 ASR。InstantStart/HandsFreeStart 只检查 `!matches!(stage, Stage::Idle)` 不清 editing → Idle+editing 态开 PTT/hands-free → 录音静默损坏。
+
+**修复**：两入口 begin_recording 前补 `if editing { editing = false; edit_buffer = None; }`（对称 Toggle :402）。
+
+### 🟡 P2-5 · record session last_stopped 竞态 ✅ 已修
+
+**核实**：reader task 异步设 last_stopped，stop() take 时可能竞态取 None → 返回 dummy；reader 随后写入真实值残留。start() 清 last_helper_error 但不清 last_stopped → 下次 stop 可能取到上一会 StoppedInfo。
+
+**修复**：start() 锁块内加 `inner.last_stopped = None;`。
+
+### 🟡 P2-1 · delete_transcriptions_at 裸 DELETE 不碰 favorites → 孤儿 ping-pong ✅ 已修
+
+**核实**：infra/transcription.rs:263 直接 DELETE 不碰 favorites → 孤儿 ping-pong。同型疏忽：第三十六轮 P2-A 修了 permanent_delete_item，这条独立路径漏修。
+
+**修复**：DELETE 前补 `UPDATE clipboard_favorites SET is_deleted = ?now WHERE history_id IN (...) AND is_deleted = 0`。
+
+### 🟡 P2-2 · 文件去重永不匹配 ✅ 已修
+
+**核实**：watcher.rs:132 用 find_by_text 查 `content = paths_json`，但文件项 content="" 路径在 ref_data → 永不匹配 → 每次粘贴相同文件新建条目。
+
+**修复**：加 `find_file_by_paths`（查 `WHERE ref_data = ? AND item_type = 'file'`），watcher 改用它。
+
+### 🟡 P2-3 · script exit_code=None（信号终止）当成功 ✅ 已修
+
+**核实**：`if let Some(code)` 漏了 None 分支（信号终止落到成功路径）。script_error_msg 正确用 `!= Some(0)`。
+
+**修复**：改为 `if result.exit_code != Some(0)`，None 分支返回「脚本异常退出（被信号终止）」。
+
+### 🟡 P2-6 · 离线 Paraformer CIF 缺非正 alpha 守卫 ✅ 已修
+
+**核实**：离线 CIF 无 `if this_alpha <= 0.0 { continue; }`，流式版有。负 alpha 损坏声学嵌入。同型疏忽：第四十轮修了流式+离线 alphas 越界守卫，但非正 alpha 跳过未反向同步。
+
+**修复**：paraformer.rs:188 后加 `if this_alpha <= 0.0 { continue; }`。
+
+### 留后续（P3 群，本轮未修）
+
+vault permanent_delete 单项缺 sync lock / Auto-Type AX 失败仍继续 / verify 不 reset 计数器 / clear_voice_aware unwrap_or(0) / verify_ssh_key stdin null / send_command Starting 态 / InstantStop 覆写 PolishNow / restart_capture 尾音丢弃 / capx canvas_heal 边界 / paddle-ocr unclip 多边形 / streaming cross-chunk dedup / streaming flush 丢尾帧 / English separator 不识别。
+
+### 验证
+
+- `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
+- `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 546 过
+- `cargo test -p octopus-asr-local --lib` —— 170 过
+- `cargo test -p octopus-clipboard --lib` —— 25 过
+- `cargo test -p octopus-record` —— 6 过
+
+### 验证
+
+- `cargo build -p octopus-asr-local -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
+- `cargo test -p octopus-asr-local --lib` —— 170 过 0 失败
+- `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 546 过 0 失败
+
+## 47. 第四十三轮——clear_voice_aware 计数虚高修复（2026-08-13，修 1 P2-低）
+
+### 触发
+
+第四十三轮全新审查（4 agent 并行 + 逐一直读核实）。本轮极干净——8 条 agent P2 仅 1 条 P2-低立得住（clear_voice_aware 计数虚高），2 条推翻（逻辑自洽/有意设计），5 条降 P3（设计取舍/性能/理论性）。第四十二轮 6 修复全部核实落地无缺陷。
+
+### 🟡 P2-低 · clear_voice_aware 返回计数虚高（短 voice 被计两次） ✅ 已修
+
+**核实**：`clear_voice_aware`（clipboard/store.rs:463-516）：
+- :474 `voice_rows` = 本次新软删的活跃 voice（`UPDATE ... WHERE is_deleted = 0`）
+- :480 `short_voice` = 所有回收站短 voice 物理删（`DELETE ... WHERE is_deleted = 1 AND length < MIN`）——**包含 :474 刚软删的短 voice**
+- :515 `Ok(non_voice_rows + short_voice + voice_rows)` ——本次软删的短 voice 同时计入 voice_rows 与 short_voice → 返回值偏大
+
+**影响**：仅前端「已清理 N 条」提示数字虚高，无 DB 一致性损坏。
+
+**修复**：2a 软删加 `length >= MIN` 条件——长 voice 才软删（进回收站），短 voice 留给 2b 直接物理删。这样短 voice 不进 voice_rows 计数，2b 也简化为删所有短 voice（活跃+回收站），不再有双重计数。对齐 `delete_item` 单条的 `is_voice_worth_keeping` 语义（短 voice 直接物理删不进回收站）。
+
+### 推翻的 agent 发现（核实否决）
+
+- vault-sync P2-1（update_vault_folder_fields 占位符 ?4/?5 跳序）→ 推翻：?N 是 rusqlite 按编号绑定（非按位置），完全正确。
+- vault-sync P2-3（incremental_export 孤儿累积）→ 推翻：db_all_empty 保护分支是有意设计，DB 恢复后正常 cleanup。
+- vault-sync P2-4（empty_trash 非事务）→ 降 P3：部分成功语义（清空 100 条 50 条失败保留成功的 50 条），有意设计。
+- translation P2-1/2/3 → 降 P3（finalize 灰度兜底三重门 / opus_mt 多次 encode 纯性能 / m2m100 EOS==start 理论性）。
+- vault-sync P2-2（clipboard pull 双解密）→ 降 P3：两次解密目的不同（sync_md5 vs history payload），非冗余。
+
+### 验证
+
+- `cargo build -p octopus-clipboard` —— 0 error 0 warning
+- `cargo test -p octopus-clipboard --lib` —— 25 过 0 失败
+
+## 48. 第四十四轮——P1 数据丢失 regression + P1 path traversal 安全漏洞（2026-08-13，修 2 P1 + 回归测试）
+
+### 触发
+
+第四十四轮全新全模块审查（4 agent 并行覆盖全 22 crate）。本轮发现 **2 条 P1**——P1-A 是我第四十三轮修复引入的 regression（filter 泄漏），P1-B 是被遗漏的第三个 path traversal 守卫。逐一直读代码核实全部坐实。
+
+### 🔴 P1-A · clear_voice_aware 2b 漏 filter → 跨 tab 清空误删全库短 voice（第四十三轮 regression） ✅ 已修
+
+**核实**：`clear_voice_aware`（clipboard/store.rs:484-490）步骤 2b 的 DELETE `WHERE item_type = 'voice' AND length(content) < {min}` **无 select_where/delete_where 过滤**。
+
+**根因**：第四十三轮 P2-低 修复把 2b 从 `... AND is_deleted = 1`（只删回收站）改为 `... `（删活跃+回收站）以消除双重计数，但**忘了加 select_where 过滤**。原 2b 的 `AND is_deleted = 1` 虽然也漏 filter，但因为只删回收站行（is_deleted=1），跨 tab 清空时活跃 voice 不受影响——第四十三轮改掉 is_deleted=1 后，filter 泄漏变成 P1。
+
+**触发链**：用户在「图片」tab 点「清空」→ `clear_history_by_filter("image")` → `where_clause = "item_type = 'image' AND is_deleted = 0"` → `clear_voice_aware(W, W)`：步骤 2b 物理删**全库所有短 voice**（item_type='voice' AND length<5，与 filter 无关）——用户主动录的短 voice 被静默永久删除，不可恢复。
+
+**修复**：2b 的 DELETE 加 `AND {select_where}`，只在目标 filter 范围内清短 voice。
+
+**教训**：第四十三轮「修了一半」——修了计数虚高（P2-低），但引入了更严重的 filter 泄漏（P1）。修 bug 时必须验证修复不引入新的、更严重的问题。
+
+### 🔴 P1-B · clipboard favorite_file_path 缺 validate_uuid → path traversal 安全漏洞 ✅ 已修 + 回归测试
+
+**核实**：`favorite_file_path`（sync/clipboard.rs:76-78）`dir.join(shard_dir(uuid)).join(format!("{uuid}.json"))` **无任何校验**。
+
+**三实体守卫不对称**：
+- ✅ vault `cipher_file_path`/`folder_file_path`（store.rs:82）有 `validate_uuid`（拦 `/` `\` `..` `\0` 空）
+- ✅ hotword `hotword_set_dir`（hotword.rs:63）有 `validate_hotword_uuid`
+- ❌ clipboard `favorite_file_path` 无任何校验——第三个被遗漏的实体
+
+**攻击链**：恶意 git remote outline.json 写 `"../../vault/ciphers/xx"` 作 key → `merge_three_way`（pipeline.rs:148）遍历 outline_keys → `E::read_file(key)` → `favorite_file_path(key)` → 拼出跳出 favorites/ 的路径 → `read_favorite_file`/`write_favorite_file`/`delete_favorite_file` 读/写/删任意 .json（覆盖 vault meta.json/outline.json、hotword outline 等关键文件）。
+
+**修复**：加 `validate_favorite_uuid`（对称 vault `validate_uuid`），在 favorite_file_path 入口调用。回归测试 `favorite_file_path_rejects_path_traversal`（验证正常 uuid 通过 + `..`/`/`/`\\`/`\0`/空全拒）。
+
+### 留后续
+
+#### P2 delete_transcriptions_at 物理删 voice 不走软删
+
+设置页「识别记录」tab 删 voice 走 `delete_transcriptions_at`（infra）直接 DELETE，而 clipboard `delete_item` 对长 voice 走软删（INV-C1 bigram 语料保留）。语义不一致——用户在设置页删 voice = 语料直接丢失。但 bigram 是优化项非核心功能，无崩溃/损坏，且修复涉及跨 crate 架构（voice 软删逻辑在 clipboard，delete_transcriptions_at 在 infra）。留后续。
+
+### 验证
+
+- `cargo build -p octopus-clipboard -p octopus-sync` —— 0 error 0 warning
+- `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
+- `cargo test -p octopus-clipboard --lib` —— 25 过
+- `cargo test -p octopus-sync` —— 156 过（含新增 `favorite_file_path_rejects_path_traversal` 回归测试）
+
+## 49. 第四十五轮——write_clipboard 参数未用修复（2026-08-13，修 1 P2-低）
+
+### 触发
+
+第四十五轮全新全模块审查（4 agent 并行覆盖全 22 crate）。第四十四轮 2 P1 修复三方独立确认无回归。本轮唯一新发现是 P2-低（write_clipboard 参数未用）。
+
+### 🟡 P2-低 · action_bar_show_result_internal 的 write_clipboard 参数完全未用 ✅ 已修
+
+**核实**：`action_bar_show_result_internal`（context.rs:291-346）的 `_write_clipboard: bool`（:296）参数完全未用——函数体无 write_clipboard 调用。
+
+**调用点期望**：
+- script.rs:458 AI 路径传 `true`（期望结果写入剪贴板，用户 Cmd+V 粘贴译文）
+- script.rs:530 脚本同步路径传 `false`（不写）
+
+**影响**：AI 操作结果只进 CompactEditor 临时 tab，剪贴板保持旧内容 → 用户 Cmd+V 粘贴的是旧内容而非译文。确定性功能缺陷（参数语义与调用点期望不符），但影响是「少一次剪贴板写入」非数据损坏。
+
+**前缀误导**：`_action`（:294）也前缀 `_` 但在 :315 使用——`_write_clipboard` 更像「本该用却漏用」而非「故意忽略」。
+
+**修复**：去 `_` 前缀，函数体开头按参数调 `write_clipboard_text(&app, &result)`（:355 同文件 helper）。
+
+### 留后续
+
+- P2 delete_transcriptions_at 物理删 voice 不走软删（第四十四轮已记，跨 crate 架构）
+- P3 群（qwen3 shape 裸索引 / streaming_zipformer rank / whisper n_tokens=0 / clear_voice_aware unwrap_or(0) / InstantStart editing 丢弃不提交语义 等）
+
+### 验证
+
+- `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
+- `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 546 过 0 失败
+
+## 50. 第四十六轮——TRANSLATION_ACTIVE 清理不对称（2026-08-13，修 1 P2）
+
+### 触发
+
+第四十六轮全新全模块审查（4 agent 并行覆盖全 22 crate）。第四十五轮 P2-低 修复确认无副作用（write_clipboard_text 自动 suppress_flag 无自录制循环）。本轮唯一新发现 P2-2 是和我之前修的 INSTANT_MODE 清理不对称完全同型的 bug。
+
+### 🟡 P2-2 · TRANSLATION_ACTIVE 清理不对称——Cancel/Discard 后 instant 模式下次录音误翻译 ✅ 已修
+
+**核实**：四处 stage→Idle 出口都清了 INSTANT_MODE 但**漏了 TRANSLATION_ACTIVE**：
+
+| 出口 | 清 INSTANT_MODE | 清 TRANSLATION_ACTIVE |
+|---|---|---|
+| finalize_after_stop 空文本（lifecycle.rs:427） | ✅ :430 | ✅ :427（唯一正确的） |
+| finalize_cloud 空文本（lifecycle.rs:544） | ✅ | ❌ 漏 |
+| handle_cancel（cancel_discard.rs:86） | ✅ | ❌ 漏 |
+| handle_discard（cancel_discard.rs:250） | ✅ | ❌ 漏 |
+| start_final_polish_or_paste 空文本（polish.rs:38） | 间接 | ❌ 漏 |
+
+**触发链**（instant 模式）：用户启用翻译 → instant 录音 → Cancel/Discard → TRANSLATION_ACTIVE 残留 true（cancel/discard 清了 INSTANT_MODE 漏了它）→ 下次 instant 录音结束 do_paste（paste.rs:91 `TRANSLATION_ACTIVE.swap(false)` 读到残留 true）→ 错误触发最终翻译，粘贴译文而非原文。
+
+**同型 bug**：与我之前修的 INSTANT_MODE 清理不对称（第三十六轮 P2-B）+ recording_mode 清理不对称（第三十五轮 P2-1）完全同型——都是 flag 在部分出口未清。TRANSLATION_ACTIVE 是第三个被遗漏的 flag。
+
+**修复**：4 处补 `TRANSLATION_ACTIVE.store(false, Ordering::Relaxed)`（cancel_discard.rs 两处 + lifecycle.rs finalize_cloud 空文本 + polish.rs start_final_polish_or_paste 空文本 defense-in-depth）。
+
+### 推翻的 agent 发现
+
+- asr P2-1（corrector copy_from_slice 越界）→ 推翻：HotwordIndex 按 char_len 分桶，`from_words` 保证 `hw.chars().count() == char_len == sz`，`hw_chars[..sz]` 不越界。不变量由分桶索引结构保证。
+- clipboard 3 P2 全自降级/推翻（注释措辞 / mirror 非真相源自愈 / tombstone 本该保留供 sync 传播）。
+
+### 验证
+
+- `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
+- `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 546 过 0 失败

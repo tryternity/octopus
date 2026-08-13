@@ -505,15 +505,19 @@ pub(crate) fn purge_expired_vault_tombstones_at(
     now_secs: i64,
 ) -> Result<usize> {
     let cutoff = now_secs - VAULT_TOMBSTONE_RETENTION_SECS;
+    // 第三十九轮 P2-1：三条 SQL 包 unchecked_transaction——cipher DELETE / folder_id=NULL
+    // UPDATE / folder DELETE 在 autocommit 下各自独立提交，中途 panic/崩溃留半 GC。
+    // 对齐 hotword purge_expired_hotword_tombstones_at（:252 unchecked_transaction）。
+    let tx = conn.unchecked_transaction()?;
     // 先 cipher 后 folder（cipher 是 folder 的引用方，先删 cipher tombstone）。
-    let n_ciphers = conn.execute(
+    let n_ciphers = tx.execute(
         "DELETE FROM vault_ciphers WHERE is_deleted > 0 AND is_deleted < ?1",
         params![cutoff],
     )?;
     // 第三十七轮 P2-2：删 folder tombstone 前先显式置引用它的活跃 cipher folder_id=NULL。
     // schema 声明 FK ON DELETE SET NULL 会隐式做这事，但显式做不依赖 PRAGMA foreign_keys
     // （测试连接可能不开），且可 log 观测。folder 已软删 30 天，活跃 cipher 引用无意义。
-    let detached = conn.execute(
+    let detached = tx.execute(
         "UPDATE vault_ciphers SET folder_id = NULL WHERE folder_id IN \
          (SELECT id FROM vault_folders WHERE is_deleted > 0 AND is_deleted < ?1)",
         params![cutoff],
@@ -521,10 +525,11 @@ pub(crate) fn purge_expired_vault_tombstones_at(
     if detached > 0 {
         log::info!("[vault-gc] {} 活跃 cipher 因 folder tombstone GC 脱离文件夹（folder_id=NULL）", detached);
     }
-    let n_folders = conn.execute(
+    let n_folders = tx.execute(
         "DELETE FROM vault_folders WHERE is_deleted > 0 AND is_deleted < ?1",
         params![cutoff],
     )?;
+    tx.commit()?;
     let n = n_ciphers + n_folders;
     if n > 0 {
         log::info!(

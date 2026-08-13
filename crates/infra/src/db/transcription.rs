@@ -269,6 +269,23 @@ pub(crate) fn delete_transcriptions_at(conn: &Connection, ids: &[String]) -> Res
         .iter()
         .map(|id| id as &dyn rusqlite::ToSql)
         .collect();
+    // 第四十二轮 P2-1：删 history 前先软删对应 active favorite（写 tombstone）——
+    // 同型疏忽：第三十六轮 P2-A 修了 permanent_delete_item 的同类 bug，但这条独立
+    // 删除路径漏修。不碰 favorites → 孤儿 active favorite → export 写空 content 占位
+    // → md5 振荡 ping-pong。对称 clipboard/store.rs permanent_delete_item :387-391。
+    let now_secs: i64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(1); // unwrap_or(1) 非 0——0=active，需 >0 表 tombstone
+    let fav_sql = format!(
+        "UPDATE clipboard_favorites SET is_deleted = ?, updated_at = datetime('now') \
+         WHERE history_id IN ({}) AND is_deleted = 0",
+        placeholders
+    );
+    let mut fav_params: Vec<&dyn rusqlite::ToSql> = vec![&now_secs];
+    fav_params.extend(ids.iter().map(|id| id as &dyn rusqlite::ToSql));
+    let _ = conn.execute(&fav_sql, fav_params.as_slice());
+
     let sql = format!("DELETE FROM clipboard_history WHERE id IN ({})", placeholders);
     let n = conn.execute(&sql, params.as_slice())?;
     Ok(n)

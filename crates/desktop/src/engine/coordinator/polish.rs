@@ -36,6 +36,9 @@ pub(crate) fn start_final_polish_or_paste(
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         set_recording_mode(0);  // 回 Idle
+        // 第四十六轮 P2-2：defense-in-depth 清 TRANSLATION_ACTIVE（调用方 finalize 应已清，
+        // 但此路径独立 return，补防残留）。
+        super::TRANSLATION_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
         return;
     }
 

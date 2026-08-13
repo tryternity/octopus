@@ -73,9 +73,30 @@ fn outline_path() -> Result<PathBuf> {
 /// 收藏文件路径：`clipboard/favorites/<2hex>/<uuid>.json`（复用 `shard_dir`，按 uuid 分桶）。
 ///
 /// 与 vault/hotword 一致——uuid 前 2 hex 字符作分片子目录，分散文件避免单一大目录。
+///
+/// 第四十四轮 P1-B：补 validate_uuid path traversal 守卫——vault（store.rs:82）+
+/// hotword（hotword.rs:63）同入口已有守卫，clipboard 是第三个被遗漏的实体。outline key
+/// 来自不可信 git remote，含 `..` / `/` 可跳出 favorites/ 读写任意 .json。
 fn favorite_file_path(uuid: &str) -> Result<PathBuf> {
+    validate_favorite_uuid(uuid)?;
     let dir = favorites_dir()?;
     Ok(dir.join(shard_dir(uuid)).join(format!("{uuid}.json")))
+}
+
+/// path traversal 守卫——对称 vault `validate_uuid`（store.rs:82-94）。
+fn validate_favorite_uuid(uuid: &str) -> Result<()> {
+    if uuid.is_empty()
+        || uuid.contains('/')
+        || uuid.contains('\\')
+        || uuid.contains("..")
+        || uuid.contains('\0')
+    {
+        anyhow::bail!(
+            "非法 favorite uuid（含路径分隔符 / \\ .. 或空）：{}——拒绝 path traversal",
+            uuid
+        );
+    }
+    Ok(())
 }
 
 // === AES-256-GCM 加密原语（内联——byte-compatible with vault DerivedKey）===
@@ -1523,5 +1544,19 @@ mod tests {
         // favorites/ 不存在——cleanup 应 Ok（不报错）
         let keep_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
         assert!(cleanup_orphan_favorite_files(&keep_keys).is_ok());
+    }
+
+    /// 第四十四轮 P1-B 回归：favorite_file_path 必须拦 path traversal（含 / \ .. \0 空）。
+    /// vault/hotword 同入口已有守卫，clipboard 是被遗漏的第三个实体。
+    #[test]
+    fn favorite_file_path_rejects_path_traversal() {
+        // 正常 uuid 不报错
+        assert!(favorite_file_path("a1b2c3d4e5f6").is_ok());
+        // path traversal 攻击向量全拒
+        assert!(favorite_file_path("../../vault/ciphers/xx").is_err(), ".. 应被拦");
+        assert!(favorite_file_path("foo/bar").is_err(), "/ 应被拦");
+        assert!(favorite_file_path("foo\\bar").is_err(), "\\ 应被拦");
+        assert!(favorite_file_path("foo\0bar").is_err(), "\\0 应被拦");
+        assert!(favorite_file_path("").is_err(), "空 uuid 应被拦");
     }
 }

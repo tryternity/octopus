@@ -104,14 +104,18 @@ impl OpusMTEngine {
     fn translate_chunk(&self, text: &str) -> Result<String> {
         // MarianMT tokenizer：encode(text, true) 让 post_processor 自动补 </s>（eos），
         // 加 truncation 防超 encoder 上限
-        let mut encoding = self.tokenizer.encode(text, true)
+        let encoding = self.tokenizer.encode(text, true)
             .map_err(|e| anyhow::anyhow!("opus-mt tokenizer encode 失败: {}", e))?;
-        // 兜底：超过 model_max_length 截断，防止 ONNX 位置越界
-        if encoding.len() > MAX_ENCODER_TOKENS {
-            log::warn!("opus-mt 输入 {} tokens 超上限 {}，截断", encoding.len(), MAX_ENCODER_TOKENS);
-            encoding.truncate(MAX_ENCODER_TOKENS, 0, tokenizers::TruncationDirection::Right);
+        // 第三十九轮 P2-3：truncate 保留 eos——tokenizers 0.21 truncate 不区分 special
+        // token，连末尾 eos 一起删，encoder 无 eos 结尾偏离 MarianMT 训练分布。对齐
+        // m2m100.rs:70-75（truncate(MAX-1) 后重新 push eos）。在 Vec 上操作更直观。
+        let mut input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+        if input_ids.len() > MAX_ENCODER_TOKENS {
+            log::warn!("opus-mt 输入 {} tokens 超上限 {}，截断保留 eos", input_ids.len(), MAX_ENCODER_TOKENS);
+            let eos = self.eos_id;
+            input_ids.truncate(MAX_ENCODER_TOKENS - 1); // 留 1 位给 eos
+            input_ids.push(eos);
         }
-        let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
         let seq_len = input_ids.len();
         if seq_len == 0 {
             return Ok(String::new());

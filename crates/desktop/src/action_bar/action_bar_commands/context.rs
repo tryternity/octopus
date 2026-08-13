@@ -293,8 +293,15 @@ fn action_bar_show_result_internal(
     _original_text: String,
     _action: String,
     app: AppHandle,
-    _write_clipboard: bool,
+    write_clipboard: bool,
 ) {
+    // 第四十五轮 P2-低：write_clipboard 参数此前前缀 _（未用），但调用点 script.rs:458
+    // AI 路径传 true 期望结果写入剪贴板（用户 Cmd+V 粘贴译文）。原实现忽略该参数 → AI 结果
+    // 只进 CompactEditor 临时 tab，剪贴板保持旧内容。现按参数调 write_clipboard_text。
+    if write_clipboard {
+        write_clipboard_text(&app, &result);
+    }
+
     // 只在 ActionBar 实际可见时才 hide + depth 操作。
     // Quick Execute（全局快捷键）路径下 ActionBar 从未 show（depth 未 +1），
     // 此时 hide + after_floating_window_hide_keep_active（depth -1）会破坏配对。

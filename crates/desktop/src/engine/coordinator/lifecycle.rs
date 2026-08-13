@@ -542,6 +542,8 @@ pub(crate) fn finalize_cloud(
         dispatch_by_record_type(&transcript, "", app_handle);
         *stage = Stage::Idle;
         INSTANT_MODE.swap(false, Ordering::Relaxed);
+        // 第四十六轮 P2-2：对称清 TRANSLATION_ACTIVE（同 cancel/discard）。
+        TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         set_recording_mode(0);  // 回 Idle
