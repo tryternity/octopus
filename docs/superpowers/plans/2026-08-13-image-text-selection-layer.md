@@ -8,6 +8,29 @@
 
 **Tech Stack:** Rust + Tauri 2 + React 19 + TypeScript + Tailwind v4
 
+## 实施状态表（2026-08-13）
+
+| Task | 状态 | 备注 |
+|---|---|---|
+| **Task 1**：后端 OcrBlock 扩展 words + paddle-ocr 透出 | ✅ 完成 | OcrWord struct + ocr_output_to_blocks 提取 word_boxes + merge_same_line_blocks 串联 + paddle_backend `return_word_box: Some(true)`。偏差见 spec §10.2-1（WordBox 路径 re-export）。2 单测通过。 |
+| **Task 2**：后端 DTO 同步 + config 开关 | ✅ 完成 | OcrTextBlock 加 `words: Option<Vec<octopus_ocr::engine::OcrWord>>`（偏差见 §10.2-2）。**config `image_preview_auto_ocr` 字段未加**——Task 4 简化为始终开启自动 OCR，去掉 config gate（YAGNI，减少一处可关项）。 |
+| **Task 3**：前端 TextSelectLayer.tsx + OcrBlock interface | ✅ 完成 | TextSelectLayer + memo + OcrWord/OcrBlock interface 加 words。 |
+| **Task 4**：前端自动 OCR + index.tsx 集成 | ✅ 完成 | useOcr mount effect 合并（自动 OCR + 缓存拉取同一 effect，偏差 §10.2-4）；TextSelectLayer 挂为 wrapper sibling（偏差 §10.2-3）；SVG rect pointerEvents 改 none + 删 onDoubleClick（偏差 §10.2-5）；tool="none" 复用为文字选择工具（偏差 §10.2-6）。 |
+| **Task 5**：联调 + 文档同步 | ✅ 代码+文档完成；e2e 跳过 | Step 1（全量 build）✅、Step 2（手动 e2e）❌ 跳过——GUI 测试由用户跑、Step 3（文档同步）✅、额外 dead code 清理 ✅（handleOcrBlockCopy 链）。 |
+
+**Step 2 待用户验证清单**（GUI e2e，跑前 `cargo run --profile optimize -p octopus-desktop --features embedded,cloud,custom-protocol` 或 dev run-octopus.sh）：
+
+- [ ] 打开含文字的图片 → 自动 OCR → 鼠标移到文字上变 I-beam 光标
+- [ ] 拖选多个 word → 高亮选中 → Ctrl+C → 粘贴验证
+- [ ] tool 切到 rect → 画标注 → 文字层不拦截
+- [ ] tool 切回 none → 拖选恢复
+- [ ] 缩放（zoom in/out）→ 文字层跟随缩放坐标不错位
+- [ ] 双击 word → 原生选词
+- [ ] 长图滚动 → 文字层跟随（sticky canvas 对齐）
+- [ ] CJK 文本（中文）→ 每个 CJK 字符是一个 word box → 可逐字选
+
+---
+
 ## Global Constraints
 
 - **工作目录**：`.worktrees/research-tolaria-comparison`（分支 `research/tolaria-comparison`）

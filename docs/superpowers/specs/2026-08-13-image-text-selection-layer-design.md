@@ -309,3 +309,25 @@ useEffect(() => {
 ## 10. 实现注记
 
 > 实现过程中发现的偏差、新增决策写在这里。
+
+### 10.1 实施概览（2026-08-13）
+
+Tasks 1-5 全部完成（Task 5 跳过 Step 2 手动 e2e——GUI 测试由用户后续手动跑）。代码 + 单测 + 文档同步全部落地，cargo build + tsc + vite build 均干净通过。
+
+### 10.2 与计划的偏差
+
+实现过程中与 spec/plan 原文表述出现以下 6 处偏差，均属实现细节调整、不改设计意图：
+
+1. **Task 1：WordBox 导入路径** — 计划写 `use octopus_paddle_ocr::{OcrOutput, types::WordBox}`，实际 `types` 是 paddle-ocr 内部私有模块。改为用 paddle-ocr crate root 的 re-export：`use octopus_paddle_ocr::{OcrOutput, WordBox}`（paddle-ocr `lib.rs` 已 re-export `WordBox`）。
+2. **Task 2：`OcrWord` 全路径引用** — 计划建议 `OcrTextBlock` 引用 `octopus_ocr::OcrWord`，但 `OcrWord` 未在 `octopus_ocr` crate root re-export（只在 `engine` 模块公开）。实际写为全路径 `octopus_ocr::engine::OcrWord`。后续若需简化，可在 `octopus_ocr::lib.rs` 加 re-export。
+3. **Task 4：TextSelectLayer 挂载位置改 sibling** — 计划写挂 wrapper 内（child）。实际挂为 wrapper 的 sibling（与 wrapper 同位于 content div 内），原因：wrapper 自身用 `position: absolute + left: imgLeft, top: imgTop` 定位，若 TextSelectLayer 作为 child，其 `left/top` 会再叠加一次 imgLeft/imgTop，导致双重偏移。sibling 后两者各自独立 absolute 定位到同一 `(imgLeft, imgTop)`，视觉重合。
+4. **Task 4：mount effect 合并简化** — 计划在 `useOcr.ts` 加新 effect 处理自动 OCR，原 mount effect（截图 OCR 缓存拉取）保留。实际把两者合并到同一 `[imageId]` effect：先拉缓存 → 命中则直接 setOcrBlocks + ocrDoneRef=true 返回；未命中触发 `ocr_image` 自动 OCR。删掉了原 effect 中的 `setOcrOverlay('overlay')` —— 自动 OCR 路径有意不切 overlay（保持图片干净，仅 TextSelectLayer 透明文字层可见；用户需高亮可手动点 OCR 按钮切三态）。
+5. **Task 4：SVG rect 的 `onDoubleClick` 删除** — 计划保留向后兼容（SVG rect 仍可双击复制）。实际因 SVG rect 改 `pointerEvents: 'none'`（让 HTML 层接管选择），`onDoubleClick` 已变成死代码（事件不再触发）。Task 5 清理 `handleOcrBlockCopy` 相关 dead code 链（state + timer ref + unmount cleanup 分支 + return 字段 + index.tsx 浮泡 toast）。
+6. **Task 4：`tool="none"` 语义重定义** — 原计划 `tool="none"` 表示「抓手平移工具」。现复用为「文字选择工具」——TextSelectLayer `pointerEvents` 受 `tool === "none"` 控制开启拖选。抓手平移仍可用（wrapper onMouseDown 在文字层未拦截的空白区接管）+ 滚动条/滚轮平移照常。无新 tool 项加入工具栏，零 UI 变化。
+
+### 10.3 验证状态
+
+- 后端单测：`ocr_output_to_blocks_extracts_word_boxes` + `ocr_output_to_blocks_no_word_boxes` 通过（Task 1 Step 9-10）
+- 编译：`cargo build -p octopus-desktop` + `npx tsc --noEmit` + `npm run build` 全 0 error 0 warning（Task 5 Step 1-2 验证）
+- 手动 e2e：**未跑**（GUI 测试需用户手动），见 plan Task 5 Step 2 验证清单
+
