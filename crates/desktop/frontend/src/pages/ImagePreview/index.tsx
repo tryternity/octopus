@@ -17,6 +17,7 @@ import { useT } from "@/lib/i18n";
 import { useOcr } from "./useOcr";
 import { useQr } from "./useQr";
 import QrResultCard from "./QrResultCard";
+import { TextSelectLayer } from "./TextSelectLayer";
 
 /**
  * 剪贴板图片项的预览窗口（轻工具栏形态）。
@@ -689,7 +690,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
                     fill={ocrOverlay === 'mask' ? "rgba(255,255,255,0.92)" : "rgba(59,130,246,0.08)"}
                     stroke={ocrOverlay === 'mask' ? "rgba(0,0,0,0.1)" : "rgba(59,130,246,0.4)"}
                     strokeWidth={1} rx={2}
-                    style={{ cursor: 'pointer', pointerEvents: 'all' }}
+                    style={{ pointerEvents: 'none' }}
                     onDoubleClick={(e) => {
                       e.stopPropagation();
                       handleOcrBlockCopy(b.text, t("imagePreview.copied", { text: b.text.length > 20 ? b.text.slice(0, 20) + '…' : b.text }));
@@ -789,6 +790,20 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
               />
             )}
           </div>
+          {/* OCR 文字选择层（HTML，原生拖选）—— sibling of wrapper（自身 absolute 定位到 imgLeft/imgTop，
+              transform: scale(zoom) 把 natW/natH 缩放到 dispW/dispH，与 wrapper 视觉对齐）。
+              pointerEvents 受 tool 控制（tool="none" 接管拖选，其他工具放行标注）。 */}
+          {ocrBlocks.length > 0 && natW > 0 && (
+            <TextSelectLayer
+              blocks={ocrBlocks}
+              natW={natW}
+              natH={natH}
+              zoom={zoom}
+              tool={tool}
+              imgLeft={imgLeft}
+              imgTop={imgTop}
+            />
+          )}
         </div>
       </div>
 

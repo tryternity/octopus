@@ -72,6 +72,51 @@ export function useOcr(imageId: string | null) {
     ocrDoneRef.current = false;
   }, [imageId]);
 
+  // 自动 OCR（图片打开无感知 OCR，文字层立即可选）。
+  // 先拉截图缓存，无缓存则触发 ocr_image；OcrLockGuard 互斥（"还未完成"）时 1s 后重试一次。
+  // 不 setOcrOverlay——仅填充 ocrBlocks 让 TextSelectLayer 显示；手动 OCR 按钮仍可循环切 overlay/mask 态。
+  useEffect(() => {
+    if (!imageId || ocrDoneRef.current) return;
+    let cancelled = false;
+    invoke<{ text: string; blocks: OcrBlock[] } | null>("get_last_screenshot_ocr", { imageId })
+      .then((cached) => {
+        if (cancelled) return;
+        if (cached?.blocks?.length) {
+          setOcrBlocks(cached.blocks);
+          ocrDoneRef.current = true;
+          return;
+        }
+        // 无缓存 → 自动 OCR
+        invoke<{ text: string; blocks: OcrBlock[] }>("ocr_image", { id: imageId })
+          .then((result) => {
+            if (cancelled) return;
+            if (result?.blocks?.length) setOcrBlocks(result.blocks);
+            ocrDoneRef.current = true;
+          })
+          .catch((e) => {
+            if (cancelled) return;
+            const msg = String(e);
+            if (msg.includes("还未完成")) {
+              // OcrLockGuard 互斥 → 1s 后重试一次（重试前再确认未完成）
+              setTimeout(() => {
+                if (cancelled || ocrDoneRef.current) return;
+                invoke<{ text: string; blocks: OcrBlock[] }>("ocr_image", { id: imageId })
+                  .then((r) => {
+                    if (cancelled) return;
+                    if (r?.blocks?.length) setOcrBlocks(r.blocks);
+                    ocrDoneRef.current = true;
+                  })
+                  .catch(() => { if (!cancelled) ocrDoneRef.current = true; }); // 放弃，不影响看图
+              }, 1000);
+            } else {
+              ocrDoneRef.current = true; // 其他错误静默
+            }
+          });
+      })
+      .catch(() => { if (!cancelled) ocrDoneRef.current = true; });
+    return () => { cancelled = true; };
+  }, [imageId]);
+
   const handleOcr = useCallback(async () => {
     if (imageId == null) return;
     if (ocrDoneRef.current) {
