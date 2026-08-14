@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [使用手册](./usage/README.md) — 面向最终用户的操作指南（9 大模块 + 全局快捷键）
 - [架构概览](./architecture.md) — 项目结构与模块说明
 - [API 参考](./api.md) — Server HTTP/WebSocket 接口文档
 - [配置指南](./configuration.md) — octopus.db 配置说明（models / app_config 表）
