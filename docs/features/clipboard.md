@@ -287,7 +287,7 @@ FTS5 索引一致性由 db.sql 触发器（`clip_fts_ai`/`clip_fts_ad`/`clip_fts
 
 ## 14. hover 预览 overlay
 
-> 预览开关（标题栏 Eye/EyeOff，默认关闭，localStorage 记住）开启时，hover / 键盘 ↑↓ 选中条目后列表右侧弹出 200×200 absolute overlay。
+> 预览开关（标题栏 Eye/EyeOff，默认开启，localStorage 记住）开启时，hover / 键盘 ↑↓ 选中条目后列表右侧弹出 200×200 absolute overlay。
 
 - 文本→等宽可滚动 `text-[11px]`（>500 字截断防卡顿）、图片→缩略图（cancelled 竞态守卫）、文件→路径。
 - 智能定位：选中在上半→预览在下方（底边与条目重叠 2px）；下半→上方。clamp 上下界含 `scrollTop`（abs 子元素随内容滚动）。

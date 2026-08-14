@@ -102,7 +102,7 @@ CM6 `selectionSet` 事件替代旧 contentEditable 拖选流程：
 |--------|------|--------|------|
 | `asr_shortcut` | — | 全局 | 开始/停止录音（Toggle） |
 | `edit_shortcut` | CmdOrCtrl+Enter | 结果窗聚焦 | toggle 进入/保存编辑 |
-| `edit_global_shortcut` | CmdOrCtrl+Shift+E | 全局 | 唤起结果窗 + toggle 编辑 |
+| `edit_global_shortcut` | Alt+E | 全局 | 唤起结果窗 + toggle 编辑 |
 | Esc | — | 结果窗 | 取消录音（Cancel） |
 
 ---

@@ -13,7 +13,7 @@
 | `result_window` | 识别结果展示 | 透明、无边框、置顶、可拖拽、多行滚动。720×480 物理固定，前端 CSS 切可见容器尺寸（默认 520×116 精简态 / 工具栏放大 720×480） |
 | `settings_window` | 系统设置 | 原生标题栏、圆角、可调大小。五页面侧边栏：系统设置 / 剪贴管理 / 模型管理 / 提示词 / 系统状态。窗口位置记忆 |
 | `compact_editor_window` | 统一内容查看器 | 原生标题栏、880×620 可调 + 记忆、居中、min 400×320。多 tab（文本/图片/语音） |
-| `clipboard_window` | 剪贴板历史浮窗 | 300×600，无边框圆角透明置顶，`clipboard_shortcut`（默认 CmdOrCtrl+Shift+D）唤起 |
+| `clipboard_window` | 剪贴板历史浮窗 | 300×600，无边框圆角透明置顶，`clipboard_shortcut`（默认 Alt+C）唤起 |
 | ~~`notepad_window`~~ | （已移除 2026-07-03） | 随 `octopus-notepad` crate 一并删除 |
 | ~~`image_preview_window`~~ | （已移除 2026-07-04） | 合并入 CompactEditor 图片 tab |
 
@@ -59,10 +59,10 @@
 | 配置键 | 默认 | 功能 |
 |--------|------|------|
 | `asr_shortcut` | OptRight | 单键三模式触发（长按=PTT / 双击=toggle / 短按=hands-free） |
-| `clipboard_shortcut` | CmdOrCtrl+Shift+D | 唤起剪贴板浮窗（toggle 按焦点判断） |
-| `screenshot_shortcut` | Alt+S | 截图 / 滚动截图模式 |
+| `clipboard_shortcut` | Alt+C | 唤起剪贴板浮窗（toggle 按焦点判断） |
+| `screenshot_shortcut` | CmdOrCtrl+Shift+X | 截图 / 滚动截图模式 |
 | `edit_shortcut` | CmdOrCtrl+Enter | 结果窗内 toggle 编辑（非全局，不在设置页管理） |
-| `edit_global_shortcut` | CmdOrCtrl+Shift+E | 全局唤起结果窗 + toggle 编辑 |
+| `edit_global_shortcut` | Alt+E | 全局唤起结果窗 + toggle 编辑 |
 
 **注册策略**：先注册后持久化——`unregister` 旧的 + `register` 新的，注册成功才写共享 `AppConfig` + `save_app_config`。**任一失败则恢复旧快捷键并返回 Err**（前端 toast 报冲突）。
 

@@ -306,12 +306,12 @@ octopus-cli config
 | `output_simplified` | bool | `true` | desktop | ASR 输出字形归一化：`true`→简体（繁→简），`false`→繁体（简→繁）。基于开放词典网 CC-BY 3.0 单字对照表（编译期嵌入），在 ASR 输出后做单字级字形转换（不转地域用词）。解决 Qwen3-ASR `auto` 模式输出繁体的问题。详见 [architecture.md](../architecture.md) |
 | `hide_toolbar` | bool | `true` | desktop | 结果展示区工具栏显隐模式：`true`→鼠标移入显示、移出隐藏（默认）；`false`→工具栏始终显示（窗口高度保持展开态 132px） |
 | `edit_shortcut` | string | `"CmdOrCtrl+Enter"` | desktop | 结果展示区编辑 toggle 快捷键——**进入与保存（退出）编辑都用此键**（与 ✏️ 按钮同语义，Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。**跨平台**：`CmdOrCtrl` 在 macOS=⌘、Win/Linux=Ctrl（前端 `parseShortcut` 按 `e.metaKey||e.ctrlKey` 判定）；旧默认 `Cmd+Enter` 仅匹配 macOS、Win/Linux 下 Ctrl+Enter 失效——**DB v15→v16 迁移**自动把 `Cmd+Enter` 升级为 `CmdOrCtrl+Enter`（仅动等于旧默认的行，保留用户自定义值）。GUI 设置页可配（快捷键捕获按钮，不需冲突检测——仅窗口内 keydown 判定）。曾用双击进入（WKWebView `dblclick` 难触发而弃用）；曾拆分「Cmd+E 进 / Cmd+Enter 存」，因两者均窗口内 keydown（非全局、不 hijack 系统）已统一为单键 toggle |
-| `edit_global_shortcut` | string | `"CmdOrCtrl+Shift+E"` | desktop | 全局编辑快捷键——任意应用聚焦时唤起结果窗并进入/保存编辑（toggle，复用窗口内编辑语义）。与 `edit_shortcut`（窗口内、仅结果窗聚焦时生效）并存。GUI 设置页可配 + 热重载 |
-| `clipboard_shortcut` | string | `"CmdOrCtrl+Shift+D"` | desktop | 剪贴板历史浮窗全局快捷键（Tauri Accelerator 格式）。GUI 设置页可配 + 热重载 |
+| `edit_global_shortcut` | string | `"Alt+E"` | desktop | 全局编辑快捷键——任意应用聚焦时唤起结果窗并进入/保存编辑（toggle，复用窗口内编辑语义）。与 `edit_shortcut`（窗口内、仅结果窗聚焦时生效）并存。GUI 设置页可配 + 热重载 |
+| `clipboard_shortcut` | string | `"Alt+C"` | desktop | 剪贴板历史浮窗全局快捷键（Tauri Accelerator 格式）。GUI 设置页可配 + 热重载 |
 | `paste_stack_shortcut` | string | `"CmdOrCtrl+Shift+V"` | desktop | 粘贴队列出栈全局快捷键——任意应用聚焦时按此键弹出栈底条目并粘贴到前台应用（`pop_and_paste`）。与 `clipboard_shortcut`（打开浮窗）正交，可同时注册。Tauri Accelerator 格式，GUI 设置页可配 + 热重载。详见 [paste-stack spec](superpowers/specs/archived/2026-08-05-paste-stack-design.md) |
 | `clipboard_max_items` | int | `1000` | desktop | 剪贴板最大保留条数（不含收藏，超出自动清理） |
 | `clipboard_max_age_days` | int | `30` | desktop | 剪贴板自动清理天数（超过此天数的非收藏记录自动删除） |
-| `screenshot_shortcut` | string | `"Alt+S"` | desktop | 截图全局快捷键（框选 → 标注 → 入剪贴板历史）。详见 [screenshot 设计](superpowers/specs/2026-06-28-archived-specs.md)。GUI 设置页可配 + 热重载 |
+| `screenshot_shortcut` | string | `"CmdOrCtrl+Shift+X"` | desktop | 截图全局快捷键（框选 → 标注 → 入剪贴板历史）。详见 [screenshot 设计](superpowers/specs/2026-06-28-archived-specs.md)。GUI 设置页可配 + 热重载 |
 | `screenshot_watermark_text` | string | `""` | desktop | 截图水印文字，空=不加水印。工具栏水印按钮 + 设置页均可配。平铺模式叠加到选区内（不进 annotations 数组，独立全局层）。热重载 |
 | `screenshot_watermark_density` | f32 | `0.5` | desktop | 截图水印平铺密度 0.0-1.0（0=单个居中，1=排满）。热重载 |
 | `screenshot_watermark_angle` | f32 | `0.0` | desktop | 截图水印旋转角度 0-360°。热重载 |
@@ -370,15 +370,15 @@ denoise_mode: 1                  # 环境降噪：0=关闭直通 / 1=RNNoise（�
 output_simplified: true          # ASR 输出字形：true=简体（繁→简），false=繁体（简→繁）
 hide_toolbar: true               # 结果窗工具栏：true=hover 显隐（默认），false=始终显示
 edit_shortcut: "CmdOrCtrl+Enter"  # 编辑 toggle 快捷键（窗口内，进入/保存都用此键；CmdOrCtrl 跨平台=⌘/Ctrl）
-edit_global_shortcut: "CmdOrCtrl+Shift+E"  # 全局编辑（跨应用唤起结果窗 + toggle）
+edit_global_shortcut: "Alt+E"                # 全局编辑（跨应用唤起结果窗 + toggle）
 
 # 剪贴板历史浮窗
-clipboard_shortcut: "CmdOrCtrl+Shift+D"  # 剪贴板历史浮窗快捷键
+clipboard_shortcut: "Alt+C"                  # 剪贴板历史浮窗快捷键
 clipboard_max_items: 1000         # 最大保留条数（不含收藏）
 clipboard_max_age_days: 30        # 自动清理天数（不含收藏）
 
 # 截图
-screenshot_shortcut: "Alt+S"      # 截图快捷键（框选 → 标注 → 入剪贴板历史）
+screenshot_shortcut: "CmdOrCtrl+Shift+X"     # 截图快捷键（框选 → 标注 → 入剪贴板历史）
 
 # 下载（OCR 模型激活同 ASR/LLM，由设置页 switch_active_model 切换，存 DB is_enabled）
 download_mirror: ""               # HF 下载镜像（空 = 官方源），cli download --mirror 可临时覆盖

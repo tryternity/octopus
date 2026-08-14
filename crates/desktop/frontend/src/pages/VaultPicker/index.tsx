@@ -14,7 +14,7 @@ import { classifyError } from "./classifyError";
  * VaultPicker —— vault Auto-Type cipher 选择浮窗（label=vault_picker_window）。
  *
  * 流程：
- *   1. 全局热键 CmdOrCtrl+Shift+L → 后端 `register_vault_autotype_shortcut`
+ *   1. 全局热键 CmdOrCtrl+Shift+S → 后端 `register_vault_autotype_shortcut`
  *      show + set_focus 窗口并 emit `vault://picker-refresh`（首次则 build 窗口）。
  *   2. 窗口 mount / 收到 refresh → 调 `vault_detect_and_match` 取匹配 cipher。
  *   3. 用户点击 → `vault_autotype`（默认）或 `vault_copy_password`（按住修饰键）。

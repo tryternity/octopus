@@ -7,7 +7,7 @@ use crate::vault::autotype;
 
 // === 全局热键注册（Task 19） ===
 
-/// 注册 vault Auto-Type 全局热键（默认 CmdOrCtrl+Shift+L）。
+/// 注册 vault Auto-Type 全局热键（默认 CmdOrCtrl+Shift+S）。
 ///
 /// 触发时新建/聚焦 `vault_picker_window`：窗口 mount 后 useEffect 调
 /// `vault_detect_and_match` 取匹配 cipher，用户选择后调 `vault_autotype` /

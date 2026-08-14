@@ -110,7 +110,7 @@ K_machine（本地文件密文）──┴── HKDF ──→ app_key
 
 ### 触发流程
 
-1. 全局热键 `Cmd+Shift+L`（可配）
+1. 全局热键 `Cmd+Shift+S`（可配）
 2. 热键 callback **先抓浏览器 URL**（此时浏览器还前台）→ 存 `SharedPickerUrlCache`
 3. 弹出 VaultPicker 浮窗（320×360 固定 + transparent 圆角）
 4. 前端调 `vault_detect_and_match` → 读缓存 URL → eTLD+1 匹配 cipher

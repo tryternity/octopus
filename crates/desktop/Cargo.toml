@@ -143,7 +143,7 @@ custom-protocol = ["tauri/custom-protocol"]
 # follow-up #10: vault feature gate。关闭后所有 vault 模块不编入：
 # - octopus-vault 依赖切掉（更小 binary、无 Keychain 访问、无密码管理 UI）
 # - vault_state / vault_commands / autotype / vault_error 模块整体 cfg 掉
-# - 全局热键 Cmd+Shift+L / Cmd+Shift+G 不注册
+# - 全局热键 Cmd+Shift+S / Cmd+Shift+G 不注册
 # - AppState 不注入 SharedVaultSession
 # 注意：vault_secret_access 模块**总是**编译——它给云端推理热路径（Aliyun / LLM polish /
 # 云端翻译）提供 `try_decrypt_secret_global` 入口；feature off 时该函数退化为返回 raw
