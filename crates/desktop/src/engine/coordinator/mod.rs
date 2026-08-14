@@ -96,6 +96,17 @@ pub(crate) fn set_recording_mode(mode: u8) {
     RECORDING_MODE.store(mode, Ordering::Relaxed);
 }
 
+/// 清所有 stage→Idle 出口应复位的 static flag。根治「同型遗漏」——
+/// 新增 flag 只需改这一处，所有出口自动覆盖。
+///
+/// 不适用于条件 swap 语义的出口（PasteDone handler 读 INSTANT_MODE 旧值决定 UI、
+/// do_paste 读 TRANSLATION_ACTIVE 旧值决定是否翻译）——那些出口用自己的 swap。
+pub(crate) fn reset_idle_flags() {
+    INSTANT_MODE.store(false, Ordering::Relaxed);
+    TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
+    set_recording_mode(0);
+}
+
 /// 前端命令：设置翻译模式激活状态。
 #[tauri::command]
 pub fn set_translation_active(active: bool) {
@@ -1204,6 +1215,20 @@ mod tests {
         set_recording_mode(1);
         assert_eq!(recording_mode(), 1, "toggle 录音中应为 1");
         set_recording_mode(0);
+    }
+
+    #[test]
+    fn reset_idle_flags_clears_all_three_statics() {
+        // 设置全部非默认值
+        super::INSTANT_MODE.store(true, Ordering::Relaxed);
+        super::TRANSLATION_ACTIVE.store(true, Ordering::Relaxed);
+        super::set_recording_mode(2);
+        // 清零
+        super::reset_idle_flags();
+        // 验证三个 flag 全归零
+        assert!(!super::INSTANT_MODE.load(Ordering::Relaxed));
+        assert!(!super::TRANSLATION_ACTIVE.load(Ordering::Relaxed));
+        assert_eq!(super::recording_mode(), 0);
     }
 
 }
