@@ -37,7 +37,7 @@ fn parse_favorite(row: &rusqlite::Row) -> rusqlite::Result<ClipboardFavorite> {
 
 // ── _at 变体（接 &Connection，测试 + sync 用）──
 
-pub(crate) fn insert_favorite_at(conn: &Connection, history_id: &str) -> Result<()> {
+pub fn insert_favorite_at(conn: &Connection, history_id: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO clipboard_favorites (history_id, is_deleted, updated_at, sync_md5)
          VALUES (?1, 0, datetime('now'), NULL)",
@@ -46,7 +46,7 @@ pub(crate) fn insert_favorite_at(conn: &Connection, history_id: &str) -> Result<
     Ok(())
 }
 
-pub(crate) fn soft_delete_favorite_at(
+pub fn soft_delete_favorite_at(
     conn: &Connection,
     history_id: &str,
     epoch_secs: i64,
@@ -72,7 +72,7 @@ pub(crate) fn list_all_favorites_at(conn: &Connection) -> Result<Vec<ClipboardFa
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-pub(crate) fn load_favorite_at(
+pub fn load_favorite_at(
     conn: &Connection,
     history_id: &str,
 ) -> Result<Option<ClipboardFavorite>> {
@@ -85,7 +85,7 @@ pub(crate) fn load_favorite_at(
     }
 }
 
-pub(crate) fn restore_favorite_at(conn: &Connection, history_id: &str) -> Result<()> {
+pub fn restore_favorite_at(conn: &Connection, history_id: &str) -> Result<()> {
     conn.execute(
         "UPDATE clipboard_favorites SET is_deleted = 0, updated_at = datetime('now') WHERE history_id = ?1",
         params![history_id],
@@ -266,6 +266,15 @@ pub(crate) fn upsert_clipboard_history_sync_at(
             is_rich=excluded.is_rich,
             segments=excluded.segments",
         params![id, item_type, content, ref_data, meta_info, is_rich as i64, created, segments],
+    )?;
+    Ok(())
+}
+
+/// 设置某历史行的 is_favorite 标记——_at 版本（接 &Connection，供 clipboard toggle_favorite 事务用）。
+pub fn set_clipboard_is_favorite_at(conn: &Connection, id: &str, is_fav: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE clipboard_history SET is_favorite = ?1 WHERE id = ?2",
+        params![is_fav as i64, id],
     )?;
     Ok(())
 }

@@ -30,28 +30,35 @@ use octopus_infra::db::{
 /// 三态转换都会改 `clipboard_favorites` 表的 `updated_at` + `is_deleted`，
 /// sync engine 据 updated_at 把变更传播到其他设备。
 pub fn toggle_favorite(history_id: &str) -> Result<bool> {
-    let existing = infra_db::load_favorite(history_id)?;
-    match existing {
-        Some(fav) if fav.is_deleted == 0 => {
-            // active → un-favorite（写 tombstone，epoch 作为 is_deleted 标记）
-            let epoch = now_epoch();
-            infra_db::soft_delete_favorite(history_id, epoch)?;
-            infra_db::set_clipboard_is_favorite(history_id, false)?;
-            Ok(false)
-        }
-        Some(_) => {
-            // tombstone → restore
-            infra_db::restore_favorite(history_id)?;
-            infra_db::set_clipboard_is_favorite(history_id, true)?;
-            Ok(true)
-        }
-        None => {
-            // 新收藏——history_id 直接作 PK，无需生成独立 favorite id
-            infra_db::insert_favorite(history_id)?;
-            infra_db::set_clipboard_is_favorite(history_id, true)?;
-            Ok(true)
-        }
-    }
+    // 单连接 + unchecked_transaction 保证原子性——原 2-3 个独立 with_db（各自连接 autocommit）
+    // 中间失败留不一致（favorite 表已改但 history.is_favorite 未改）。
+    infra_db::with_db(|conn| {
+        let existing = infra_db::load_favorite_at(conn, history_id)?;
+        let tx = conn.unchecked_transaction()?;
+        let result = match existing {
+            Some(fav) if fav.is_deleted == 0 => {
+                // active → un-favorite（写 tombstone，epoch 作为 is_deleted 标记）
+                let epoch = now_epoch();
+                infra_db::soft_delete_favorite_at(&tx, history_id, epoch)?;
+                infra_db::set_clipboard_is_favorite_at(&tx, history_id, false)?;
+                false
+            }
+            Some(_) => {
+                // tombstone → restore
+                infra_db::restore_favorite_at(&tx, history_id)?;
+                infra_db::set_clipboard_is_favorite_at(&tx, history_id, true)?;
+                true
+            }
+            None => {
+                // 新收藏——history_id 直接作 PK，无需生成独立 favorite id
+                infra_db::insert_favorite_at(&tx, history_id)?;
+                infra_db::set_clipboard_is_favorite_at(&tx, history_id, true)?;
+                true
+            }
+        };
+        tx.commit()?;
+        Ok(result)
+    })
 }
 
 /// 当前 Unix 秒（用作 favorite tombstone 的 is_deleted 时间戳）。

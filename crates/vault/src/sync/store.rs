@@ -814,7 +814,15 @@ pub fn import_all_from_files() -> Result<(Vec<VaultCipher>, Vec<VaultFolder>)> {
                     serde_json::from_str::<CipherFile>(&content)
                         .with_context(|| format!("解析 cipher 文件失败：{}", entry.display()))
                 }) {
-                Ok(file) => ciphers.push(file.to_vault_cipher()),
+                Ok(file) => {
+                    // 防御性 id 校验——path 构造入口（cipher_file_path）已有 validate_uuid，
+                    // 但 JSON 内容的 id 可能与文件名不同。非法 id skip + warn（同 corrupt 容错）。
+                    if let Err(e) = validate_uuid(&file.id) {
+                        log::warn!("[sync] clone import：cipher id 非法，跳过：{}", e);
+                    } else {
+                        ciphers.push(file.to_vault_cipher());
+                    }
+                }
                 Err(e) => {
                     log::warn!("[sync] clone import：cipher 文件跳过（损坏）：{}", e);
                 }
@@ -831,7 +839,14 @@ pub fn import_all_from_files() -> Result<(Vec<VaultCipher>, Vec<VaultFolder>)> {
                     serde_json::from_str::<FolderFile>(&content)
                         .with_context(|| format!("解析 folder 文件失败：{}", entry.display()))
                 }) {
-                Ok(file) => folders.push(file.to_vault_folder()),
+                Ok(file) => {
+                    // 同 cipher：防御性 id 校验。
+                    if let Err(e) = validate_uuid(&file.id) {
+                        log::warn!("[sync] clone import：folder id 非法，跳过：{}", e);
+                    } else {
+                        folders.push(file.to_vault_folder());
+                    }
+                }
                 Err(e) => {
                     log::warn!("[sync] clone import：folder 文件跳过（损坏）：{}", e);
                 }
