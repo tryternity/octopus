@@ -2308,3 +2308,63 @@ vault permanent_delete 单项缺 sync lock / Auto-Type AX 失败仍继续 / veri
 
 - `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
 - `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 546 过 0 失败
+
+## 51. 第四十七轮——0 P1 + 0 P2 里程碑 + 2 P3 文档修正（2026-08-13）
+
+### 触发
+
+第四十七轮全新全模块审查（4 agent 并行覆盖全 22 crate）。**本轮 0 P1 + 0 P2——数轮以来首次全新核查无确定性 bug。** 4 agent 共报 4 P1 + 16 P2，逐一直读核实后全部降级 P3。第四十六轮 TRANSLATION_ACTIVE 4 处对称修复确认正确无回归。
+
+### 降级核实（关键项）
+
+- **corrector copy_from_slice 第三次推翻**：HotwordIndex 按 char_len 分桶，`from_words` 保证 `hw.chars().count() == char_len == sz`，`hw_chars[..sz]` 不越界。不变量由分桶索引结构保证。
+- **padding flush 越界推算有误**：最大访问索引 = nrows - 2，不越界。
+- **polish.rs 空文本分支不可达**：上游 finalize 已拦截空文本并 return。
+- **短 voice 复活被兜底**：clear_voice_aware 第 4 步孤儿清理写 tombstone。
+- **resolve_model_dir 设计接受绝对路径**：单用户桌面应用无跨用户攻击面。
+
+### 修 2 P3（文档/日志准确性）
+
+- P3-5：mod.rs:199 注释「静音 60s」→ 改 10s（tick.rs:34 代码 `10.0`）。
+- P3-9：corrector.rs:287 日志「用空规则」→ 改「保留上次缓存（首次为空）」（Err 分支不调 set_fuzzy_rules_cache）。
+
+### 验证
+
+- `cargo build -p octopus-asr-local` —— 0 error（worktree 路径确认）
+
+## 52. 第四十八轮——AgentBridge TRANSLATION_ACTIVE 同型遗漏 + aliyun UTF-8 panic + image path traversal（2026-08-13，修 2 P2 + 1 P2-低）
+
+### 触发
+
+第四十八轮全新全模块审查（4 agent 并行）。**第四十七轮「0 P1 + 0 P2」过于乐观**——全新核查发现 3 条前三轮遗漏的真实缺陷。
+
+### 🟡 P2-A · AgentBridge 两处漏清 TRANSLATION_ACTIVE（第四十六轮同型遗漏） ✅ 已修
+
+**核实**：lifecycle.rs 两处 AgentBridge 分支：
+- finalize_after_stop AgentBridge（:439-446）：清了 INSTANT_MODE（:444），**漏 TRANSLATION_ACTIVE**
+- finalize_cloud AgentBridge（:565-571）：清了 INSTANT_MODE（:568），**漏 TRANSLATION_ACTIVE**
+
+**同型遗漏**：第四十六轮修了 4 处 TRANSLATION_ACTIVE（cancel_discard ×2 + finalize_cloud 空文本 + polish 空文本），漏了 2 处 AgentBridge。这是 coordinator 第 4 个被遗漏的 flag（前 3 个：INSTANT_MODE/recording_mode/TRANSLATION_ACTIVE）。
+
+**触发链**：翻译模式 + AgentBridge 录音 → TRANSLATION_ACTIVE 残留 → 下次普通录音 do_paste（paste.rs:91 swap）读到残留 → 误翻译。
+
+**自省**：第四十七轮我判「状态机三 flag 全出口对称 0 P2」过于乐观——TRANSLATION_ACTIVE 在同一函数内相邻分支（空文本清了，紧随的 AgentBridge 漏了）都不对称，我却没逐分支核对。
+
+**修复**：两处 AgentBridge 分支补 `TRANSLATION_ACTIVE.store(false, Ordering::Relaxed)`。
+
+### 🟡 P2-B · aliyun_stream UTF-8 字节边界 panic ✅ 已修
+
+**核实**：aliyun_stream.rs:169 + :471 `&t[..t.len().min(200)]`——按字节切片。中文 UTF-8 每字 3 字节，200 字节落在字符中间 → `&t[..200]` 不是 char boundary → **panic**。中文错误响应（鉴权失败消息）>200 字节即触发，杀 session_loop。
+
+**修复**：改 `t.chars().take(67).collect::<String>()`（按字符截断，67 字符 ≈ 200 字节）。两处（FunASR :169 + Qwen :471）。
+
+### 🟡 P2-低 · image_file_path 无 path traversal 守卫 ✅ 已修
+
+**核实**：`image_file_path`（infra/paths.rs:53）`screens_dir().join(format!("{}.jpg", hash))` 无校验。hash 来自 ref_data，sync 时通过加密 FavoritePayload 传播（需 clipboard.key 才能伪造），攻击面比 favorite_file_path（明文 outline key）窄——但纵深防御应补。
+
+**修复**：加 hash 格式校验（拦 `/` `\\` `..` `\0` 空），非法 hash 返回安全的不存在路径。
+
+### 验证
+
+- `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
+- `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 546 过 0 失败

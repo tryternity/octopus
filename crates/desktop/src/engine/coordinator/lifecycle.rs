@@ -441,7 +441,10 @@ pub(crate) fn finalize_after_stop(
         // PasteDone handler（mod.rs:602 INSTANT_MODE.swap），故此处必须显式清
         // INSTANT_MODE，否则 instant 模式 + AgentBridge 录音后残留 → 下次快捷键仍走
         // instant 浮窗（会话已结束应回普通模式）。对齐上方空文本分支（:430）。
+        // 第四十八轮 P2-A：对称清 TRANSLATION_ACTIVE——AgentBridge 不经 do_paste
+        // （paste.rs:91 swap 消费），漏清 → 下次普通录音误翻译。第四十六轮修 4 处漏此 2 处。
         INSTANT_MODE.swap(false, Ordering::Relaxed);
+        TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
         *stage = Stage::Idle;
         set_recording_mode(0);  // AgentBridge 派发后回 Idle
         return;
@@ -565,7 +568,9 @@ pub(crate) fn finalize_cloud(
     if dispatch_by_record_type(&transcript, &combined, app_handle) {
         // 第三十四轮 P2：同 local 路径（finalize_after_stop），AgentBridge 不经
         // do_paste/PasteDone，必须显式清 INSTANT_MODE。对齐上方空文本分支（:539）。
+        // 第四十八轮 P2-A：对称清 TRANSLATION_ACTIVE（同 local AgentBridge 分支）。
         INSTANT_MODE.swap(false, Ordering::Relaxed);
+        TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
         *stage = Stage::Idle;
         set_recording_mode(0);  // AgentBridge 派发后回 Idle
         return;

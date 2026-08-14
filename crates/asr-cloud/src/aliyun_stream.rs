@@ -166,7 +166,11 @@ impl WsSessionHandler for AliyunFunAsrHandler {
                     Ok(v) => v,
                     // 第二十一轮 P2-a2：补 log::warn!（原静默吞，对比 baidu/tencent 都 warn）
                     Err(e) => {
-                        log::warn!("[aliyun] JSON 解析失败: {}（text={}）", e, &t[..t.len().min(200)]);
+                        // 第四十八轮 P2-B：原 &t[..t.len().min(200)] 按字节切片——中文 UTF-8
+                        // 每字 3 字节，200 字节落在字符中间 → panic。鉴权失败等中文错误响应
+                        // >200 字节即触发，杀 session_loop。改 chars().take(67) 按字符截断。
+                        let preview: String = t.chars().take(67).collect();
+                        log::warn!("[aliyun] JSON 解析失败: {}（text={}）", e, preview);
                         return HandleOutcome::Continue;
                     }
                 };
@@ -464,7 +468,9 @@ impl WsSessionHandler for AliyunQwenHandler {
                     Ok(v) => v,
                     // 第二十一轮 P2-a2：补 log::warn!（同 FunASR :167）
                     Err(e) => {
-                        log::warn!("[aliyun-qwen] JSON 解析失败: {}（text={}）", e, &t[..t.len().min(200)]);
+                        // 第四十八轮 P2-B：同 FunASR 路径（:169），按字符截断防 UTF-8 边界 panic。
+                        let preview: String = t.chars().take(67).collect();
+                        log::warn!("[aliyun-qwen] JSON 解析失败: {}（text={}）", e, preview);
                         return HandleOutcome::Continue;
                     }
                 };
