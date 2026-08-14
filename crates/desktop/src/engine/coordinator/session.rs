@@ -39,17 +39,6 @@ fn show_listening_start(app_handle: &tauri::AppHandle, show_text: &str, is_conti
     }
 }
 
-/// 第三十三轮 P1-1：开录音失败时清 INSTANT_MODE + recording_mode。
-///
-/// set_recording_mode(1/2/3) 在 begin_recording 之前设（mod.rs:466/789/841），失败分支
-/// 必须清回——否则 ptt.rs:306 next_on_keydown 读残留 mode → 走停止分支 → PTT 按键卡死；
-/// INSTANT_MODE 残留致下次 Toggle 走错浮窗。对比：cancel/discard/PasteDone 等出口全清
-/// （lifecycle.rs:430/539），唯独开录音失败路径漏（5 处）。此 helper 统一收口。
-fn reset_mode_flags_on_start_failure() {
-    INSTANT_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
-    super::set_recording_mode(0);
-}
-
 /// 实际开录音：从 Idle 进入活跃录音态（cloud / streaming / vad 三分支）。
 /// 抽自 handle_toggle 的 Idle 分支，供 C3 两阶段 Toggle 的 StartRecording / FallbackStart 复用。
 /// selection = 跨会话选中替换种子（None=普通开录音；Some((text,start,end)) → 种子 transcript）。
@@ -84,7 +73,7 @@ pub(crate) fn begin_recording(
             crate::ui::result_window::show_result(app_handle, "", None);
         }
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
-                        reset_mode_flags_on_start_failure();
+                        super::reset_idle_flags();
         return;
     }
 
@@ -151,7 +140,7 @@ pub(crate) fn prepare_cloud_streaming_session(
                         let _ = audio.stop();
                         crate::ui::result_window::hide_result(app_handle);
                         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
-                        reset_mode_flags_on_start_failure();
+                        super::reset_idle_flags();
                         return;
                     }
                 };
@@ -175,7 +164,7 @@ pub(crate) fn prepare_cloud_streaming_session(
             let _ = audio.stop();
             crate::ui::result_window::hide_result(app_handle);
             crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
-            reset_mode_flags_on_start_failure();
+            super::reset_idle_flags();
         }
     }
 }
@@ -221,7 +210,7 @@ pub(crate) fn prepare_streaming_session(
                     let _ = audio.stop();
                     crate::ui::result_window::hide_result(app_handle);
                     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
-                        reset_mode_flags_on_start_failure();
+                        super::reset_idle_flags();
                     return;
                 }
             }
@@ -260,7 +249,7 @@ pub(crate) fn prepare_streaming_session(
             let _ = audio.stop();
             crate::ui::result_window::hide_result(app_handle);
             crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
-                        reset_mode_flags_on_start_failure();
+                        super::reset_idle_flags();
             return;
         }
     };
@@ -271,7 +260,7 @@ pub(crate) fn prepare_streaming_session(
             let _ = audio.stop();
             crate::ui::result_window::hide_result(app_handle);
             crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
-                        reset_mode_flags_on_start_failure();
+                        super::reset_idle_flags();
             return;
         }
     };
@@ -340,7 +329,7 @@ pub(crate) fn prepare_vad_segmented_session(
             let _ = audio.stop();
             crate::ui::result_window::hide_result(app_handle);
             crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
-            reset_mode_flags_on_start_failure();
+            super::reset_idle_flags();
         }
     }
 }

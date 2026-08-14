@@ -21,7 +21,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
-use super::{Command, Stage, RecordType, TRANSLATION_ACTIVE, INSTANT_MODE, set_recording_mode};
+use super::{Command, Stage, RecordType, INSTANT_MODE, reset_idle_flags};
 use super::paste::{stage_name, do_paste, active_asr_engine_name};
 #[cfg(feature = "cloud")]
 use super::paste::update_transcription_raw;
@@ -424,13 +424,11 @@ pub(crate) fn finalize_after_stop(
     if combined.is_empty() {
         // 统一分流：AgentBridge 空文本标 failed
         dispatch_by_record_type(&transcript, "", app_handle);
-        TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
         *stage = Stage::Idle;
         // instant 空结果：隐藏 instant 浮窗 + 复位标志。
-        INSTANT_MODE.swap(false, Ordering::Relaxed);
+        reset_idle_flags();
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
-        set_recording_mode(0);  // 回 Idle
         return;
     }
 
@@ -440,13 +438,11 @@ pub(crate) fn finalize_after_stop(
         // 第三十四轮 P2：AgentBridge 走 execute_agent_task，既不经 do_paste 也不经
         // PasteDone handler（mod.rs:602 INSTANT_MODE.swap），故此处必须显式清
         // INSTANT_MODE，否则 instant 模式 + AgentBridge 录音后残留 → 下次快捷键仍走
-        // instant 浮窗（会话已结束应回普通模式）。对齐上方空文本分支（:430）。
+        // instant 浮窗（会话已结束应回普通模式）。对齐上方空文本分支。
         // 第四十八轮 P2-A：对称清 TRANSLATION_ACTIVE——AgentBridge 不经 do_paste
-        // （paste.rs:91 swap 消费），漏清 → 下次普通录音误翻译。第四十六轮修 4 处漏此 2 处。
-        INSTANT_MODE.swap(false, Ordering::Relaxed);
-        TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
+        // （paste.rs:91 swap 消费），漏清 → 下次普通录音误翻译。
+        reset_idle_flags();
         *stage = Stage::Idle;
-        set_recording_mode(0);  // AgentBridge 派发后回 Idle
         return;
     }
 
@@ -544,12 +540,10 @@ pub(crate) fn finalize_cloud(
         }
         dispatch_by_record_type(&transcript, "", app_handle);
         *stage = Stage::Idle;
-        INSTANT_MODE.swap(false, Ordering::Relaxed);
         // 第四十六轮 P2-2：对称清 TRANSLATION_ACTIVE（同 cancel/discard）。
-        TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
+        reset_idle_flags();
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
-        set_recording_mode(0);  // 回 Idle
         return;
     }
 
@@ -567,12 +561,10 @@ pub(crate) fn finalize_cloud(
     // 统一分流：AgentBridge → execute_agent_task
     if dispatch_by_record_type(&transcript, &combined, app_handle) {
         // 第三十四轮 P2：同 local 路径（finalize_after_stop），AgentBridge 不经
-        // do_paste/PasteDone，必须显式清 INSTANT_MODE。对齐上方空文本分支（:539）。
+        // do_paste/PasteDone，必须显式清 INSTANT_MODE。
         // 第四十八轮 P2-A：对称清 TRANSLATION_ACTIVE（同 local AgentBridge 分支）。
-        INSTANT_MODE.swap(false, Ordering::Relaxed);
-        TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
+        reset_idle_flags();
         *stage = Stage::Idle;
-        set_recording_mode(0);  // AgentBridge 派发后回 Idle
         return;
     }
 
