@@ -53,7 +53,7 @@
 | 5. Action Bar | OCR/ASR/translate/clipboard/terminal/vault 全栈聚合 + agent CLI 启动 + CompactEditor tab | 仅 macOS、无扩展生态、跨屏焦点问题 | AX 直读选中文本 + 扩展注册中心 |
 | 6. Terminal | OSC agent 状态感知（Claude/Codex/Gemini/Pi 工作相位）+ ASR 直写 PTY + WKWebView 稳定性细节 | 无 GPU 渲染、无 SSH、无 AI 命令、无 shell history sync | Atuin 集成 + russh 远程 |
 | 7. 录屏 | 与 ASR 联动（录后字幕 + LLM 润色）、Swift helper 子进程解耦、双轨 source 标注 | 无实时转写、无点击效果、无 AI 摘要、无云分享 | 录制中实时转写（杀手锏） |
-| 8. OCR | 纯 Rust + ONNX 与 ASR 共用后端，PP-OCRv6-small + QR 一并 + 启发式 Markdown | 无 ML 版面/表格/公式、无 VLM OCR、无 PDF 多页 | PP-Structure 接入 + VLM OCR（PaddleOCR-VL） |
+| 8. OCR | 纯 Rust + ONNX 与 ASR 共用后端，PP-OCRv6-small + QR + 启发式 Markdown + **word-level box + 图片文字拖选层**（2026-08-13 新增） | 无 ML 版面/表格/公式、无 VLM OCR、无 PDF 多页 | PP-Structure 接入 + VLM OCR（PaddleOCR-VL） |
 | 9. 密码箱 | Auto-Type 跨应用填充（macOS 原生）+ git sync 复用 + Argon2id 双向护栏 | 无 Passkey、无浏览器扩展、无 YubiKey、无 SSH Agent | Passkey 提供方（战略生死线） |
 
 ### 0.5 阅读指南
@@ -982,7 +982,7 @@ Sources:
 
 5. **EP 类型化补齐 + CoreML + 量化**——`OcrVersion` 加 `PPocrV6`、`RuntimeBackend` 加 `OnnxCuda`/`OnnxCoreMl`/`OnnxDirectMl`，`ProviderPreference` 加 `CoreMl`。macOS 走 CoreML EP（M 系列原生加速）。配合 PP-OCRv6 INT8 量化模型（官方有发布）进一步压体积和延迟。
 
-6. **OcrBlock 保留旋转 + word-level box**——`return_word_box` 路径在 paddle-ocr 已实现（`rapid_ocr.rs:259-273`）但 octopus 默认关，可按需启用；输出 `RotatedRect` 替代轴对齐矩形。
+6. ~~**OcrBlock 保留旋转 + word-level box**——`return_word_box` 路径在 paddle-ocr 已实现但 octopus 默认关~~ **✅ word-level box 已启用（2026-08-13）**：`paddle_backend` 设 `return_word_box: Some(true)`，`OcrBlock.words: Option<Vec<OcrWord>>` 透出到前端，ImagePreview 渲染 HTML 透明文字层（`color: transparent` + `user-select: text`）实现原生拖选（对标 macOS Live Text / PixPin）。**仍缺**：旋转信息（`RotatedRect` 替代轴对齐矩形）。详见 [spec](../superpowers/specs/2026-08-13-image-text-selection-layer-design.md)。
 
 7. **TBPU 式后处理升级**——参考 Umi-OCR 8 种 parser 方案（multi_para 默认 / single_code 代码截图 / 忽略区域），把当前启发式扩展为可切换策略，覆盖多栏与代码截图两个高频痛点。
 

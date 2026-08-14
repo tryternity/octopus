@@ -266,6 +266,12 @@ pub struct AppConfig {
     /// 终端字体族（单个族名，浏览器自动 fallback monospace）。默认 Menlo。
     #[serde(default = "default_terminal_font_family")]
     pub terminal_font_family: String,
+
+    /// 剪贴板图片预览是否自动触发 OCR 识别（识别出文本后展示「识别文本」tab）。
+    /// true=打开图片预览即自动 OCR（默认）；false=仅展示图片，用户手动点按钮触发。
+    /// 词级框（words）也只在 OCR 触发后才会有。
+    #[serde(default = "default_true")]
+    pub image_preview_auto_ocr: bool,
 }
 
 fn default_engine_mode() -> String {
@@ -395,6 +401,11 @@ fn default_terminal_font_family() -> String {
     "Menlo".to_string()
 }
 
+/// 通用 bool 默认值 = true（多字段共用，避免每个 bool 都写一份 `fn default_xxx() -> bool { true }`）。
+fn default_true() -> bool {
+    true
+}
+
 fn default_segment_silence() -> f64 {
     400.0
 }
@@ -447,6 +458,7 @@ impl Default for AppConfig {
             onboarding_completed: false,
             terminal_font_size: default_terminal_font_size(),
             terminal_font_family: default_terminal_font_family(),
+            image_preview_auto_ocr: default_true(),
         }
     }
 }

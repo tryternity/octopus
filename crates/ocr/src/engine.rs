@@ -22,6 +22,16 @@ pub struct OcrEngine {
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OcrWord {
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OcrBlock {
     pub text: String,
     pub x: f64,
@@ -29,6 +39,9 @@ pub struct OcrBlock {
     pub w: f64,
     pub h: f64,
     pub score: f64,
+    /// 词级框（用于前端文本选择层）。return_word_box=false 时为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub words: Option<Vec<OcrWord>>,
 }
 
 static INSTANCE: OnceLock<Arc<OcrEngine>> = OnceLock::new();
@@ -304,25 +317,45 @@ impl OcrEngine {
     }
 }
 
+/// quad（4 点）→ 轴对齐包围盒 (x, y, w, h)。
+fn quad_to_aabb(quad: &[[f32; 2]]) -> (f64, f64, f64, f64) {
+    let xs: Vec<f32> = quad.iter().map(|p| p[0]).collect();
+    let ys: Vec<f32> = quad.iter().map(|p| p[1]).collect();
+    let x0 = xs.iter().copied().fold(f32::INFINITY, f32::min) as f64;
+    let y0 = ys.iter().copied().fold(f32::INFINITY, f32::min) as f64;
+    let x1 = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+    let y1 = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+    (x0, y0, x1 - x0, y1 - y0)
+}
+
 fn ocr_output_to_blocks(output: &octopus_paddle_ocr::OcrOutput) -> Vec<OcrBlock> {
     let boxes = output.boxes.as_deref().unwrap_or(&[]);
     let txts = output.txts.as_deref().unwrap_or(&[]);
     let scores = output.scores.as_deref().unwrap_or(&[]);
+    let word_boxes_all = output.word_boxes.as_deref().unwrap_or(&[]);
 
     boxes.iter().enumerate().map(|(i, quad)| {
-        let xs: Vec<f32> = quad.iter().map(|p| p[0]).collect();
-        let ys: Vec<f32> = quad.iter().map(|p| p[1]).collect();
-        let x0 = xs.iter().copied().fold(f32::INFINITY, f32::min) as f64;
-        let y0 = ys.iter().copied().fold(f32::INFINITY, f32::min) as f64;
-        let x1 = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
-        let y1 = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+        let (x, y, w, h) = quad_to_aabb(quad);
+        let words = word_boxes_all.get(i).map(|wb_list| {
+            wb_list.iter().map(|wb| {
+                let (wx, wy, ww, wh) = quad_to_aabb(&wb.bbox);
+                OcrWord {
+                    text: wb.text.clone(),
+                    x: wx,
+                    y: wy,
+                    w: ww,
+                    h: wh,
+                }
+            }).collect::<Vec<_>>()
+        });
         OcrBlock {
             text: txts.get(i).cloned().unwrap_or_default(),
-            x: x0,
-            y: y0,
-            w: x1 - x0,
-            h: y1 - y0,
+            x,
+            y,
+            w,
+            h,
             score: scores.get(i).copied().unwrap_or(0.0) as f64,
+            words,
         }
     }).collect()
 }
@@ -352,6 +385,16 @@ fn merge_same_line_blocks(blocks: Vec<OcrBlock>) -> Vec<OcrBlock> {
                     last.text.push(' ');
                 }
                 last.text.push_str(&block.text);
+                // 串联 words（按 x 排序保持阅读顺序）。merge 同行块时，子块的
+                // words 按相对位置合并到 last，避免前端选择层在合并块内漏掉词。
+                if let Some(block_words) = &block.words {
+                    if let Some(last_words) = &mut last.words {
+                        last_words.extend(block_words.iter().cloned());
+                        last_words.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+                    } else {
+                        last.words = Some(block_words.clone());
+                    }
+                }
                 let x1 = (last.x + last.w).max(block.x + block.w);
                 let y0 = last.y.min(block.y);
                 let y1 = (last.y + last.h).max(block.y + block.h);
@@ -505,10 +548,10 @@ mod tests {
     fn drop_overlapped_blocks_removes_rows_at_or_below_covered_bottom() {
         // covered_until_y=100：y 中心 ≤100 的行丢弃，>100 的保留
         let mut blocks = vec![
-            OcrBlock { text: "A".into(), x: 0.0, y: 80.0,  w: 10.0, h: 20.0, score: 0.9 }, // 中心 90 ≤100 → 丢
-            OcrBlock { text: "B".into(), x: 0.0, y: 95.0,  w: 10.0, h: 10.0, score: 0.9 }, // 中心 100 ≤100 → 丢
-            OcrBlock { text: "C".into(), x: 0.0, y: 96.0,  w: 10.0, h: 10.0, score: 0.9 }, // 中心 101 >100 → 留
-            OcrBlock { text: "D".into(), x: 0.0, y: 200.0, w: 10.0, h: 20.0, score: 0.9 }, // 中心 210 → 留
+            OcrBlock { text: "A".into(), x: 0.0, y: 80.0,  w: 10.0, h: 20.0, score: 0.9, words: None }, // 中心 90 ≤100 → 丢
+            OcrBlock { text: "B".into(), x: 0.0, y: 95.0,  w: 10.0, h: 10.0, score: 0.9, words: None }, // 中心 100 ≤100 → 丢
+            OcrBlock { text: "C".into(), x: 0.0, y: 96.0,  w: 10.0, h: 10.0, score: 0.9, words: None }, // 中心 101 >100 → 留
+            OcrBlock { text: "D".into(), x: 0.0, y: 200.0, w: 10.0, h: 20.0, score: 0.9, words: None }, // 中心 210 → 留
         ];
         drop_overlapped_blocks(100.0, &mut blocks);
         let texts: Vec<String> = blocks.into_iter().map(|b| b.text).collect();
@@ -519,7 +562,7 @@ mod tests {
     fn drop_overlapped_blocks_zero_coverage_keeps_positive_center() {
         // 首块 covered_until_y=0：只要 y 中心 >0（正常行）全保留
         let mut blocks = vec![
-            OcrBlock { text: "A".into(), x: 0.0, y: 5.0, w: 10.0, h: 10.0, score: 0.9 },
+            OcrBlock { text: "A".into(), x: 0.0, y: 5.0, w: 10.0, h: 10.0, score: 0.9, words: None },
         ];
         drop_overlapped_blocks(0.0, &mut blocks);
         assert_eq!(blocks.len(), 1);
@@ -545,5 +588,42 @@ mod tests {
     #[test]
     fn is_idle_false_when_none() {
         assert!(!OcrEngine::is_idle(&None));
+    }
+
+    #[test]
+    fn ocr_output_to_blocks_extracts_word_boxes() {
+        use octopus_paddle_ocr::{OcrOutput, WordBox};
+        let output = OcrOutput {
+            boxes: Some(vec![[[0.0, 0.0], [100.0, 0.0], [100.0, 30.0], [0.0, 30.0]]]),
+            txts: Some(vec!["Hello World".into()]),
+            scores: Some(vec![0.95]),
+            word_boxes: Some(vec![vec![
+                WordBox { text: "Hello".into(), score: 0.95, bbox: [[0.0, 0.0], [50.0, 0.0], [50.0, 30.0], [0.0, 30.0]] },
+                WordBox { text: "World".into(), score: 0.93, bbox: [[51.0, 0.0], [100.0, 0.0], [100.0, 30.0], [51.0, 30.0]] },
+            ]]),
+            ..Default::default()
+        };
+        let blocks = ocr_output_to_blocks(&output);
+        assert_eq!(blocks.len(), 1);
+        let words = blocks[0].words.as_ref().expect("words should be Some");
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0].text, "Hello");
+        assert_eq!(words[1].text, "World");
+        assert!((words[0].w - 50.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn ocr_output_to_blocks_no_word_boxes() {
+        use octopus_paddle_ocr::OcrOutput;
+        let output = OcrOutput {
+            boxes: Some(vec![[[0.0, 0.0], [100.0, 0.0], [100.0, 30.0], [0.0, 30.0]]]),
+            txts: Some(vec!["Hello".into()]),
+            scores: Some(vec![0.95]),
+            word_boxes: None,
+            ..Default::default()
+        };
+        let blocks = ocr_output_to_blocks(&output);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].words.is_none());
     }
 }

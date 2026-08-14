@@ -65,7 +65,13 @@ impl OcrBackend for PaddleOcrBackend {
             .ok_or_else(|| anyhow::anyhow!("PaddleOcrBackend inner unloaded: {}", self.model_name))?;
 
         let rec_img = dynamic_to_rec_image(image)?;
-        let opts = OcrCallOptions::default();
+        // 启用词级框输出——前端文本选择层依赖词级坐标渲染透明 span。
+        // return_word_box=true 仅影响 rec 阶段 post-process（compute_word_boxes），
+        // 不增加推理开销（复用 rec 已计算的 attention/map）。
+        let opts = OcrCallOptions {
+            return_word_box: Some(true),
+            ..Default::default()
+        };
         let result = engine_ref
             .run(rec_img, opts)
             .map_err(|e| anyhow::anyhow!("OCR run failed: {e}"))?;

@@ -1016,3 +1016,11 @@ body.terminal-file-dragging .terminal-pane-canvas:hover {
 .context-menu-item-disabled:hover {
   background: transparent;
 }
+
+/* ImagePreview 文字选择层——显式选择高亮（WKWebView 对透明文字不显示默认高亮） */
+.text-select-layer span::selection {
+  background: rgba(59, 130, 246, 0.3);
+}
+.text-select-layer span::-moz-selection {
+  background: rgba(59, 130, 246, 0.3);
+}

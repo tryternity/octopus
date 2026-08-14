@@ -172,6 +172,26 @@ start_screenshot
 
 不再 write_text / update_search_text（编辑保存时才写剪贴板）。
 
+### 10.1 图片预览文字选择层（ImagePreview 自动 OCR + 透明文字层）
+
+ImagePreview（嵌入 CompactEditor 图片 tab 的组件）2026-08-13 加对标 macOS Live Text / PixPin 的「打开图片直接拖选文字」体验，无感知 OCR + 原生拖选。
+
+**链路**：
+
+1. `useOcr.ts` `[imageId]` effect：先拉 `get_last_screenshot_ocr` 缓存（截图 OCR 入库时同步写的 `LAST_SCREENSHOT_OCR`）→ 命中直接 `setOcrBlocks`；未命中自动 `invoke("ocr_image")` 跑 OCR
+2. **OcrLockGuard 互斥重试**：OCR 进行中返回「还未完成」错误 → 1s 后重试一次（最多 2 次尝试，超限放弃不影响看图）
+3. `OcrBlock.words: Option<Vec<OcrWord>>`——paddle-ocr 的 word-level box 经 `ocr_output_to_blocks` 提取（`return_word_box: true`，英文/数字按空格切，CJK 按字切），前端 fallback 用 line-level block 整行作一个 span
+4. **`TextSelectLayer.tsx`**（`pages/ImagePreview/TextSelectLayer.tsx`）—— HTML 透明文字层：
+   - 容器 `position: absolute + left/top = imgLeft/imgTop`（与 wrapper 视觉对齐，sibling 关系非 child 避免双重偏移）+ `transform: scale(zoom)` + `transform-origin: 0 0`（zoom 变化零重算 word 坐标）
+   - 每个 word 一个 `<span>`：`color: transparent`（看到原图文字）+ `user-select: text`（浏览器原生选择引擎）+ `cursor: text`（I-beam 光标）
+   - `pointerEvents: tool === "none" ? "auto" : "none"`——`tool="none"` 复用为「文字选择工具」（原抓手平移仍由 wrapper onMouseDown 在空白区接管）；其他工具放行标注
+5. 现有 SVG 高亮层（三态 off/overlay/mask）保留——rect `pointerEvents: 'none'` 不再拦截（选择交 HTML 层）
+
+**降级**：OCR 失败 / OcrLockGuard 超限 / 无 word-level box（旧缓存）均静默——图片正常显示，仅 TextSelectLayer 不出现或退化为 line-level 选择。
+
+详见 spec `2026-08-13-image-text-selection-layer-design.md` + plan `2026-08-13-image-text-selection-layer.md`。
+
+
 ---
 
 ## 11. 截图翻译

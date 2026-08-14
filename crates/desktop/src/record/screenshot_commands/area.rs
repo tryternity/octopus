@@ -380,6 +380,7 @@ pub async fn ocr_screenshot(
         text: text.clone(),
         blocks: blocks.iter().map(|b| crate::clipboard::clipboard_commands::OcrTextBlock {
             text: b.text.clone(), x: b.x, y: b.y, w: b.w, h: b.h, score: b.score,
+            words: b.words.clone(),
         }).collect(),
     };
 
