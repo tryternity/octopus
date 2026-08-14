@@ -677,32 +677,6 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
             onMouseUp={onMouseUp}
           >
             {/* canvas 已移出 wrapper（视口固定 sticky）；此处为 SVG overlay / OCR / img / textarea */}
-            {/* OCR mask 态：白底黑字纯文字展示（替换原图） */}
-            {ocrOverlay === 'mask' && ocrBlocks.length > 0 && (
-              <svg className="absolute inset-0 block"
-                viewBox={`0 0 ${natW} ${natH}`}
-                preserveAspectRatio="none"
-                style={{ width: dispW, height: dispH, pointerEvents: "none" }}
-              >
-                {ocrBlocks.map((b, i) => (
-                  <rect key={`bg-${i}`} x={b.x} y={b.y} width={b.w} height={b.h}
-                    fill="rgba(255,255,255,0.92)"
-                    stroke="rgba(0,0,0,0.1)"
-                    strokeWidth={1} rx={2}
-                    style={{ pointerEvents: 'none' }}
-                  />
-                ))}
-                {ocrBlocks.map((b, i) => (
-                  <text key={`tx-${i}`} x={b.x + 2} y={b.y + b.h - 2}
-                    fontSize={Math.min(b.h * 0.8, 14)}
-                    fill="rgba(0,0,0,0.85)"
-                    dominantBaseline="alphabetic"
-                    style={{ pointerEvents: 'none', userSelect: 'none' }}>
-                    {b.text}
-                  </text>
-                ))}
-              </svg>
-            )}
             {/* SVG overlay：标注。viewBox 自然坐标，随 wrapper 滚动 */}
             {natW > 0 && (
               <svg
@@ -784,16 +758,16 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
               />
             )}
           </div>
-          {/* OCR 文字选择层（HTML，原生拖选）—— sibling of wrapper（自身 absolute 定位到 imgLeft/imgTop，
-              transform: scale(zoom) 把 natW/natH 缩放到 dispW/dispH，与 wrapper 视觉对齐）。
-              pointerEvents 受 tool 控制（tool="none" 接管拖选，其他工具放行标注）。 */}
-          {ocrOverlay === 'select' && ocrBlocks.length > 0 && natW > 0 && (
+          {/* OCR 文字层（HTML，原生拖选）—— select（透明文字可选）和 mask（黑字白底可选）统一渲染。
+              sibling of wrapper（自身 absolute 定位到 imgLeft/imgTop，
+              transform: scale(zoom) 把 natW/natH 缩放到 dispW/dispH，与 wrapper 视觉对齐）。 */}
+          {(ocrOverlay === 'select' || ocrOverlay === 'mask') && ocrBlocks.length > 0 && natW > 0 && (
             <TextSelectLayer
               blocks={ocrBlocks}
               natW={natW}
               natH={natH}
               zoom={zoom}
-              tool={tool}
+              mode={ocrOverlay}
               imgLeft={imgLeft}
               imgTop={imgTop}
             />
