@@ -100,7 +100,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     setWatermarkPrefs(prev => ({ ...prev, color, density, angle }));
   }, []);
   // OCR/QR 轴：从 hooks 引入（与标注/canvas 零耦合，2026-07-30 拆出）
-  const { ocrBlocks, ocrOverlay, ocrCopied, ocrWarn, handleOcr } = useOcr(imageId);
+  const { ocrBlocks, ocrOverlay, ocrWarn, handleOcr } = useOcr(imageId);
   const { qrScanning, qrResult, handleQrScan, closeQr } = useQr(imageId);
   // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
   const loadingFullRef = useRef(false);
@@ -623,7 +623,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
         onUndo={undo} canUndo={annotations.length > 0}
         onRedo={redo} canRedo={redoAvailable}
         onClearAll={clearAllAnnotations} canClearAll={annotations.length > 0}
-        ocrCopied={ocrCopied} ocrWarn={ocrWarn}
+        ocrCopied={false} ocrWarn={ocrWarn}
         ocrMode={ocrOverlay}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
@@ -677,27 +677,25 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
             onMouseUp={onMouseUp}
           >
             {/* canvas 已移出 wrapper（视口固定 sticky）；此处为 SVG overlay / OCR / img / textarea */}
-            {/* OCR 文本块叠加层（三态：off / overlay / mask） */}
-            {ocrOverlay !== 'off' && ocrBlocks.length > 0 && (
+            {/* OCR mask 态：白底黑字纯文字展示（替换原图） */}
+            {ocrOverlay === 'mask' && ocrBlocks.length > 0 && (
               <svg className="absolute inset-0 block"
                 viewBox={`0 0 ${natW} ${natH}`}
                 preserveAspectRatio="none"
                 style={{ width: dispW, height: dispH, pointerEvents: "none" }}
               >
-                {/* 第一遍：所有遮罩底（避免后面的 rect 盖住前面的 text） */}
                 {ocrBlocks.map((b, i) => (
                   <rect key={`bg-${i}`} x={b.x} y={b.y} width={b.w} height={b.h}
-                    fill={ocrOverlay === 'mask' ? "rgba(255,255,255,0.92)" : "rgba(59,130,246,0.08)"}
-                    stroke={ocrOverlay === 'mask' ? "rgba(0,0,0,0.1)" : "rgba(59,130,246,0.4)"}
+                    fill="rgba(255,255,255,0.92)"
+                    stroke="rgba(0,0,0,0.1)"
                     strokeWidth={1} rx={2}
                     style={{ pointerEvents: 'none' }}
                   />
                 ))}
-                {/* 第二遍：所有文字（保证在前面的 rect 之上） */}
                 {ocrBlocks.map((b, i) => (
                   <text key={`tx-${i}`} x={b.x + 2} y={b.y + b.h - 2}
                     fontSize={Math.min(b.h * 0.8, 14)}
-                    fill={ocrOverlay === 'mask' ? "rgba(0,0,0,0.85)" : "rgba(59,130,246,0.7)"}
+                    fill="rgba(0,0,0,0.85)"
                     dominantBaseline="alphabetic"
                     style={{ pointerEvents: 'none', userSelect: 'none' }}>
                     {b.text}
@@ -789,7 +787,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
           {/* OCR 文字选择层（HTML，原生拖选）—— sibling of wrapper（自身 absolute 定位到 imgLeft/imgTop，
               transform: scale(zoom) 把 natW/natH 缩放到 dispW/dispH，与 wrapper 视觉对齐）。
               pointerEvents 受 tool 控制（tool="none" 接管拖选，其他工具放行标注）。 */}
-          {ocrBlocks.length > 0 && natW > 0 && (
+          {ocrOverlay === 'select' && ocrBlocks.length > 0 && natW > 0 && (
             <TextSelectLayer
               blocks={ocrBlocks}
               natW={natW}
