@@ -1,8 +1,9 @@
 // HTML 透明文字层——每个 word 一个 span，原生拖选（对标 macOS Live Text）。
 //
 // 设计要点：
-//   - color: transparent（用户看到原图文字，选中 overlay 透明文字）
-//   - user-select: text（浏览器原生选择引擎）
+//   - color: rgba(0,0,0,0.01)（几乎不可见但非零 alpha——WKWebView 对 color:transparent
+//     的文字不显示选择高亮，非零 alpha 让选择高亮可见）
+//   - -webkit-user-select: text + user-select: text（WKWebView 需 WebKit 前缀）
 //   - 容器 transform: scale(zoom) + 自然像素坐标 → zoom 变化零重算
 //   - 容器 pointerEvents: none（事件穿透到 wrapper——空白区不挡抓手平移）
 //   - 每个 span pointerEvents 受 tool 控制：tool="none" → auto（接管拖选）；
@@ -31,6 +32,7 @@ function TextSelectLayerBase({ blocks, natW, natH, zoom, tool, imgLeft, imgTop }
   if (blocks.length === 0) return null;
   return (
     <div
+      className="text-select-layer"
       style={{
         position: "absolute",
         left: imgLeft,
@@ -56,7 +58,8 @@ function TextSelectLayerBase({ blocks, natW, natH, zoom, tool, imgLeft, imgTop }
               overflow: "hidden",
               fontSize: w.h * 0.85,
               lineHeight: `${w.h}px`,
-              color: "transparent",
+              color: "rgba(0,0,0,0.01)", // 非零 alpha——WKWebView 对 transparent 不显示选择高亮
+              WebkitUserSelect: "text",
               userSelect: "text",
               cursor: "text",
               whiteSpace: "pre",
