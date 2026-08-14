@@ -13,7 +13,7 @@
 | Task | 状态 | 备注 |
 |---|---|---|
 | **Task 1**：后端 OcrBlock 扩展 words + paddle-ocr 透出 | ✅ 完成 | OcrWord struct + ocr_output_to_blocks 提取 word_boxes + merge_same_line_blocks 串联 + paddle_backend `return_word_box: Some(true)`。偏差见 spec §10.2-1（WordBox 路径 re-export）。2 单测通过。 |
-| **Task 2**：后端 DTO 同步 + config 开关 | ✅ 完成 | OcrTextBlock 加 `words: Option<Vec<octopus_ocr::engine::OcrWord>>`（偏差见 §10.2-2）。**config `image_preview_auto_ocr` 字段未加**——Task 4 简化为始终开启自动 OCR，去掉 config gate（YAGNI，减少一处可关项）。 |
+| **Task 2**：后端 DTO 同步 + config 开关 | ✅ 完成 | OcrTextBlock 加 `words: Option<Vec<octopus_ocr::engine::OcrWord>>`（偏差见 §10.2-2）。config `image_preview_auto_ocr: bool`（default true）已加到 `config.rs`，但前端 useOcr 自动 OCR 未 wire 此 gate（始终开启，YAGNI——后续如需关闭可读 config gate）。 |
 | **Task 3**：前端 TextSelectLayer.tsx + OcrBlock interface | ✅ 完成 | TextSelectLayer + memo + OcrWord/OcrBlock interface 加 words。 |
 | **Task 4**：前端自动 OCR + index.tsx 集成 | ✅ 完成 | useOcr mount effect 合并（自动 OCR + 缓存拉取同一 effect，偏差 §10.2-4）；TextSelectLayer 挂为 wrapper sibling（偏差 §10.2-3）；SVG rect pointerEvents 改 none + 删 onDoubleClick（偏差 §10.2-5）；tool="none" 复用为文字选择工具（偏差 §10.2-6）。 |
 | **Task 5**：联调 + 文档同步 | ✅ 代码+文档完成；e2e 跳过 | Step 1（全量 build）✅、Step 2（手动 e2e）❌ 跳过——GUI 测试由用户跑、Step 3（文档同步）✅、额外 dead code 清理 ✅（handleOcrBlockCopy 链）。 |
@@ -74,7 +74,7 @@
 - Consumes: `octopus_paddle_ocr::OcrOutput.word_boxes`（`Option<Vec<Vec<WordBox>>>`，已存在）
 - Produces: `OcrBlock.words: Option<Vec<OcrWord>>` + `OcrWord { text, x, y, w, h }`
 
-- [ ] **Step 1: 加 OcrWord struct + OcrBlock.words 字段**
+- [x] **Step 1: 加 OcrWord struct + OcrBlock.words 字段**
 
 修改 `crates/ocr/src/engine.rs`，在 `OcrBlock` 定义（行 25）前加 `OcrWord`，`OcrBlock` 加 `words` 字段：
 
@@ -103,7 +103,7 @@ pub struct OcrBlock {
 }
 ```
 
-- [ ] **Step 2: 抽取 quad_to_aabb helper**
+- [x] **Step 2: 抽取 quad_to_aabb helper**
 
 `ocr_output_to_blocks`（行 307-328）里的 AABB 计算逻辑抽成 helper（word_boxes 也需要复用）。在 `ocr_output_to_blocks` 前加：
 
@@ -120,7 +120,7 @@ fn quad_to_aabb(quad: &[[f32; 2]]) -> (f64, f64, f64, f64) {
 }
 ```
 
-- [ ] **Step 3: ocr_output_to_blocks 提取 word_boxes**
+- [x] **Step 3: ocr_output_to_blocks 提取 word_boxes**
 
 修改 `ocr_output_to_blocks`（行 307）用 `quad_to_aabb` + 提取 word_boxes。注意 `WordBox` 的 `bbox` 字段是 `Quad` 类型（`[[f32; 2]; 4]`），需确认能否传给 `quad_to_aabb`——`Quad` 是 `[[f32; 2]; 4]`，`quad_to_aabb` 接受 `&[[f32; 2]]`，用 `&wb.bbox` 或 `wb.bbox.as_slice()` 视类型而定。先编译看报错调整。
 
@@ -152,7 +152,7 @@ fn ocr_output_to_blocks(output: &octopus_paddle_ocr::OcrOutput) -> Vec<OcrBlock>
 }
 ```
 
-- [ ] **Step 4: merge_same_line_blocks 串联 words**
+- [x] **Step 4: merge_same_line_blocks 串联 words**
 
 修改 `merge_same_line_blocks`（行 333-369），合并同行块时把 words 也串联。在现有 `last.text.push_str(&block.text)`（行 354）附近加：
 
@@ -170,11 +170,11 @@ if let Some(block_words) = &block.words {
 
 放在 `last.text.push_str(&block.text);`（行 354）之后、`let x1 = ...`（行 355）之前。
 
-- [ ] **Step 5: run_ocr 不需改——backend.recognize 已返回 OcrOutput（含 word_boxes）**
+- [x] **Step 5: run_ocr 不需改——backend.recognize 已返回 OcrOutput（含 word_boxes）**
 
 确认：`run_ocr`（行 213-257）调 `backend.recognize(img)` 返回 `OcrOutput`，`ocr_output_to_blocks(&result)` 提取 word_boxes。只要 backend 在 `recognize` 里设了 `return_word_box: true`，`OcrOutput.word_boxes` 就有值。
 
-- [ ] **Step 6: paddle_backend 启用 return_word_box**
+- [x] **Step 6: paddle_backend 启用 return_word_box**
 
 修改 `crates/ocr/src/paddle_backend.rs:68`：
 
@@ -185,7 +185,7 @@ let opts = OcrCallOptions {
 };
 ```
 
-- [ ] **Step 7: 修复所有 OcrBlock 构造点**
+- [x] **Step 7: 修复所有 OcrBlock 构造点**
 
 `OcrBlock` 加了 `words` 字段后，所有构造 `OcrBlock { ... }` 的地方都需加 `words: None`（或合适值）。grep 找出所有构造点：
 
@@ -196,7 +196,7 @@ rg "OcrBlock \{" crates/ --type rust
 
 逐一加 `words: None`（除非该处有 word_boxes 数据）。
 
-- [ ] **Step 8: 编译验证**
+- [x] **Step 8: 编译验证**
 
 ```bash
 cargo build -p octopus-ocr 2>&1 | tail -15
@@ -204,7 +204,7 @@ cargo build -p octopus-ocr 2>&1 | tail -15
 
 Expected: 0 errors。可能有 unused warning（OcrWord 暂未被消费），记录但继续。
 
-- [ ] **Step 9: 单测——ocr_output_to_blocks 提取 word_boxes**
+- [x] **Step 9: 单测——ocr_output_to_blocks 提取 word_boxes**
 
 在 `engine.rs` 的 `#[cfg(test)] mod tests` 里加测试：
 
@@ -247,7 +247,7 @@ fn ocr_output_to_blocks_no_word_boxes() {
 
 注意：`OcrOutput` 的字段名和类型需与 `paddle-ocr/src/pipeline/types.rs:10-15` 一致——如编译报错，先读 types.rs 确认字段名/类型。
 
-- [ ] **Step 10: 跑测试**
+- [x] **Step 10: 跑测试**
 
 ```bash
 cargo test -p octopus-ocr --lib ocr_output_to_blocks 2>&1 | tail -15
@@ -255,7 +255,7 @@ cargo test -p octopus-ocr --lib ocr_output_to_blocks 2>&1 | tail -15
 
 Expected: 2 tests passed。
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add crates/ocr/src/engine.rs crates/ocr/src/paddle_backend.rs
@@ -277,7 +277,7 @@ paddle_backend OcrCallOptions 设 return_word_box: true。"
 **Interfaces:**
 - Produces: `OcrTextBlock.words: Option<Vec<OcrTextWord>>` + config `image_preview_auto_ocr: bool`
 
-- [ ] **Step 1: OcrTextBlock 加 words 字段**
+- [x] **Step 1: OcrTextBlock 加 words 字段**
 
 读 `clipboard_commands.rs:460-475`，看 `OcrTextBlock` 定义。加 words 字段（对应 OcrBlock.words）。
 
@@ -298,7 +298,7 @@ pub struct OcrTextBlock {
 
 然后在构造 `OcrTextBlock` 的地方（`clipboard_commands.rs` 里 OCR 结果转换处）从 `OcrBlock.words` 映射过来。grep `OcrTextBlock {` 找构造点。
 
-- [ ] **Step 2: config 加 image_preview_auto_ocr**
+- [x] **Step 2: config 加 image_preview_auto_ocr**
 
 读 `crates/infra/src/config.rs`，找到现有 config 字段定义（如 `record_shortcut`、`action_bar_shortcut` 等），加：
 
@@ -312,13 +312,13 @@ pub image_preview_auto_ocr: bool,
 fn default_true() -> bool { true }
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | tail -15
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/clipboard/clipboard_commands.rs crates/infra/src/config.rs
@@ -337,7 +337,7 @@ git commit -m "feat(ocr): OcrTextBlock 加 words 字段 + config image_preview_a
 - Consumes: `OcrBlock.words?: OcrWord[]`、`natW/natH/zoom/tool/imgLeft/imgTop`（从 index.tsx 传入）
 - Produces: `<TextSelectLayer>` 组件
 
-- [ ] **Step 1: useOcr.ts OcrBlock interface 加 words**
+- [x] **Step 1: useOcr.ts OcrBlock interface 加 words**
 
 修改 `useOcr.ts:10-17`：
 
@@ -355,7 +355,7 @@ export interface OcrBlock {
 }
 ```
 
-- [ ] **Step 2: 创建 TextSelectLayer.tsx**
+- [x] **Step 2: 创建 TextSelectLayer.tsx**
 
 创建 `crates/desktop/frontend/src/pages/ImagePreview/TextSelectLayer.tsx`：
 
@@ -429,14 +429,14 @@ function TextSelectLayerBase({ blocks, natW, natH, zoom, tool, imgLeft, imgTop }
 export const TextSelectLayer = memo(TextSelectLayerBase);
 ```
 
-- [ ] **Step 3: 前端构建验证**
+- [x] **Step 3: 前端构建验证**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/research-tolaria-comparison/crates/desktop/frontend
 npx tsc --noEmit 2>&1 | tail -10
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/research-tolaria-comparison
@@ -456,7 +456,7 @@ git commit -m "feat(image-preview): TextSelectLayer 透明文字层 + OcrBlock i
 - Consumes: `config.image_preview_auto_ocr`（从后端 config 读，或前端 localStorage 默认 true）
 - Produces: 图片打开自动 OCR + 文字层渲染
 
-- [ ] **Step 1: useOcr.ts 加自动 OCR**
+- [x] **Step 1: useOcr.ts 加自动 OCR**
 
 读 `useOcr.ts` 完整文件（114 行），找到 `imageId` effect（mount 时拉缓存的逻辑，约行 40-55）。在拉缓存后加自动 OCR：
 
@@ -500,7 +500,7 @@ useEffect(() => {
 
 **config 开关**：如果前端需要读 config，用 `invoke("get_config")` 或已有的 config hook。但最简做法是**先不 gate**（默认自动 OCR），config 开关留后续——如果需要 gate，在 effect 开头加 `invoke<boolean>("get_config_value", { key: "image_preview_auto_ocr" })` 或类似。先做无 gate 版本（自动 OCR 默认开），后续可加。
 
-- [ ] **Step 2: index.tsx 集成 TextSelectLayer**
+- [x] **Step 2: index.tsx 集成 TextSelectLayer**
 
 修改 `crates/desktop/frontend/src/pages/ImagePreview/index.tsx`。
 
@@ -536,7 +536,7 @@ import { TextSelectLayer } from "./TextSelectLayer";
 
 **注意**：SVG text 的 `pointerEvents: 'none'`（行 705）已经是 none，不变。
 
-- [ ] **Step 3: 前端构建验证**
+- [x] **Step 3: 前端构建验证**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/research-tolaria-comparison/crates/desktop/frontend
@@ -544,7 +544,7 @@ npx tsc --noEmit 2>&1 | tail -10
 npm run build 2>&1 | tail -5
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/research-tolaria-comparison
@@ -565,7 +565,7 @@ index.tsx 渲染 TextSelectLayer + SVG rect pointerEvents 改 none（选择交 H
 - Modify: `docs/architecture.md`（OCR 章节 + ImagePreview 文字层）
 - Modify: spec §10 实现注记 + plan 实施状态表
 
-- [ ] **Step 1: 全量构建**
+- [x] **Step 1: 全量构建**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/research-tolaria-comparison
@@ -573,7 +573,7 @@ touch crates/desktop/src/main.rs
 cargo build -p octopus-desktop 2>&1 | tail -10
 ```
 
-- [ ] **Step 2: 手动 e2e**（用户后续手动跑）
+- [ ] **Step 2: 手动 e2e**（用户后续手动跑——subagent 无法做 GUI 测试）
 
 验证清单：
 - [ ] 打开含文字的图片 → 自动 OCR → 鼠标移到文字上变 I-beam 光标
@@ -585,13 +585,13 @@ cargo build -p octopus-desktop 2>&1 | tail -10
 - [ ] 长图滚动 → 文字层跟随（sticky canvas 对齐）
 - [ ] CJK 文本（中文）→ 每个 CJK 字符是一个 word box → 可逐字选
 
-- [ ] **Step 3: 文档同步**
+- [x] **Step 3: 文档同步**
 
 更新 `docs/features/screenshot.md` ImagePreview 章节 + `docs/architecture.md` OCR 章节，描述 word-level box + 透明文字层 + 自动 OCR。
 
 更新 spec §10 实现注记 + plan 实施状态表。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/features/screenshot.md docs/architecture.md docs/superpowers/specs/2026-08-13-image-text-selection-layer-design.md docs/superpowers/plans/2026-08-13-image-text-selection-layer.md
