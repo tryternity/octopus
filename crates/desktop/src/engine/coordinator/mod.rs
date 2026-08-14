@@ -195,7 +195,7 @@ pub(crate) enum Command {
     /// 用 instant 浮窗展示 "done" 后短暂停留再 hide）。
     InstantStop,
     /// hands-free 模式 keydown（短按确认）：开始常驻录音（instant 浮窗 listening）。
-    /// 静音 60s 超时或用户再按键 → HandsFreeStop 停录 + 尾段粘贴。
+    /// 静音 10s 超时或用户再按键 → HandsFreeStop 停录 + 尾段粘贴。
     HandsFreeStart,
     /// hands-free 模式停止：停录 + finalize + 尾段粘贴 + hide 浮窗 → Idle。
     /// 由 PTT 状态机（短按/长按/双击在 hands-free 录音中）或静音超时触发。
@@ -785,6 +785,14 @@ fn build_coordinator_loop(
                             debug!("InstantStart ignored: not Idle (stage={})", stage_name(&stage));
                             continue;
                         }
+                        // 第四十二轮 P2-4：清残留 editing flag——用户可能处于 Idle+editing 态
+                        //（上一会结束后进入编辑模式），此时开 PTT 录音不清 editing → tick 循环
+                        // 走 audio.trim_buffer 而非 dispatch_tick → 音频不送 ASR → 识别静默损坏。
+                        // 对称 Toggle :402 的 editing 清理。
+                        if editing {
+                            editing = false;
+                            edit_buffer = None;
+                        }
                         // 缓存前台 app pid（粘贴时定向发送）——同 Toggle 的 Idle 分支。
                         #[cfg(target_os = "macos")]
                         crate::platform::focus_tracker::save_frontmost_pid(&app_handle);
@@ -837,6 +845,11 @@ fn build_coordinator_loop(
                         if !matches!(stage, Stage::Idle) {
                             debug!("HandsFreeStart ignored: not Idle (stage={})", stage_name(&stage));
                             continue;
+                        }
+                        // 第四十二轮 P2-4：清残留 editing flag（同 InstantStart）。
+                        if editing {
+                            editing = false;
+                            edit_buffer = None;
                         }
                         #[cfg(target_os = "macos")]
                         crate::platform::focus_tracker::save_frontmost_pid(&app_handle);

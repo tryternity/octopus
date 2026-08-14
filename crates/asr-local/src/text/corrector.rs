@@ -284,7 +284,9 @@ pub fn reload_fuzzy_dialect() {
     // 从 DB 读 enabled 规则（按 match_type + sort_order 排序），更新全局缓存
     match crate::db::list_enabled_fuzzy_dialect_rules() {
         Ok(rules) => crate::hotword::set_fuzzy_rules_cache(rules),
-        Err(e) => log::warn!("[corrector] 读方言规则失败，用空规则: {}", e),
+        // 第四十七轮 P3-9：原日志「用空规则」误导——Err 分支不调 set_fuzzy_rules_cache，
+        // 实际保留上次缓存（首次则为空）。修正日志表述。
+        Err(e) => log::warn!("[corrector] 读方言规则失败，保留上次缓存（首次为空）: {}", e),
     }
     // 确保单例已初始化（active_words 存在）；未初始化时 force init 空 words。
     let _ = get_corrector();

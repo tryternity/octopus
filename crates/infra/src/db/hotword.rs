@@ -318,25 +318,30 @@ pub fn purge_all_hotword_tombstones() -> Result<usize> {
 
 /// 裸连接版（供测试直接调）。
 pub(crate) fn purge_all_hotword_tombstones_at(conn: &Connection) -> Result<usize> {
+    // 第三十九轮 P2-2：包 unchecked_transaction——手动「清空回收站」多步 DELETE（连带删词 /
+    // word tombstone / hits 孤儿）在 autocommit 下各自独立提交，中途失败留脏。对齐同文件
+    // purge_expired_hotword_tombstones_at（:252）+ delete_hotword_set_at（:191）范式。
+    let tx = conn.unchecked_transaction()?;
     let tombstone_set_ids: Vec<String> = {
-        let mut stmt = conn.prepare("SELECT id FROM hotword_sets WHERE is_deleted > 0")?;
+        let mut stmt = tx.prepare("SELECT id FROM hotword_sets WHERE is_deleted > 0")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         rows.filter_map(|r| r.ok()).collect()
     };
     let mut purged = 0usize;
     for id in &tombstone_set_ids {
-        conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
-        conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+        tx.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
+        tx.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
         purged += 1;
     }
     // 所有 word tombstone（不限年龄）
-    let n = conn.execute("DELETE FROM hotword_words WHERE is_deleted > 0", [])?;
+    let n = tx.execute("DELETE FROM hotword_words WHERE is_deleted > 0", [])?;
     // hotword_hits 孤儿清理（同 purge_expired 逻辑，详见 tombstone-gc spec §5）
-    let orphan_hits = conn.execute(
+    let orphan_hits = tx.execute(
         "DELETE FROM hotword_hits WHERE word NOT IN \
          (SELECT word FROM hotword_words WHERE is_deleted = 0)",
         [],
     )?;
+    tx.commit()?;
     log::info!(
         "[hotword-gc] manual purge: {} sets + {} words + {} orphan hits",
         purged, n, orphan_hits

@@ -80,6 +80,20 @@ pub fn find_by_text(conn: &Connection, text: &str, item_type: ItemType) -> Resul
     }
 }
 
+/// 第四十二轮 P2-2：文件项去重——按 ref_data（路径 JSON）查而非 content（文件项 content
+/// 永远是空串，路径存在 ref_data）。原 watcher 用 find_by_text 查 content 永不匹配 →
+/// 每次粘贴相同文件新建条目。对称 find_by_content_hash（图片按 ref_data 查）。
+pub fn find_file_by_paths(conn: &Connection, paths_json: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM clipboard_history WHERE ref_data = ? AND item_type = 'file' LIMIT 1"
+    )?;
+    match stmt.query_row(params![paths_json], |r| r.get::<_, String>(0)) {
+        Ok(id) => Ok(Some(id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 pub fn touch_created_at(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("UPDATE clipboard_history SET created_at = ? WHERE id = ?", params![iso_now(), id])?;
     Ok(())
@@ -456,17 +470,24 @@ fn clear_voice_aware(conn: &Connection, select_where: &str, delete_where: &str) 
         cleanup_unreferenced_images(conn)?;
     }
 
-    // 2a. 所有匹配的 voice 软删（进回收站）
+    // 2a. 所有匹配的 voice 软删（进回收站）。第四十三轮 P2-低：加 length >= MIN 条件——
+    // 短 voice 不软删（不进回收站），留给 2b 直接物理删。原逻辑 2a 软删全部 voice（含短的）
+    // → 2b 物理删回收站短 voice（含刚软删的）→ 短 voice 同时计入 voice_rows 与 short_voice
+    // → 返回计数虚高。
     let voice_rows = conn.execute(
-        &format!("UPDATE clipboard_history SET is_deleted = 1 WHERE item_type = 'voice' AND {}", select_where),
+        &format!("UPDATE clipboard_history SET is_deleted = 1 WHERE item_type = 'voice' AND length(content) >= {min} AND {where_clause}",
+            min = VOICE_SOFT_DELETE_MIN_LEN, where_clause = select_where),
         [],
     )?;
 
-    // 2b. 回收站里太短的 voice（< VOICE_SOFT_DELETE_MIN_LEN）→ 物理删（对 bigram 语料无价值）
+    // 2b. 目标 filter 范围内的短 voice（活跃 + 回收站）物理删（对 bigram 语料无价值）。
+    // 第四十四轮 P1-A：补 select_where 过滤——原第四十三轮修复改 2b 为删所有短 voice（活跃+
+    // 回收站）以消除双重计数，但漏了 filter → 跨 tab 清空（如「图片」tab）误删全库短 voice
+    // （P1 数据丢失）。现在只在目标 filter 范围内清短 voice。
     let short_voice = conn.execute(
         &format!(
-            "DELETE FROM clipboard_history WHERE item_type = 'voice' AND length(content) < {min} AND is_deleted = 1",
-            min = VOICE_SOFT_DELETE_MIN_LEN,
+            "DELETE FROM clipboard_history WHERE item_type = 'voice' AND length(content) < {min} AND {where_clause}",
+            min = VOICE_SOFT_DELETE_MIN_LEN, where_clause = select_where,
         ),
         [],
     )?;

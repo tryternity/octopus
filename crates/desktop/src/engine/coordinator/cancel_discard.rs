@@ -13,7 +13,7 @@ use std::sync::Arc;
 use super::Stage;
 use super::agent::agent_task_id_in_stage;
 use super::paste::{active_llm_name, now_millis};
-use super::{INSTANT_MODE, set_recording_mode};
+use super::{INSTANT_MODE, TRANSLATION_ACTIVE, set_recording_mode};
 
 /// 处理 Cancel 命令
 pub(crate) fn handle_cancel(
@@ -84,6 +84,9 @@ pub(crate) fn handle_cancel(
     }
     *stage = Stage::Idle;
     INSTANT_MODE.swap(false, Ordering::Relaxed);
+    // 第四十六轮 P2-2：对称清 TRANSLATION_ACTIVE——Cancel/Discard 后残留 true → 下次
+    // instant 录音 do_paste（paste.rs:91 swap）读到残留 → 错误触发翻译。
+    TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
     crate::ui::result_window::hide_result(app_handle);
     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
     set_recording_mode(0);  // 回 Idle，PTT 状态机据此判定下次 keydown 落在 idle
@@ -248,6 +251,9 @@ pub(crate) fn handle_discard(
 
     *stage = Stage::Idle;
     INSTANT_MODE.swap(false, Ordering::Relaxed);
+    // 第四十六轮 P2-2：对称清 TRANSLATION_ACTIVE——Cancel/Discard 后残留 true → 下次
+    // instant 录音 do_paste（paste.rs:91 swap）读到残留 → 错误触发翻译。
+    TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
     crate::ui::result_window::hide_result(app_handle);
     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
     set_recording_mode(0);  // 回 Idle，PTT 状态机据此判定下次 keydown 落在 idle

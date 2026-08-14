@@ -50,7 +50,17 @@ pub fn screens_dir() -> PathBuf {
 
 /// 图片文件完整路径：`<screens_dir>/<hash>.jpg`。
 /// hash 作为文件名天然去重（同图复用同一文件）。
+///
+/// 第四十八轮 P2-低：补 hash 格式校验——原无校验，sync ref_data 间接可达（虽 payload
+/// 加密限制攻击面）。hash 应为 hex（MD5），含 `/` `\\` `..` 可跳出 screens_dir。
+/// 对称 clipboard favorite_file_path validate_favorite_uuid + vault validate_uuid。
 pub fn image_file_path(hash: &str) -> PathBuf {
+    // hash 应为 hex 字符（MD5 = 32 hex）。防御性校验防 path traversal。
+    if hash.is_empty() || hash.contains('/') || hash.contains('\\') || hash.contains("..") || hash.contains('\0') {
+        log::warn!("[paths] 拒绝非法规格 image hash（path traversal 防御）：{}", hash);
+        // 返回一个不存在的安全路径，调用方的文件操作会自然失败
+        return screens_dir().join("invalid_hash_rejected.jpg");
+    }
     screens_dir().join(format!("{}.jpg", hash))
 }
 

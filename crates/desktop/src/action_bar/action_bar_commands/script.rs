@@ -414,11 +414,18 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         let text_clone = text.clone();
                         let config_clone = llm_config.clone();
                         // LLM 调用是同步阻塞 HTTP——必须 spawn_blocking 防卡 tokio runtime
-                        let result = tokio::task::spawn_blocking(move || {
+                        // 第四十一轮 P2-低：补 timeout 包裹——同函数 AI 路径（:445-456）有
+                        // timeout(AI_TIMEOUT_SECS)，FallbackLlm 路径漏了。LLM client 自带 120s
+                        // timeout 兜底非永久卡死，但与同函数不对称 + UX 卡顿。超时后 spawn_blocking
+                        // 线程继续跑到结束才回收（同步 reqwest 无法中断），前端立即收到 Err 释放 UI。
+                        let llm_future = tokio::task::spawn_blocking(move || {
                             octopus_llm::chat_text_with_prompt(&prompt, &text_clone, &config_clone, None)
-                        }).await
-                            .map_err(|e| e2s_ctx("LLM 线程异常: {}", e))?
-                            .map_err(e2s)?;
+                        });
+                        let result = match tokio::time::timeout(std::time::Duration::from_secs(AI_TIMEOUT_SECS), llm_future).await {
+                            Ok(Ok(res)) => res.map_err(e2s)?,
+                            Ok(Err(e)) => return Err(e2s_ctx("LLM 线程异常: {}", e)),
+                            Err(_elapsed) => return Err(format!("自动翻译超时（{}秒）", AI_TIMEOUT_SECS)),
+                        };
                         // FallbackLlm 非流式：show 浮窗后一次性 emit done
                         //（与流式分支 + 截图翻译行为统一，不再开 CompactEditor contrast tab）
                         let result_text = result.clone();
@@ -505,10 +512,14 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                 if result.timed_out {
                     return Err("脚本执行超时（60秒），已强制终止".into());
                 }
-                if let Some(code) = result.exit_code {
-                    if code != 0 {
-                        let detail = if result.stderr.is_empty() { String::new() } else { format!("\n{}", result.stderr) };
-                        return Err(format!("脚本退出码 {}{}", code, detail));
+                // 第四十二轮 P2-3：exit_code=None（信号终止 SIGSEGV/SIGKILL）也当失败——
+                // 原 if let Some(code) 漏了 None 分支（落到「成功」路径静默成功）。
+                // 对称 script_error_msg :35 的 exit_code != Some(0) 写法。
+                if result.exit_code != Some(0) {
+                    let detail = if result.stderr.is_empty() { String::new() } else { format!("\n{}", result.stderr) };
+                    match result.exit_code {
+                        Some(code) => return Err(format!("脚本退出码 {}{}", code, detail)),
+                        None => return Err(format!("脚本异常退出（被信号终止）{}", detail)),
                     }
                 }
                 // 成功

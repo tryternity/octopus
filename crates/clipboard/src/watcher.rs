@@ -127,9 +127,9 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                 crate::model::FileEntry { size, file_type }
             }).collect();
 
-            // 去重
+            // 去重（第四十二轮 P2-2：文件项按 ref_data 查——content 是空串，路径在 ref_data）
             let existing = octopus_infra::db::with_db(|conn| {
-                store::find_by_text(conn, &paths_json, ItemType::File)
+                store::find_file_by_paths(conn, &paths_json)
             })?;
 
             if let Some(id) = existing {
