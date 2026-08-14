@@ -223,7 +223,7 @@ pub(crate) fn list_transcriptions_search_at(
             let escaped = escape_fts5_match(q);
             let mut stmt = conn.prepare(&format!(
                 "{select_cols}
-                 WHERE c.item_type = 'voice'
+                 WHERE c.item_type = 'voice' AND c.is_deleted = 0
                    AND c.rowid IN (SELECT rowid FROM clipboard_history_fts
                               WHERE clipboard_history_fts MATCH ?1)
                  ORDER BY c.created_at DESC, c.id DESC LIMIT ?2 OFFSET ?3"
@@ -235,7 +235,7 @@ pub(crate) fn list_transcriptions_search_at(
         let pattern = format!("%{}%", q);
         let mut stmt = conn.prepare(&format!(
             "{select_cols}
-             WHERE c.item_type = 'voice' AND c.content LIKE ?1
+             WHERE c.item_type = 'voice' AND c.is_deleted = 0 AND c.content LIKE ?1
              ORDER BY c.created_at DESC, c.id DESC LIMIT ?2 OFFSET ?3"
         ))?;
         let rows = stmt.query_map(params![pattern, limit, offset], transcription_row_mapper)?;
@@ -302,7 +302,7 @@ pub(crate) fn list_transcriptions_at(
                 CASE WHEN json_extract(meta_info, '$.polished') = 1 THEN 'done' ELSE 'off' END as polish_status,
                 CAST(json_extract(meta_info, '$.duration_ms') AS INTEGER) as duration_ms,
                 segments, content
-         FROM clipboard_history WHERE item_type = 'voice'
+         FROM clipboard_history WHERE item_type = 'voice' AND is_deleted = 0
          ORDER BY created_at DESC, id DESC LIMIT ?1 OFFSET ?2"
     )?;
     let rows = stmt.query_map(params![limit, offset], transcription_row_mapper)?;

@@ -131,7 +131,11 @@ fn process_db_command(cmd: DbCommand) {
             }
         }
         DbCommand::Delete { id } => {
-            if let Err(e) = octopus_infra::db::delete_transcriptions(&[id.to_string()]) {
+            // 改用 clipboard voice-aware 分流：长 voice 软删（保 bigram 语料 INV-C1），
+            // 短 voice/其他物理删（含 favorite 孤儿清理）。对称 clipboard 历史删除路径。
+            if let Err(e) = octopus_infra::db::with_db(|conn| {
+                octopus_clipboard::store::delete_items(conn, &[id.to_string()])
+            }) {
                 warn!("Background DB delete failed: {}", e);
             }
         }

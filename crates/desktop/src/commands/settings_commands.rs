@@ -579,8 +579,11 @@ pub fn get_history(limit: u32, offset: u32, search: Option<String>) -> Result<Ve
 #[tauri::command]
 pub fn delete_history(ids: Vec<String>, app_handle: tauri::AppHandle) -> Result<usize, String> {
     use tauri::Emitter;
-    // 新 schema：transcriptions 已并入 clipboard_history，delete_transcriptions 直接删 voice 条目。
-    let deleted = octopus_infra::db::delete_transcriptions(&ids).map_err(e2s)?;
+    // 改用 clipboard voice-aware 分流：长 voice 软删（保 bigram 语料 INV-C1），
+    // 短 voice/其他物理删（含 favorite 孤儿清理）。对称 clipboard 历史删除路径。
+    let deleted = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::delete_items(conn, &ids)
+    }).map_err(e2s)?;
     if deleted > 0 {
         let _ = app_handle.emit("clipboard://changed", ());
     }
