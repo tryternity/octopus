@@ -2332,6 +2332,23 @@ vault permanent_delete 单项缺 sync lock / Auto-Type AX 失败仍继续 / veri
 
 - `cargo build -p octopus-asr-local` —— 0 error（worktree 路径确认）
 
+## 53. reset_idle_flags() helper 重构——根治 static flag 同型遗漏（2026-08-14）
+
+### 背景
+
+coordinator 3 个 static atomics（INSTANT_MODE / TRANSLATION_ACTIVE / recording_mode）在每个 stage→Idle 出口都应清理，但分散在 4 个文件 8+ 个出口。**同型遗漏已发生 3 次**：INSTANT_MODE（第三十六轮）、TRANSLATION_ACTIVE（第四十六轮修 4 处漏 2 处→第四十八轮补）、`reset_mode_flags_on_start_failure` 本身漏 TRANSLATION_ACTIVE。
+
+### 重构
+
+提取 `pub(crate) fn reset_idle_flags()` 在 mod.rs（3 个 static 定义处），清 INSTANT_MODE + TRANSLATION_ACTIVE + recording_mode(0)。替换 14 处手动清理序列（session.rs 7 + lifecycle.rs 4 + cancel_discard.rs 2 + polish.rs 1），删除旧 buggy `reset_mode_flags_on_start_failure`（漏 TRANSLATION_ACTIVE）。条件 swap（PasteDone handler + do_paste）保留不变。
+
+详见 `docs/superpowers/specs/2026-08-14-reset-idle-flags-helper-design.md` + `docs/superpowers/plans/2026-08-14-reset-idle-flags-helper.md`。
+
+### 验证
+
+- `cargo build -p octopus-desktop --features "cloud,embedded,vault"` —— 0 error 0 warning
+- `cargo test -p octopus-desktop --features "cloud,embedded,vault"` —— 547 过（+1 reset_idle_flags 单测）
+
 ## 52. 第四十八轮——AgentBridge TRANSLATION_ACTIVE 同型遗漏 + aliyun UTF-8 panic + image path traversal（2026-08-13，修 2 P2 + 1 P2-低）
 
 ### 触发
