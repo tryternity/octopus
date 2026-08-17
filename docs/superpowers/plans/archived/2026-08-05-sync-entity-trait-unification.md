@@ -8,6 +8,8 @@
 
 **Tech Stack:** Rust（trait + 泛型 + associated type）/ SQLite（schema 迁移）/ serde（bool→i64 兼容反序列化）
 
+> **实施记录（2026-08-05 执行完毕，2026-08-14 归档前回写）**：全部 Task 已完成（本文 checkbox 未逐项回写，**完整实施记录见 [spec §12](../../specs/archived/2026-08-05-sync-entity-trait-unification-design.md)**——含 6 项偏差表、行数统计、1777 tests passed）。核心产物：`crates/sync/src/pipeline.rs`（trait `SyncEntity` + `merge_three_way` + `pull_entity`）+ 5 个 impl（vault cipher/folder + hotword set/word + clipboard favorite）+ v59→v60 迁移（vault `is_deleted` bool→i64 epoch）+ 三模块 tombstone GC（vault/clipboard 30 天、hotword 10 天）。
+
 ## Global Constraints
 
 - **零行为变更**：3-way 判定顺序（tombstone 优先 → updated_at → md5）、tombstone 单向优先、拒绝复活守卫语义不变

@@ -40,7 +40,7 @@ struct Cipher {
     fields: Vec<Field>,      // 加密存储
     password_history: Vec<String>,
     reprompt: RepromptType,  // None=不需要 / Password=使用时再验主密码
-    is_deleted: bool, // 软删标志（回收站）
+    is_deleted: i64,  // 软删 tombstone（0=活跃，>0=删除时刻 epoch 秒；v60 起，回收站 + 跨设备删除传播）
     created_at: String,
     updated_at: String,
 }
@@ -145,9 +145,10 @@ K_machine（本地文件密文）──┴── HKDF ──→ app_key
 
 ## 6. 回收站
 
-- 文本 cipher 删除走软删（`UPDATE is_deleted = 1`），可还原 / 永久删
+- cipher 删除走软删（`is_deleted` 置删除时刻 epoch 秒，v60 起 tombstone 语义，跨设备 merge 传播删除态），可还原 / 永久删
 - 回收站 tab 仅在 Settings → Vault → CipherList（VaultPicker 浮窗无回收站）
 - 操作：还原（`vault_restore_cipher`）/ 永久删（`vault_delete_cipher permanent=true`）/ 全部清空（`vault_empty_trash`）
+- **tombstone GC**（2026-08-05，[spec](../superpowers/specs/archived/2026-08-05-sync-entity-trait-unification-design.md)）：软删超 30 天（`VAULT_TOMBSTONE_RETENTION_SECS`）的 cipher/folder 由 scheduler 每日 GC 清理（folder_id 悬空 FK 置 NULL 一并处理）——回收站条目超期自动消失。folder 同款 `is_deleted` epoch 语义；`.sync` JSON 反序列化兼容旧 `true/false` 布尔值。
 
 ---
 

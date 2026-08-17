@@ -1179,7 +1179,7 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 | P2-ocr3（image 无 size guard）| 需 `ImageReader` + 维度限制 API 重构；OCR 输入受 watcher 40MB 限制兜底 | 新留后续 |
 | P2-l2（无重试退避）| 功能增强，非 bug | 不修 |
 | P2-dl1（Etag If-Range 实现）| ✅ 注释撒谎已修正（verify.rs 文档明示 Etag 当前 no-op）；**If-Range 续传校验功能性实现仍留后续** | = 第 17 轮 P2-1 |
-| ~~P2-sync1（export 非原子清空+重建）~~ | ✅ **第二十五轮已实施**（见 [设计 spec](./2026-08-05-sync-export-atomicity-design.md) + [实施 plan](../plans/2026-08-10-sync-export-atomicity.md)），方案 B 先写后清孤儿落地 | — |
+| ~~P2-sync1（export 非原子清空+重建）~~ | ✅ **第二十五轮已实施**（见 [设计 spec](./archived/2026-08-05-sync-export-atomicity-design.md) + [实施 plan](../plans/archived/2026-08-10-sync-export-atomicity.md)），方案 B 先写后清孤儿落地 | — |
 | ~~P2-sync2（merge push 写被 export 覆盖）~~ | ✅ **第二十五轮已实施**（pipeline push_or_skip 删 write_file），与 P2-sync1 合并修复 | — |
 
 注：P2-srv1（scheduler 无超时）**本轮已修**（见上方修复明细 §A1），从留后续移除。
@@ -1250,7 +1250,7 @@ P2-i3/i4 靠现有成功路径测试（`move_action_bar_item` :808 / `set_defaul
 
 ### 触发
 
-用户指令实施 P2-sync1/sync2（第二十三轮留后续，设计 spec 已写）。按 [设计 spec](./2026-08-05-sync-export-atomicity-design.md) 方案 B（先写后清孤儿）+ 方案 C（删冗余 push 写）落地。
+用户指令实施 P2-sync1/sync2（第二十三轮留后续，设计 spec 已写）。按 [设计 spec](./archived/2026-08-05-sync-export-atomicity-design.md) 方案 B（先写后清孤儿）+ 方案 C（删冗余 push 写）落地。
 
 ### 实施（5 Task）
 

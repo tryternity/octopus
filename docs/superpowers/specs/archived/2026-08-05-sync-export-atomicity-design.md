@@ -3,7 +3,7 @@
 - 日期：2026-08-05
 - 类型：架构改进（sync 层数据流重构）
 - 触发：第二十三轮全代码审查 P2-sync1/sync2（= 第 21 轮 P2-s1/s2），衔接近期 `SyncEntity` trait 统一重构（[spec](./2026-08-05-sync-entity-trait-unification-design.md)）
-- 状态：**✅ 已实施（2026-08-10）**——见 [实施 plan](../plans/2026-08-10-sync-export-atomicity.md)。方案 B（先写后清孤儿）+ 方案 C（删冗余 push 写）落地，覆盖 clipboard + hotword + vault。回归测试 5 个。
+- 状态：**✅ 已实施（2026-08-10）**——见 [实施 plan](../../plans/archived/2026-08-10-sync-export-atomicity.md)。方案 B（先写后清孤儿）+ 方案 C（删冗余 push 写）落地，覆盖 clipboard + hotword + vault。回归测试 5 个。
 
 ---
 

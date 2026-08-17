@@ -25,7 +25,7 @@ start_screenshot
       → 前端 URL.createObjectURL 加载
       → Canvas 渲染（原图 + 暗遮罩 + 选区框 + 8 手柄 + 尺寸标注）
   → show_screenshot_window 显示（消除白屏闪烁）
-  → 选区下方弹出标注工具栏（矩形/椭圆/菱形/直线/箭头/画笔/荧光笔/文字/序号/马赛克 + 橡皮擦/清空标注/撤销/重做 + OCR/二维码识别，2026-07-27 扩充）
+  → 选区下方弹出标注工具栏（矩形/椭圆/菱形/直线/箭头/画笔/荧光笔/文字/序号/模糊 + 水印 + 橡皮擦/清空标注/撤销/重做 + OCR/二维码识别；2026-07-27 扩充、2026-08-05 模糊三模式/水印）
   → 标注在选区内 Canvas clip 绘制
   → Enter 确认：
       Canvas toBlob → Uint8Array Raw body → ipc::Request（不经 base64）
@@ -92,6 +92,7 @@ start_screenshot
 ## 5. 降级链
 
 > 主匹配（`best_ncc_match`）已是 Sobel 特征 + 灰度双候选 NCC；以下降级链在双候选均 validate 失配后触发。
+> **trait 化重构（2026-08-04）**：`try_fallback` 从 60 行 if 链重写为迭代 5 个 `FallbackStep` ZST 的 dispatcher（`fallback_chain.rs`），步骤顺序固定（不变量）：**PrevFrameStep（相邻帧参考）→ Projection1DStep（1D 投影）→ StationaryStep（静止短路，`STATIONARY_SAD`=2.0）→ BestGuessStep（历史 dy 中位数）→ SkipStep（跳过该帧，靠 Canvas-Anchored 下一帧从画布底部恢复）**。详见 [spec](../superpowers/specs/archived/2026-08-04-stitch-fallback-trait-design.md)。
 
 | 级 | 机制 | 触发 |
 |----|------|------|
@@ -99,6 +100,8 @@ start_screenshot
 | 2 | **1D 灰度投影 + best-guess** | 历史.dy 中位数，连续 3 次熔断 |
 | 3 | **周期性假匹配锁定** | 连续相同 dy≥3 次锁定，dy 变化才解锁 |
 | 4 | **NCC stuck 检测** | 连续验证失败≥5 次判静止 |
+
+**2D 反向验证**（防假匹配污染画布）：1D/best-guess 追加画布前经 `verify_alignment_2d`——按候选 dy 算重叠区 `[crop_y-verify_rows, crop_y)` 的 2D 抽样 SAD vs 画布底部 strip，超 `FALLBACK_VERIFY_SAD`（默认 15.0）→ 拒绝追加、skip 该帧，靠 Canvas-Anchored 下一帧从画布底部恢复。防 1D 行投影对图文混排假匹配。prev_frame 路径 verify=false——其 dy 已过内部 NCC validate，且上一帧 skip 时 prev≠画布底部会误杀。
 
 画布用 `Vec<u8>` 增量追加 + 惰性缓存。
 
@@ -118,8 +121,10 @@ start_screenshot
 
 ## 7. 标注工具栏
 
-- 工具：选择 / 矩形 / 椭圆 / 菱形 / 直线 / 箭头 / 画笔 / 文字 / 序号 / 马赛克 / OCR / 撤销重做
+- 工具：选择 / 矩形 / 椭圆 / 菱形 / 直线 / 箭头 / 画笔 / 荧光笔 / 文字 / 序号 / 模糊 / 水印 / OCR / 撤销重做
 - 标注在选区内 Canvas clip 绘制
+- **模糊三模式**（2026-08-05，[spec](../superpowers/specs/archived/2026-08-05-screenshot-watermark-blur-effects.md)）：像素化（Pixelate）/ 高斯模糊（Gaussian，纯 JS Stackblur 实现）/ 黑条遮挡（Redact），打码敏感信息；子模式切换在 ToolPropsPopover（与颜色/粗细同面板）
+- **文字水印**（2026-08-05）：平铺叠加到选区内，独立全局层渲染（不进 annotations 数组）；6 个配置项 `screenshot_watermark_text` / `density` / `angle` / `opacity` / `font_size` / `color`（见 [configuration.md](../configuration.md)）；工具栏水印按钮弹输入框，留空 = 清除
 - 命中测试（`hitTestAnnotationPrecise`，`lib/annotation.ts`，Screenshot 与 ImagePreview 共用）：选择工具下点选/拖动标注——空心 rect/oval/diamond/line/arrow/pen 查到线条距离 ≤ `HIT_DIST`(8)；实心 rect/oval/diamond 查鼠标在图形内部（rect 矩形包含 / oval 与 diamond 归一半径 ≤1）；文字/序号用 bounding box。2026-07-07 修正：filled 内部命中 + diamond 独立分支，消除空心菱形误中
 
 **共享层 `components/Annotation/`**（2026-07-26 抽取）：Screenshot + RecordAnnotation 共用——`useAnnotationState`（hook，统一 numberCounter ref 模式修两边行为不一致）+ `AnnotationToolbar`（组件，业务侧 children 注入工具按钮）+ `position.ts`（`computeToolbarPosition` 三选算法：选区下方优先 → 上方 → 内部底部）。录屏 `showHighlight=false`（不含荧光笔）。详见 `specs/archived/2026-07-26-annotation-toolbar-extraction.md` + `2026-07-27-annotation-tools-design.md`。

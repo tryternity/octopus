@@ -73,4 +73,4 @@
 
 - ~~**HotwordIndex 拼音优化**~~：**已解决**（commit `af517dcc`，[pinyin-and-ranking spec](../specs/2026-08-01-hotword-pinyin-and-ranking-design.md)）——`from_words` 接收 `(word, pinyin, hit_count)` 三元组，跳过 `to_pinyin()` 现算，只做必要的 `normalize_fuzzy_pinyin`（方言规则运行时生效，不能预存归一化 key）。
 - ~~**correct 多命中排序**~~：**已解决**（同 commit `af517dcc`）——hit_count JOIN 进 list_active_words，多命中按 hit_count 降序排序。
-- ~~**set 级删除复活问题**~~：**已解决**（2026-08-02，[set 软删 spec](../specs/2026-08-02-hotword-set-soft-delete.md)）——set 级 `is_deleted` 存时间戳 + `UNIQUE(name,is_deleted)` + tombstone 经 merge 传播。词级软删（`hotword_words.is_deleted`）此前已解决（本次 word 级 merge）。
+- ~~**set 级删除复活问题**~~：**已解决**（2026-08-02，[set 软删 spec](../specs/archived/2026-08-02-hotword-set-soft-delete.md)）——set 级 `is_deleted` 存时间戳 + `UNIQUE(name,is_deleted)` + tombstone 经 merge 传播。词级软删（`hotword_words.is_deleted`）此前已解决（本次 word 级 merge）。

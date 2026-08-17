@@ -1,7 +1,7 @@
 # 实施计划：sync export 原子化（P2-sync1/sync2）
 
 - 日期：2026-08-10
-- 设计 spec：[`docs/superpowers/specs/2026-08-05-sync-export-atomicity-design.md`](../specs/2026-08-05-sync-export-atomicity-design.md)
+- 设计 spec：[`docs/superpowers/specs/archived/2026-08-05-sync-export-atomicity-design.md`](../../specs/archived/2026-08-05-sync-export-atomicity-design.md)
 - 触发：第二十三轮 P2-sync1/sync2（= 第 21 轮 P2-s1/s2），用户指令实施
 - 分支：`bugfix/pr-0801`
 

@@ -79,10 +79,11 @@ struct QueryFilter {
 
 1. **suppress 检查**：suppress=true → return（ASR 自身写入，跳过）
 2. **recording_enabled gate**：recording_enabled=false → return（用户暂停了监听）
-3. **类型判断**（优先级 `files > image > text`，非三者则静默跳过避免 `read_text` 失败日志污染）
-4. **去重**：文本/文件按 `find_by_text(text, ItemType)` 匹配；图片按 `find_by_content_hash`
-5. **存 DB**：`insert_clipboard_item`
-6. **通知前端**：`emit("clipboard://changed")`
+3. **concealed hint 检测**（2026-08-05，跨平台）：粘贴板含密码管理器 concealed 标记（macOS `org.nspasteboard.ConcealedType` / Windows `ExcludeClipboardContentFromMonitorProcessing` / Linux `x-kde-passwordManagerHint`）→ 静默 return，防密码明文入库 / FTS 索引 / 跨设备 sync。详见 [spec](../superpowers/specs/archived/2026-08-05-macos-concealed-type-skip.md)
+4. **类型判断**（优先级 `files > image > text`，非三者则静默跳过避免 `read_text` 失败日志污染）
+5. **去重**：文本/文件按 `find_by_text(text, ItemType)` 匹配；图片按 `find_by_content_hash`
+6. **存 DB**：`insert_clipboard_item`
+7. **通知前端**：`emit("clipboard://changed")`
 
 ---
 

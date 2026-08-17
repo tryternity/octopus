@@ -210,7 +210,7 @@ AGENTS.md 明确写了「物理/逻辑坐标转换 ⚠️ 已踩坑 6+ 次」（
 
 **Translate-on-screenshot**（2026-08-11 已实现）
 
-截图工具栏「翻译」按钮 → `translate_screenshot` 命令（同 `ocr_screenshot` 的 Raw body PNG + OcrLockGuard 互斥，尾部换成 `translate_window::show_at_mouse`）→ OCR → `do_translate_streaming(Float)` 流式翻译 → `translate_window` 只读浮窗（`emit_to` 定向推送译文）。ActionBar 选中翻译也于 2026-08-11 改走同一浮窗（原走 CompactEditor contrast tab）。详见 [spec](../superpowers/specs/2026-08-11-screenshot-translate-float-window-design.md)。
+截图工具栏「翻译」按钮 → `translate_screenshot` 命令（同 `ocr_screenshot` 的 Raw body PNG + OcrLockGuard 互斥，尾部换成 `translate_window::show_at_mouse`）→ OCR → `do_translate_streaming(Float)` 流式翻译 → `translate_window` 只读浮窗（`emit_to` 定向推送译文）。ActionBar 选中翻译也于 2026-08-11 改走同一浮窗（原走 CompactEditor contrast tab）。详见 [spec](../superpowers/specs/archived/2026-08-11-screenshot-translate-float-window-design.md)。
 
 **贴图（pin_window）**
 
@@ -258,18 +258,18 @@ AGENTS.md 明确写了「物理/逻辑坐标转换 ⚠️ 已踩坑 6+ 次」（
 
 ### 2.4 Octopus 不足 / 缺失
 
-1. ~~**截图翻译 UI 缺失**~~ **✅ 已解决（2026-08-11）**：~~架构文档明确标注「数据通路已支持，UI 后续」~~。截图工具栏「翻译」按钮 + ActionBar 选中翻译均走 `translate_window` 只读浮窗（OCR→流式翻译→`emit_to` 定向推送）。详见 [spec](../superpowers/specs/2026-08-11-screenshot-translate-float-window-design.md)。**仍缺**：eSearch 的「屏幕翻译」（贴图窗内文字替换为译文 + 定时翻译适合视频）——这是更重的图片翻译功能，留后续。
+1. ~~**截图翻译 UI 缺失**~~ **✅ 已解决（2026-08-11）**：~~架构文档明确标注「数据通路已支持，UI 后续」~~。截图工具栏「翻译」按钮 + ActionBar 选中翻译均走 `translate_window` 只读浮窗（OCR→流式翻译→`emit_to` 定向推送）。详见 [spec](../superpowers/specs/archived/2026-08-11-screenshot-translate-float-window-design.md)。**仍缺**：eSearch 的「屏幕翻译」（贴图窗内文字替换为译文 + 定时翻译适合视频）——这是更重的图片翻译功能，留后续。
 2. **没有窗口截图入口**：`capture_window_region` + `find_window_id_by_pid` 实现完备，但只用于滚动模式排除 overlay，用户层没有「截活动窗口」「Smart Element 检测」这类一键操作（CleanShot/Snapzy/PixPin 都有 UI 元素识别）。
 3. **~~标注工具相对单薄~~（2026-08-10 大幅补齐）**：~~缺 PixPin 的水印、放大镜；缺 Snapzy 的 8 种模糊效果~~ → **已补齐 3 种模糊**（Pixelate/Gaussian Stackblur/Redact）+ **平铺水印**（density+angle+color）。工具栏归组精简（形状/线条合并，6 个标注按钮）。仍缺：CleanShot/Snapzy 的聚光灯、取色器、Mockup 背景、旋转翻转、多图合并、放大镜。
 4. **贴图能力弱于 PixPin**：Octopus pin 只支持拖拽 + 缩放 + 关闭。PixPin 贴图支持透明度调节、锁定、鼠标穿透、取色、缩略图模式、文本/文件/LaTeX 贴图、批量操作、阴影颜色状态指示——是矩阵中贴图功能最全的。Octopus 贴图甚至没有透明度滑块和键盘方向键微调（CleanShot 有）。
 5. **无云分享 / 团队流**：CleanShot Cloud、Snapzy BYOS（S3/R2/GDrive）都没有。若面向团队场景是缺口；若定位纯本地工具则可忽略。
 6. **无 Quick Access Overlay**：截图后没有 CleanShot/Snapzy/HushSnap 都有的「右下角浮动卡片 → 拖拽到应用 / 一键 OCR / 编辑」快速动作面板。Octopus 截图后只能进标注工具栏或直接确认，少了一层「先看一眼再决定」的轻交互。
 7. **滚动截图限制**：`start_scroll_recording` 大段 `#[cfg(target_os = "macos")]` gate，依赖 Quartz 全局鼠标追踪 + `set_ignore_cursor_events` 穿透 + 激活下层 app——这套在 Windows/Linux 上是否等价可用文档没明确，存在平台能力不均风险（架构文档 §截图不可统一 段也承认是 macOS 专属）。
-8. ~~**`stitch.rs` 单文件 123KB**：拼接引擎密度过高，降级链五层 + 多个互相耦合的自愈机制，长期维护成本高，新人接手门槛大。~~ **✅ 已解决（2026-08-04）**：已拆分为 `stitch/{mod,canvas_heal,fallback_chain,graybuf,ncc_match}.rs` 五模块（2966 行），每模块职责单一、可独立单测。详见 [stitch-refactor spec](../superpowers/specs/2026-08-04-stitch-refactor-design.md)。
+8. ~~**`stitch.rs` 单文件 123KB**：拼接引擎密度过高，降级链五层 + 多个互相耦合的自愈机制，长期维护成本高，新人接手门槛大。~~ **✅ 已解决（2026-08-04）**：已拆分为 `stitch/{mod,canvas_heal,fallback_chain,graybuf,ncc_match}.rs` 五模块（2966 行），每模块职责单一、可独立单测。详见 [stitch-refactor spec](../superpowers/specs/archived/2026-08-04-stitch-refactor-design.md)。
 
 ### 2.5 建议改进方向（按性价比排序）
 
-1. ~~**截图翻译 UI 接线**~~ **✅ 已完成（2026-08-11）**：截图工具栏「翻译」按钮 + ActionBar 选中翻译 → `translate_window` 只读浮窗（非原设想的 CompactEditor contrast——产品决策改为独立浮窗，行为统一）。详见 [spec](../superpowers/specs/2026-08-11-screenshot-translate-float-window-design.md) + [plan](../superpowers/plans/2026-08-11-screenshot-translate-float-window.md)。
+1. ~~**截图翻译 UI 接线**~~ **✅ 已完成（2026-08-11）**：截图工具栏「翻译」按钮 + ActionBar 选中翻译 → `translate_window` 只读浮窗（非原设想的 CompactEditor contrast——产品决策改为独立浮窗，行为统一）。详见 [spec](../superpowers/specs/archived/2026-08-11-screenshot-translate-float-window-design.md) + [plan](../superpowers/plans/archived/2026-08-11-screenshot-translate-float-window.md)。
 2. **暴露窗口 / UI 元素截图入口**（高收益中投入）：`capture_window_region` + `find_window_id_by_pid` 现成。加一个工具栏按钮或快捷键，截图模式下按 `W` 切到「窗口模式」，用 `CGWindowListCopyWindowInfo` 列出可见窗口让用户点选。Snapzy 的 Smart Element（AX 查询自动检测 UI 元素）是更进一步的方案但 macOS 限定。
 3. **贴图能力补齐**（中收益低投入）：pin_window 加透明度调节（`Ctrl+滚轮`）、锁定模式（`L` 键 + `setIgnoresMouseEvents`）、方向键微调位置。PixPin 的功能集是直接抄的模板，三平台原生实现已经在手里，主要是 UI/快捷键层补全。
 4. **Quick Access Overlay**（中收益中投入）：截图确认后不立即关窗，右下角弹一张可拖拽缩略卡片，提供「复制 / 保存 / OCR / 翻译 / pin / 编辑」六动作。HushSnap 的「缩略图 → 左键 OCR / 悬停按钮 / 拖放」交互是很好的范本。这一层能显著降低「截完才发现要 OCR」的返工。
@@ -381,7 +381,7 @@ octopus 把「剪贴板历史」做成了 ASR / OCR / 截图 / 文件搬运的**
 
 **P2（整库加密——sync 的前置依赖，本地场景可选）。** 用 **sqlite3mc / SQLCipher 整库加密**（Ditto 用的就是 SQLite3MC；`rusqlite` 加 `bundled-sqlite3mc` feature 即可），**不是字段级 AES-GCM**。理由：① 性能透明（页级 AES，~5-15% DB op 开销）；② FTS5 trigram 索引照常工作（索引也加密，搜索不受影响——字段级加密做不到这点）；③ 应用代码 0 行改动（连接时传 key 即可）。**密钥管理复用 vault 现成基建**：`crates/vault/src/keychain.rs` 的 HKDF-SHA256(machine_id || username || 常量) 派生方案（注释坦言是 obfuscation 而非真加密，但比纯硬编码好一档——攻击者需要知道 machine_id + username，不只逆向二进制）。**触发时机**：纯本地场景靠 FileVault/BitLocker + 文件权限 0600 已足够；**接入 sync（P1）时此项变为强制前置**，否则同步出去的就是明文。
 
-**P3（concealed type 检测——做个好公民）✅ 跨平台 2026-08-05 已实现。** `watcher.rs::handle_clipboard_change` 开头（files/image/text 分支前）用 `CONCEALED_HINTS` 常量数组（`#[cfg]` 门控各平台 hint）+ `handle.has(ContentFormat::Other(...))` 检测，命中静默 return。覆盖三平台密码管理器复制场景：macOS `org.nspasteboard.ConcealedType`（1Password/Bitwarden/iCloud Keychain/KeePassXC）/ Windows `ExcludeClipboardContentFromMonitorProcessing`（MS 官方 format）/ Linux `x-kde-passwordManagerHint`（KeePassXC 事实约定）。clipboard-rs 0.3.4 四后端（macos/win/x11/wayland）的 `ContentFormat::Other` 均支持任意类型字符串检测，零新依赖。octopus autotype 的 `suppress_next` 不变（macOS 双重保险，Win/Linux autotype 未实现）。详见 [spec](../superpowers/specs/2026-08-05-macos-concealed-type-skip.md)。
+**P3（concealed type 检测——做个好公民）✅ 跨平台 2026-08-05 已实现。** `watcher.rs::handle_clipboard_change` 开头（files/image/text 分支前）用 `CONCEALED_HINTS` 常量数组（`#[cfg]` 门控各平台 hint）+ `handle.has(ContentFormat::Other(...))` 检测，命中静默 return。覆盖三平台密码管理器复制场景：macOS `org.nspasteboard.ConcealedType`（1Password/Bitwarden/iCloud Keychain/KeePassXC）/ Windows `ExcludeClipboardContentFromMonitorProcessing`（MS 官方 format）/ Linux `x-kde-passwordManagerHint`（KeePassXC 事实约定）。clipboard-rs 0.3.4 四后端（macos/win/x11/wayland）的 `ContentFormat::Other` 均支持任意类型字符串检测，零新依赖。octopus autotype 的 `suppress_next` 不变（macOS 双重保险，Win/Linux autotype 未实现）。详见 [spec](../superpowers/specs/archived/2026-08-05-macos-concealed-type-skip.md)。
 
 **P3（智能分组）。** 参考 ortu 的规则分类器（URL/Code/JSON/Shell/Email/Secret/Path + 置信度打分）或 EcoPaste-Pro 的 12 类扩展识别（加颜色/Markdown/Windows 指令），把扁平历史变成可治理的资料库。octopus 已有 `item_type` 一级分类，可在其上加二级 `subtype`。
 
@@ -458,7 +458,7 @@ Octopus 的翻译能力集中在 `octopus-translation` crate（`crates/translati
 
 1. **加 glossary / 术语表**（P0）——复用现有 DB schema 扩展能力（`models`/`prompts`/`fuzzy_dialect_rules` 等表已证明 schema 演进机制成熟）。建 `translate_glossary` 表（source_term / target_term / context / domain），CloudLlmEngine 的 prompt 注入术语表（参考 kiss-translator 的 systemPrompt 占位符 `{{glossary}}`），本地引擎可在 decode 后做术语替换后处理。
 
-2. ~~**OCR→translate pipeline 拼接**（P0）~~ **✅ 已完成（2026-08-11）**：截图工具栏「翻译」按钮（`translate_screenshot` 命令）+ ActionBar 选中翻译（`auto_translate` 分支）均接入 `translate_window` 浮窗，复用 `do_translate_streaming` 流式 emit。详见 [spec](../superpowers/specs/2026-08-11-screenshot-translate-float-window-design.md)。
+2. ~~**OCR→translate pipeline 拼接**（P0）~~ **✅ 已完成（2026-08-11）**：截图工具栏「翻译」按钮（`translate_screenshot` 命令）+ ActionBar 选中翻译（`auto_translate` 分支）均接入 `translate_window` 浮窗，复用 `do_translate_streaming` 流式 emit。详见 [spec](../superpowers/specs/archived/2026-08-11-screenshot-translate-float-window-design.md)。
 
 3. **暴露多语言选择 + 接入 NLLB-200**（P1）——`detect_translate_direction` 扩展为 UI 可选语言列表，m2m100 已支持 100+ 语言只需上层放开。可考虑接 NLLB-200-distilled-600M（比 m2m100 质量更高、200 语言，社区 2026 仍推荐用于低资源语言）作为第三本地引擎选项，与 Opus-MT（少语言高质量）/ m2m100（多语言兜底）形成梯度。
 
@@ -1156,7 +1156,7 @@ Sources:
 - Action Bar 的 agent 类型已能启动任意 CLI
 - ~~CompactEditor contrast 模式 + 流式翻译 emit 已就绪~~ → 改为 `translate_window` 只读浮窗 + `TranslateEmitTarget::Float` 分支（`emit_to` 定向）
 
-→ **统一**（已落地）：①截图工具栏「翻译」按钮 → `translate_screenshot`；②ActionBar 选中翻译 → `auto_translate` 分支改走浮窗；③两处入口共享 `TranslateEmitTarget::Float` + `do_translate_streaming`。详见 [spec](../superpowers/specs/2026-08-11-screenshot-translate-float-window-design.md)。**仍缺**：③Quick Access Overlay 第三入口 + OS 级划词翻译 + 屏幕翻译（贴图替换）。
+→ **统一**（已落地）：①截图工具栏「翻译」按钮 → `translate_screenshot`；②ActionBar 选中翻译 → `auto_translate` 分支改走浮窗；③两处入口共享 `TranslateEmitTarget::Float` + `do_translate_streaming`。详见 [spec](../superpowers/specs/archived/2026-08-11-screenshot-translate-float-window-design.md)。**仍缺**：③Quick Access Overlay 第三入口 + OS 级划词翻译 + 屏幕翻译（贴图替换）。
 
 ### 10.3 单模块 P0 清单（按战略紧迫度）
 
