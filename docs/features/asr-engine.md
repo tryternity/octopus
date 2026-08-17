@@ -18,7 +18,7 @@
 
 ## 云端引擎
 
-4 个 provider 的 WSS 协议层在 `crates/asr-cloud/src/`（`aliyun_stream`/`bytedance_stream`/`tencent_stream`/`baidu_stream`），desktop 协议层副本已删，协议层单源。统一返回 `CloudStreamHandle`（`push_pcm`/`finish`/`try_recv_text`/`close_async`）。
+4 个 provider 的 WSS 协议层在 `crates/asr-cloud/src/`（`aliyun_stream`/`bytedance_stream`/`tencent_stream`/`baidu_stream`），desktop 协议层副本已删，协议层单源。**WS session 循环骨架统一**（2026-08-04）：公共 `session_loop.rs`（`WsSessionHandler` trait + `run_ws_session_loop`），5 个 session handler（Baidu/Tencent/Bytedance/AliyunFunAsr/AliyunQwen）以薄包装挂接。统一返回 `CloudStreamHandle`（`push_pcm`/`finish`/`try_recv_text`/`close_async`）。
 
 | Provider | 协议 | Endpoint | 鉴权 | DB 映射 |
 |----------|------|----------|------|---------|
@@ -62,7 +62,7 @@
 
 `VadSegmentedPipeline::run_tick`（`crates/desktop/src/pipeline.rs`）——静音边界切分（主）+ 连续超时强制切断（兜底）。
 
-**双 VAD 实例（检测流 vs 过滤）**：SileroVad 是有状态 LSTM（`compute()` 更新 `h`/`c`，`reset()` 归零）。持两个独立实例：
+**双 VAD 实例（检测流 vs 过滤）**：SileroVad 是有状态 LSTM（v6，2026-08-04 升级：`compute()` 更新单 `state`[2,1,128] + 输入拼 context，窗口 512 采样；v4 旧签名是双状态 `h`/`c`），`reset()` 归零。持两个独立实例：
 - **检测 VAD**（`vad`）：逐 tick 喂入顺序音频、跨 tick 有状态累积，**切段后 `reset()`+preroll 归零**（防 LSTM 跨段漂移致真实语音持续判静音 → "几段后不吐字"），喂 `compute_speech_chunks`
 - **过滤 VAD**（`filter_vad`）：仅 `filter_speech_from_buffer` 用，**每次过滤前 `reset()` 归零**（等价每段独立冷启动，但 ONNX Session 全局缓存复用）
 
@@ -191,7 +191,7 @@
 - **两层降级**：
   1. EP 注册失败（驱动/库缺失）→ 捕获 `Err` 回退纯 CPU session，进程不崩
   2. **qwen3-asr 显式跳过 CoreML**——动态算子 CoreML 不报错而是把图分区跑（CPU↔CoreML 张量拷贝开销 dominate，比纯 CPU 还慢），检测 `category=qwen3-asr` 时主动走 CPU
-- **VAD 免加速**：Silero VAD（1.8MB）固定 CPU，不受开关影响
+- **VAD 免加速**：Silero VAD（v6，1.2MB）固定 CPU，不受开关影响
 
 ## 音频重采样（AudioResampler）
 
@@ -329,7 +329,8 @@ is_streaming_engine() = resolve_active_engine("asr").entry.is_streaming
 **命中统计分层**：
 - Corrector 只收集命中（`pending_hits` + `drain_hits()`），不写 DB。
 - Pipeline 负责 bump DB（corrector 从不触碰 DB，避免测试污染）。
-- 挖掘两步走：`list_hotword_candidates`（不写 DB）→ 用户确认面板 → `add_words_to_set`（批量写）。
+- 挖掘两步走：`list_hotword_candidates`（不写 DB；**LLM 语义提取优先**，2026-08-02——`octopus_llm::mine_hotwords` 吃近 500 条已编辑 segment，提示词可用 `~/.octopus/HOTWORD_MINE.md` 覆盖；LLM 不可用 / 失败 / 空结果回退 jieba 分词统计）→ 用户确认面板 → `add_words_to_set`（批量写）。
+- **多命中候选下拉**（2026-08-02）：corrector 检出多个热词候选（≤5，含原词）时，结果窗中该词带波浪下划线、点开下拉换词；润色时以 `<候选1|候选2>` 标记交 LLM 结合语境选择。详见 [architecture.md「热词多命中候选下拉」](../architecture.md)。
 
 **热词多版本管理**：
 - `hotword_sets` 表（v23 新增）：`id, name(UNIQUE), enabled, words_text, created_at, updated_at, sync_md5`（v46 加，git 同步增量 diff 用）。勾选叠加生效（生效词 = 所有 `enabled=1` 版本的全局并集去重）。

@@ -62,6 +62,8 @@
 
 **3 条提交路径**：Cmd+Enter / 保存按钮（`useImperativeHandle commit`）/ 空闲 2000ms 自动（`IDLE_TIMEOUT`）。
 
+**第 4 条：停止录音 / 立即润色前强制 flush**（2026-08-02）：coordinator 在停止（Toggle/InstantStop/HandsFreeStop）和「立即润色」四条路径前先 emit `flush-edit` 事件，前端收到即 `commit()` 并回 `edit_flushed`（带 flush_id 校验），200ms 超时兜底继续——防 2s 防抖窗口内未提交的用户编辑被润色结果覆盖。
+
 **Commit payload**：`{ text, dirtyRanges, hasEdited, caret?, selection? }`。
 
 **后端 `commit_edit`**：
