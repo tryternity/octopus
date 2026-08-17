@@ -11,7 +11,7 @@ octopus 配置分两部分：
 
 ```
 ~/.octopus/
-├── octopus.db          # 嵌入式 SQLite：models + transcriptions + app_config + prompts 表（唯一存储）
+├── octopus.db          # 嵌入式 SQLite：models + app_config + prompts + clipboard_history 等约 22 表（唯一存储；transcriptions 表 v17 已废弃）
 ├── config.yaml.bak     # 旧 config.yaml 迁移后的备份（首次启动自动生成，可安全删除）
 └── models/             # 随应用打包的小模型（固定路径）
     ├── vad.onnx   # VAD 覆盖（可选——通用名，放任意 VAD 模型覆盖内嵌 silero_vad_v6；不进 DB）
@@ -28,17 +28,18 @@ octopus 配置分两部分：
 
 | 列 | 含义 |
 |---|---|
-| `domain` | `asr` / `llm` |
+| `domain` | `asr` / `llm` / `ocr` / `translate` |
 | `provider` | **vendor / 运行位置**——`local`（本地）/ `aliyun`（阿里云 DashScope）/ `bytedance`（字节跳动火山引擎）/ `tencent`（腾讯云）/ `baidu`（百度智能云）/ `deepseek` / `bigmodel` |
 | `category` | ASR=引擎族（`zipformer`/`whisper`/`sensevoice-orig`/`paraformer`/`qwen3-asr`/`moonshine`/`firered`/`Fun-ASR`）；LLM=模型系列（`qwen`/`glm`/`deepseek`） |
 | `model_name` | 具体模型标识（精确匹配） |
 | `source` | ASR=本地路径 / HF repo / 云 WS 端点；LLM=API Base URL |
 | `secret_key` | 远程 API Key（本地模型留空） |
 | `language` / `description` | 语种 / 描述 |
-| `is_local` | 是否本地模型（`provider='local'` ⟺ `is_local=1`，二者并存） |
+| `source_type` | 0=builtin(内置随包) / 1=local(用户下载) / 2=cloud(云端)，v48（原 `is_local`） |
 | `is_thinking` | LLM 专用：是否思考（reasoning）模型 |
 | `is_streaming` | ASR 是否支持流式 |
-| `is_enabled` | 是否启用（`0` 禁用、`1` 启用） |
+| `is_available` | 0/1 **可用**（文件就绪/配置完整，同域可多个） |
+| `is_enabled` | 0/1 **激活**（每域仅 1 个=1，2026-07-17 语义重构；原「启用」语义由 `is_available` 承担） |
 
 **唯一键**：`UNIQUE(domain, provider, category, model_name)`——允许同名模型跨 provider 共存（如 `deepseek-v4-flash` 在 deepseek 直连与 aliyun 代管下各一行）。
 
@@ -56,7 +57,7 @@ octopus 配置分两部分：
 
 ### 默认 ASR seed
 
-完整权威 seed 在 [`crates/infra/resources/sql/schema.sql`](../crates/infra/resources/sql/schema.sql)（编译期 `include_str!` 嵌入，首次建库写入）——**以它为准，下表仅作概览**。当前 ASR seed 共 21 行：13 local + 8 云端（aliyun 3 / bytedance 2 / tencent 2 / baidu 1）。
+完整权威 seed 在 [`crates/infra/resources/sql/schema.sql`](../crates/infra/resources/sql/schema.sql)（编译期 `include_str!` 嵌入，首次建库写入）——**以它为准，下表仅作概览**。当前 ASR seed 共 **14 行全 local/builtin**；**云端模型（aliyun/bytedance/tencent/baidu）不再 seed**——用户在设置页「模型管理」手动添加（填 API Key 等鉴权信息）。
 
 | provider | category | 代表 model_name | 说明 |
 |---|---|---|---|
@@ -67,10 +68,10 @@ octopus 配置分两部分：
 | local | qwen3-asr | `qwen3-asr-{0.6B,1.7B}` | 非流式，`skip_corrector` |
 | local | moonshine | `moonshine-{base,tiny}-en` | 非流式 en-only |
 | local | whisper | `whisper-small`（`onnx-community/whisper-small.en`） | 非流式 en-only |
-| aliyun | `Fun-ASR` / `Paraformer-Realtime` / `Qwen-ASR` | 见 db.sql | 云端 WS 流式（DashScope key） |
-| bytedance | `Doubao-ASR` / `Doubao-ASR-2.0` | `doubao-asr-{1.0,2.0}-streaming` | 云端 bigmodel_async 流式 |
-| tencent | `Tencent-ASR` / `Tencent-ASR-Multi` | `16k_zh` / `16k_zh_en` | 云端 HMAC-SHA1 流式 |
-| baidu | `Baidu-ASR` | `15372` | 云端 START 帧鉴权流式 |
+| aliyun | `Fun-ASR` / `Paraformer-Realtime` / `Qwen-ASR` | — | 云端 WS 流式（DashScope key），**不 seed 手动添加** |
+| bytedance | `Doubao-ASR` / `Doubao-ASR-2.0` | `doubao-asr-{1.0,2.0}-streaming` | 云端 bigmodel_async 流式，**不 seed 手动添加** |
+| tencent | `Tencent-ASR` / `Tencent-ASR-Multi` | `16k_zh` / `16k_zh_en` | 云端 HMAC-SHA1 流式，**不 seed 手动添加** |
+| baidu | `Baidu-ASR` | `15372` | 云端 START 帧鉴权流式，**不 seed 手动添加** |
 
 > sherpa nano 简化版 SenseVoice（旧 category=`sensevoice`）已移除，仅留原版 `sensevoice-orig`，见 [removed-sensevoice-sherpa-nano.md](removed-sensevoice-sherpa-nano.md)。
 
@@ -78,24 +79,25 @@ octopus 配置分两部分：
 > **tencent `source` 字段**是 `{appid}:{secretid}` 复合格式（冒号分隔），`secret_key` 填 SecretKey（签名密钥）。endpoint 固定为 `wss://asr.cloud.tencent.com/asr/v2/<appid>?{params}`。
 > **baidu `source` 字段**是 AppID（纯数字），`secret_key` 填 API Key（appkey），`model_name` 是 dev_pid（如 `15372`）。endpoint 固定为 `wss://vop.baidu.com/realtime_asr`。
 
-### 默认 LLM seed（含 aliyun qwen / deepseek 经 DashScope）
+### LLM provider 预设（llm_providers.json，云端模型不 seed）
 
-| provider | category | model_name | source (base_url) | is_thinking | is_enabled | 说明 |
-|---|---|---|---|---|---|---|
-| deepseek | deepseek | deepseek-v4-flash | `https://api.deepseek.com/` | 1 | 0 | DeepSeek V4 Flash（思考模型） |
-| aliyun | deepseek | deepseek-v4-flash | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 1 | 0 | DeepSeek V4 Flash 经 DashScope（思考模型） |
-| bigmodel | glm | glm-4-flashx | `https://open.bigmodel.cn/api/paas/v4` | 0 | 0 | 智谱 GLM-4 FlashX（非思考） |
-| bigmodel | glm | glm-4.5-flash | `https://open.bigmodel.cn/api/paas/v4` | 1 | 0 | 智谱 GLM-4.5 Flash（思考模型） |
-| aliyun | qwen | qwen-plus | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 0 | 0 | Qwen Plus（非思考） |
-| aliyun | qwen | qwen-turbo | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 0 | 0 | Qwen Turbo（非思考，快） |
+**LLM 模型行不 seed**——用户在设置页「模型管理 → 文本模型」点「添加模型」时，provider 下拉读取 [`crates/infra/seeds/llm_providers.json`](../crates/infra/seeds/llm_providers.json)（7 家预设，运行时 `load_external_seeds` 加载到 `app_config` 表 `category='llm_provider'`）自动填 base_url + 模型名候选：
+
+| provider | base_url | 模型候选 |
+|---|---|---|
+| deepseek | `https://api.deepseek.com/` | deepseek-chat / deepseek-reasoner / deepseek-v4 / deepseek-v4-flash |
+| aliyun | `https://dashscope.aliyuncs.com/compatible-mode/v1` | qwen-plus / qwen-turbo / qwen-max / deepseek-v4-flash |
+| bigmodel | `https://open.bigmodel.cn/api/paas/v4` | glm-4-flashx / glm-4.5-flash / glm-4-flash |
+| openai | （json 预设） | — |
+| moonshot / minimax / …… | （json 预设） | — |
 
 > **`provider` 字段**：vendor / 运行位置维度，与 `category`（引擎族/模型系列）正交。`local` 表示随应用打包或下载到本地，`aliyun` 表示经阿里云 DashScope 云端调用，`bytedance` 表示经火山引擎豆包云端调用。决定引擎路由（`provider='aliyun'` → `EngineCategory::Aliyun` → `AliyunEngine`；`provider='bytedance'` → `EngineCategory::ByteDance` → `CloudPipelineEngine`，`Stage::Streaming` cloud 分支）。
 
-> **`is_local` 字段**：标记是否本地运行。`provider='local'` ⟺ `is_local=1`（二者并存：`is_local` 供本地过滤，`provider` 用于 vendor 路由）。
+> **`source_type` 字段**（v48，原 `is_local`）：0=builtin（随包内置如 zipformer-small）/ 1=local（用户从 HF 下载）/ 2=cloud（云端 API）。与 `provider` 正交：`provider` 用于 vendor 路由（engine 选择），`source_type` 用于来源判定（下载管理 / 兜底注入）。
 
 > **`is_thinking` 字段**：标记该模型是否为思考（reasoning）模型。思考模型在润色等明确任务中若不关闭思考，`content` 可能为空（token 被 `reasoning_content` 耗尽）。置为 `1` 时程序自动发送关闭思考的参数——DeepSeek 用 `thinking: {type: "disabled"}`，BigModel 用 `enable_thinking: false`。
 
-> **`is_enabled` 字段**：标记是否启用。`1` 表示启用，`0` 表示禁用。只有启用的模型才会被系统加载或供识别/润色使用。阿里云 qwen / Fun-ASR seed 默认 `is_enabled=0`，用户填 API Key 后改为 `1` 启用。
+> **`is_enabled` 字段**（2026-07-17 语义重构）：标记**激活**——每域（asr/llm/ocr/translate）仅 1 个 `is_enabled=1`，经设置页「激活」按钮（`switch_active_model` 命令）切换。原「文件就绪」语义由 `is_available` 承担。seed 行全部 `is_enabled=0`（含 builtin 兜底行——ASR 域无激活时运行时回退 zipformer-small）。
 
 > **`is_streaming` 字段**：标记 ASR 模型是否支持流式识别。`1` 表示流式（zipformer×2 + paraformer×4，走本地流式 partial），`0` 表示非流式（sensevoice-orig / firered / qwen3-asr / moonshine / whisper / aliyun Fun-ASR，走 VAD 分段伪流式）。`is_streaming_engine()` = `resolve_active_engine("asr").entry.is_streaming`（Task 2 后无参，读激活引擎），数据驱动、不再按 category 硬编码。
 
@@ -278,7 +280,7 @@ octopus-cli config
 应用行为配置，v3+ 统一存储在 `~/.octopus/octopus.db` 的 `app_config` 表（key-value TEXT）。首次启动由 db.sql seed 默认值；旧 `config.yaml` 自动迁移到 DB 后重命名为 `.bak`。
 
 **两种编辑方式**：
-1. **GUI 设置窗口**（推荐）：桌面应用工具栏点击「设置」按钮或托盘菜单「设置...」打开独立设置窗口——系统设置页提供表单化编辑（toggle/select/number input），修改即时写回 DB `app_config` 表 + RuntimeConfig。29 个可配置字段均有类型校验和生效时间提示（立即 / 下次录音 / 重启）。
+1. **GUI 设置窗口**（推荐）：桌面应用工具栏点击「设置」按钮或托盘菜单「设置...」打开独立设置窗口——系统设置页提供表单化编辑（toggle/select/number input），修改即时写回 DB `app_config` 表 + RuntimeConfig。45 个可配置字段均有类型校验和生效时间提示（立即 / 下次录音 / 重启）。
 2. **手动编辑**：直接用 sqlite3 编辑 `~/.octopus/octopus.db` 的 `app_config` 表，需重启进程生效（`OnceLock` 缓存）。
 
 > **⚠️ 迁移提示**：旧 `config.yaml` 首次启动 v3 版本时自动导入 DB 并重命名为 `config.yaml.bak`。旧字段 `polish_enabled` / `shortcut` / `polish_interval` 在迁移时自动转换为 `polish_mode` / `asr_shortcut` / `polish_min_interval`。
@@ -289,12 +291,14 @@ octopus-cli config
 
 > **⚠️ 模型激活字段已移除（2026-07-17 模型激活重构）**：`asr_engine` / `polish_llm` / `ocr_model` / `translate_engine` 4 个字段已从 `app_config` 删除。激活态统一存 DB `models.is_enabled`（每域仅 1 个=1），经设置页 `switch_active_model(domain, id)` 命令切换。详见下方「模型激活」节。
 | `language` | string | `"auto"` | desktop | auto / zh / en / ja / ko |
+| `ui_language` | string | `"zh-CN"` | desktop | 界面语言（zh-CN / en），切换后托盘等即时重建文案 |
 | `engine_mode` | string | `"embedded"` | desktop | embedded / websocket / grpc |
 | `remote_url` | string | `ws://127.0.0.1:3000/ws/stream` | desktop | websocket 模式远程地址 |
 | `grpc_endpoint` | string | `http://127.0.0.1:50051` | desktop | grpc 模式端点 |
 | `asr_shortcut` | string | `OptRight` | desktop | 单键三模式触发键（handy-keys 名：OptRight/CmdRight/CtrlRight/ShiftRight/Fn）。长按=PTT / 双击=toggle / 短按=hands-free。GUI 设置页 dropdown 5 选 1 + 热重载（unregister_ptt/register_ptt）。值不合法 fallback OptRight。**2026-08-01 从 Tauri 加速键（Alt+A）升级为单键名** |
 | `paste_method` | string | `"clipboard"` | desktop | clipboard / direct / none |
 | `write_to_clipboard` | bool | `true` | desktop | 粘贴完成后是否把识别结果写入剪贴板（方便他处再粘贴）；`false` 时三模式等同重构前现状（不碰/恢复原剪贴板）。详见 [transcript-model spec §6](superpowers/specs/2026-06-14-archived-design.md) |
+| `switch_input_source_on_paste` | bool | `true` | desktop（仅 macOS） | 粘贴前临时切到 ABC 输入源（RAII guard 恢复），防 CJK IME composing 下粘贴乱码 |
 | `overlay_position` | string | `"top"` | desktop | top / bottom / none。**已废弃**（2026-06-21 审查修复）：`recording_overlay` 窗口及 `overlay.rs` 模块已整体删除，UI 统一到 `result_window`。字段保留于 config 结构（避免 DB schema 迁移），但无任何使用方 |
 | `segment_silence` | f64 | `400.0` | desktop | VAD 伪流式：句间停顿阈值（毫秒），起过此值的停顿触发切句识别 |
 | `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色。**desktop 悬停工具栏可在运行时切换**（`set_polish_mode` 命令）：写 RuntimeConfig + 持久化回 DB，**立即生效**（Coordinator 每个 tick 重读镜像并 `Transcript::set_mode`，下一次润色按新模式） |
@@ -304,13 +308,15 @@ octopus-cli config
 | `asr_correct` | bool | `true` | cli + server + desktop | 是否对 ASR 输出做拼音映射 + bigram 转移概率的轻量纠错/热词校正；**自动跳过 Qwen3-ASR**（其自带标点且语义纠错强），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。2026-08-01 默认改 `true`（加了热词即生效，无热词 corrector no-op 零过纠）。详见 [architecture.md §ASR 纠错](../architecture.md) |
 | `denoise_mode` | u8 | `1` | desktop | 环境降噪模式：`0`=关闭（直通）、`1`=RNNoise（`nnnoiseless`，默认，纯 Rust 内置默认模型，48kHz→频带增益+OLA，GRU 状态跨帧保持）、`2`=DeepFilterNet3（libDF v0.5.6 + tract 0.19，48kHz 全频带，编译期内嵌 ~7.9MB 模型，质量最佳）。降噪为可插拔后端（`FrameDenoise` trait），由 mode 选后端；亦可由工具栏运行时切换（`set_denoise_mode` 命令）并持久化回 DB `app_config` 表。初始化/推理失败自动降级直通（warn），不阻断录音。详见 [architecture.md](../architecture.md) |
 | `output_simplified` | bool | `true` | desktop | ASR 输出字形归一化：`true`→简体（繁→简），`false`→繁体（简→繁）。基于开放词典网 CC-BY 3.0 单字对照表（编译期嵌入），在 ASR 输出后做单字级字形转换（不转地域用词）。解决 Qwen3-ASR `auto` 模式输出繁体的问题。详见 [architecture.md](../architecture.md) |
-| `hide_toolbar` | bool | `true` | desktop | 结果展示区工具栏显隐模式：`true`→鼠标移入显示、移出隐藏（默认）；`false`→工具栏始终显示（窗口高度保持展开态 132px） |
+| `hide_toolbar` | bool | ⚠️ 不一致 | desktop | 结果展示区工具栏显隐：`true`→hover 显隐；`false`→始终显示。**schema seed 为 `false`（全新库生效）但 config.rs 缺省 fn 为 `true`——两处不一致**（audit backlog），实际以 seed 为准 |
 | `edit_shortcut` | string | `"CmdOrCtrl+Enter"` | desktop | 结果展示区编辑 toggle 快捷键——**进入与保存（退出）编辑都用此键**（与 ✏️ 按钮同语义，Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。**跨平台**：`CmdOrCtrl` 在 macOS=⌘、Win/Linux=Ctrl（前端 `parseShortcut` 按 `e.metaKey||e.ctrlKey` 判定）；旧默认 `Cmd+Enter` 仅匹配 macOS、Win/Linux 下 Ctrl+Enter 失效——**DB v15→v16 迁移**自动把 `Cmd+Enter` 升级为 `CmdOrCtrl+Enter`（仅动等于旧默认的行，保留用户自定义值）。GUI 设置页可配（快捷键捕获按钮，不需冲突检测——仅窗口内 keydown 判定）。曾用双击进入（WKWebView `dblclick` 难触发而弃用）；曾拆分「Cmd+E 进 / Cmd+Enter 存」，因两者均窗口内 keydown（非全局、不 hijack 系统）已统一为单键 toggle |
 | `edit_global_shortcut` | string | `"Alt+E"` | desktop | 全局编辑快捷键——任意应用聚焦时唤起结果窗并进入/保存编辑（toggle，复用窗口内编辑语义）。与 `edit_shortcut`（窗口内、仅结果窗聚焦时生效）并存。GUI 设置页可配 + 热重载 |
 | `clipboard_shortcut` | string | `"Alt+C"` | desktop | 剪贴板历史浮窗全局快捷键（Tauri Accelerator 格式）。GUI 设置页可配 + 热重载 |
 | `paste_stack_shortcut` | string | `"CmdOrCtrl+Shift+V"` | desktop | 粘贴队列出栈全局快捷键——任意应用聚焦时按此键弹出栈底条目并粘贴到前台应用（`pop_and_paste`）。与 `clipboard_shortcut`（打开浮窗）正交，可同时注册。Tauri Accelerator 格式，GUI 设置页可配 + 热重载。详见 [paste-stack spec](superpowers/specs/archived/2026-08-05-paste-stack-design.md) |
+| `clipboard_enabled` | bool | `true` | desktop | 是否监听/记录剪贴板历史（热重载；浮窗标题栏有快捷开关） |
 | `clipboard_max_items` | int | `1000` | desktop | 剪贴板最大保留条数（不含收藏，超出自动清理） |
 | `clipboard_max_age_days` | int | `30` | desktop | 剪贴板自动清理天数（超过此天数的非收藏记录自动删除） |
+| `clipboard_theme` | string | `"light"` | desktop | 剪贴板浮窗主题（light / glass-dark / nord / 自定义） |
 | `screenshot_shortcut` | string | `"CmdOrCtrl+Shift+X"` | desktop | 截图全局快捷键（框选 → 标注 → 入剪贴板历史）。详见 [screenshot 设计](superpowers/specs/2026-06-28-archived-specs.md)。GUI 设置页可配 + 热重载 |
 | `screenshot_watermark_text` | string | `""` | desktop | 截图水印文字，空=不加水印。工具栏水印按钮 + 设置页均可配。平铺模式叠加到选区内（不进 annotations 数组，独立全局层）。热重载 |
 | `screenshot_watermark_density` | f32 | `0.5` | desktop | 截图水印平铺密度 0.0-1.0（0=单个居中，1=排满）。热重载 |
@@ -318,12 +324,21 @@ octopus-cli config
 | `screenshot_watermark_opacity` | f32 | `0.3` | desktop | 截图水印透明度 0.0-1.0。热重载 |
 | `screenshot_watermark_font_size` | u32 | `24` | desktop | 截图水印字号（逻辑像素）。热重载 |
 | `screenshot_watermark_color` | string | `"#ffffff"` | desktop | 截图水印颜色（CSS hex）。热重载 |
+| `action_bar_shortcut` | string | `"Alt+D"` | desktop | Action Bar 命令面板全局快捷键（toggle）。GUI 设置页可配 + 热重载 |
+| `action_bar_search_engine` | string | `"google"` | desktop | Action Bar 默认搜索引擎（内置 /google / /baidu / /bing / /github 斜杠命令） |
+| `record_shortcut` | string | `"CmdOrCtrl+Shift+R"` | desktop（仅 macOS） | 屏幕录制 toggle 快捷键（idle 开始 / 录制中暂停恢复）。GUI 设置页可配 + 热重载 |
+| `vault_autotype_shortcut` | string | `"CmdOrCtrl+Shift+S"` | desktop | 密码箱 Auto-Type 全局热键（登录页自动填充）。GUI 设置页可配 + 热重载 |
+| `vault_lock_timeout_secs` | u64 | `180` | desktop | 密码箱自动锁定超时（秒；30/60/180/300/900/0=永不） |
+| `onboarding_completed` | bool | `false` | desktop | 首次启动权限引导是否已完成（完成后不再弹） |
+| `terminal_font_size` | f64 | `13` | desktop | 内嵌终端字号（8–32，终端内 ⌘=/⌘- 调节并持久化，跨窗口同步） |
+| `terminal_font_family` | string | `"Menlo"` | desktop | 内嵌终端字体族（设置页从系统等宽字体动态拉取） |
+| ~~`image_preview_auto_ocr`~~ | bool | `true` | desktop | **已无消费方（死字段）**——2026-08-14 ImagePreview OCR 改手动三态（off→select→mask）后不再读取，保留仅为 DB 兼容 |
 | `download_mirror` | string | `""` | cli + desktop | HF 模型下载镜像 host（如 `https://hf-mirror.com`），空 = 官方源 huggingface.co。cli `download --mirror` 可临时覆盖 |
 | `active_polish_prompt` | string | `"1"` | desktop | 激活的润色 prompt id（`prompts` 表 `id` 字段，字符串形式存储）。默认 `"1"` 指向系统内置 prompt。设置窗口 prompt 管理页可切换（`set_active_prompt` 命令即时生效，下次润色用新 prompt）。详见 [prompts 表](#prompts-表-润色提示词管理) |
 
 > **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（`polish_mode`、`polish_min_interval`、`pause_polish_threshold_ms`），`asr_*`（`asr_hardware_accelerated`、`asr_correct`）控制推理后端 / 输出后处理。**模型激活**（asr_engine / polish_llm / ocr_model / translate_engine）已从 AppConfig 移除，改存 DB `models.is_enabled`——详见下方「模型激活」节。`denoise_mode`（前缀 `denoise_`）控制麦克风环境降噪（采集层前置，VAD/ASR 前）。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。`active_polish_prompt` 属润色行为（与 `polish_*` 同组，但存独立 key，由 `db::load_active_prompt_id()` 读，不入 `AppConfig` struct）。
 
-> **快捷键字段**（`asr_shortcut`（单键名，dropdown）/ `edit_shortcut` / `edit_global_shortcut` / `clipboard_shortcut` / `paste_stack_shortcut` / `screenshot_shortcut`）GUI 设置页可配 + 热重载。`asr_shortcut` 是 handy-keys 单键名（非 Tauri Accelerator），其余为 Tauri Accelerator 格式。`clipboard_*`（`clipboard_shortcut` / `paste_stack_shortcut` / `clipboard_max_items` / `clipboard_max_age_days` / `clipboard_enabled`）控制剪贴板历史（浮窗快捷键 + 队列粘贴快捷键 + 容量/清理 + 是否监听）。`clipboard_enabled`（默认 `true`）是否启用剪贴板历史监听——已纳入 `AppConfig`，设置页「交互」开关 + 浮窗 title bar 快捷按钮可配，热重载生效（运行时翻转 watcher flag，无需重启）；列表项**双击默认粘贴**（固定行为，不可配）。`paste_stack_shortcut`（默认 Cmd+Shift+V）控制粘贴队列出栈粘贴。`screenshot_shortcut` 控制截图触发。`download_mirror` 控制模型下载镜像源。
+> **快捷键字段**（`asr_shortcut`（单键名，dropdown）/ `edit_shortcut` / `edit_global_shortcut` / `clipboard_shortcut` / `paste_stack_shortcut` / `screenshot_shortcut` / `action_bar_shortcut` / `record_shortcut` / `vault_autotype_shortcut`）GUI 设置页可配 + 热重载。`asr_shortcut` 是 handy-keys 单键名（非 Tauri Accelerator），其余为 Tauri Accelerator 格式。`clipboard_*`（`clipboard_shortcut` / `paste_stack_shortcut` / `clipboard_max_items` / `clipboard_max_age_days` / `clipboard_enabled`）控制剪贴板历史（浮窗快捷键 + 队列粘贴快捷键 + 容量/清理 + 是否监听）。`clipboard_enabled`（默认 `true`）是否启用剪贴板历史监听——已纳入 `AppConfig`，设置页「交互」开关 + 浮窗 title bar 快捷按钮可配，热重载生效（运行时翻转 watcher flag，无需重启）；列表项**双击默认粘贴**（固定行为，不可配）。`paste_stack_shortcut`（默认 Cmd+Shift+V）控制粘贴队列出栈粘贴。`screenshot_shortcut` 控制截图触发。`download_mirror` 控制模型下载镜像源。
 
 ### 模型激活（2026-07-17 重构后）
 

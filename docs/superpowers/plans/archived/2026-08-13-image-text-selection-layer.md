@@ -605,3 +605,5 @@ git commit -m "docs: 图片文字选择层文档同步"
 1. **Spec 覆盖**：spec §2 数据流（Task 1+4）、§3 后端（Task 1+2）、§4 前端（Task 3+4）、§5 交互分治（Task 4）、§7 错误处理（Task 4 OcrLockGuard 重试）、§8 测试（Task 1 单测 + Task 5 e2e）
 2. **Placeholder**：无 TBD/TODO，所有代码块完整
 3. **类型一致**：`OcrWord`（Task 1 定义 ↔ Task 3 前端 interface）、`OcrBlock.words`（Task 1 ↔ Task 2 DTO ↔ Task 3 前端）、`TextSelectLayer` props（Task 3 定义 ↔ Task 4 消费）、`return_word_box`（Task 1 Step 6 paddle_backend ↔ OcrOutput.word_boxes ↔ ocr_output_to_blocks）
+
+> **实施记录（2026-08-13~14 commits d52ce41d~d7f1bff4 执行完毕，2026-08-17 归档前注记）**：TextSelectLayer + words 数据 + OCR 三态（off→select↔mask，取消自动 OCR）全部落地。剩余未勾的 17 项为**用户手动 GUI e2e 清单**（模板重复两份，subagent 无法做 GUI 测试）——留给用户后续验证，不阻塞归档。文档同步：features/ocr.md §8.1 + architecture.md。

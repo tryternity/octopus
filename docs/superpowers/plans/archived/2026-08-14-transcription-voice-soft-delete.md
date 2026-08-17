@@ -13,7 +13,7 @@
 - Modify: `crates/desktop/src/core/db_queue.rs:134`（改 delete_items）
 - Modify: `crates/desktop/src/commands/settings_commands.rs:583`（改 delete_items）
 
-- [ ] **Step 1: infra transcription.rs — 3 处查询加 is_deleted = 0**
+- [x] **Step 1: infra transcription.rs — 3 处查询加 is_deleted = 0**
 
 `list_transcriptions_at` 基础查询：
 ```
@@ -42,7 +42,7 @@ WHERE c.item_type = 'voice' AND c.content LIKE ?1
 WHERE c.item_type = 'voice' AND c.is_deleted = 0 AND c.content LIKE ?1
 ```
 
-- [ ] **Step 2: desktop db_queue.rs — 改 delete_items**
+- [x] **Step 2: desktop db_queue.rs — 改 delete_items**
 
 ```rust
 // 旧：
@@ -53,7 +53,7 @@ octopus_infra::db::with_db(|conn| {
 })
 ```
 
-- [ ] **Step 3: desktop settings_commands.rs — 改 delete_items**
+- [x] **Step 3: desktop settings_commands.rs — 改 delete_items**
 
 ```rust
 // 旧：
@@ -64,7 +64,7 @@ let deleted = octopus_infra::db::with_db(|conn| {
 }).map_err(e2s)?;
 ```
 
-- [ ] **Step 4: 编译 + 测试**
+- [x] **Step 4: 编译 + 测试**
 
 ```bash
 cargo build -p octopus-desktop --features "cloud,embedded,vault" 2>&1 | tail -5
@@ -72,9 +72,11 @@ cargo test -p octopus-infra --lib 2>&1 | grep "test result" | tail -2
 cargo test -p octopus-desktop --features "cloud,embedded,vault" 2>&1 | grep "test result" | tail -2
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
 git commit -m "fix: 设置页删 voice 走 clipboard voice-aware 分流（软删保语料）+ 列表过滤 is_deleted"
 ```
+
+> **实施记录（2026-08-14 commit 8823f32d 执行完毕，2026-08-17 归档前回写）**：设置页删 voice 改走 `clipboard::store::delete_items` voice-aware 分流（软删保语料）+ 三个 voice 列表查询统一 `AND is_deleted = 0` 过滤。checkbox 归档前补勾。文档同步：features/clipboard.md §9.1 + architecture.md。

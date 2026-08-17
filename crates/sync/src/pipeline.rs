@@ -59,7 +59,7 @@ pub trait SyncEntity {
     /// 实体标签（如 `"热词词典"` / `"密码"`），用于日志。
     const LABEL: &'static str;
 
-    /// tombstone 超期保留秒数。`0` = 永久保留（不做 GC，vault/clipboard 当前默认）。
+    /// tombstone 超期保留秒数。`0` = 永久保留（不做 GC；当前三实体均已设保留期：hotword 10 天、clipboard/vault 30 天）。
     /// hotword = 864000（10 天）。spec §7.2。
     fn tombstone_retention_secs() -> i64 {
         0

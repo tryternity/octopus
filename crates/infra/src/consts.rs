@@ -6,9 +6,9 @@
 
 /// VAD 模型磁盘覆盖路径（~/.octopus/models/vad.onnx）。
 ///
-/// 用户可在此放任意 VAD 模型（onnx）覆盖编译期内嵌的 silero_vad_v4。用通用名 `vad.onnx`
+/// 用户可在此放任意 VAD 模型（onnx）覆盖编译期内嵌的 silero_vad_v6。用通用名 `vad.onnx`
 /// 而非绑死版本号——覆盖的意义是换一个**不同的** VAD（如新版 silero 或其他 VAD），
-/// 若路径硬编码成 `silero_vad_v4.onnx`，用户就被迫用同名文件，覆盖失去意义。
+/// 若路径硬编码成 `silero_vad_v6.onnx`，用户就被迫用同名文件，覆盖失去意义。
 /// 磁盘无此文件时 fallback 到内嵌字节（`SileroVad::new_builtin()`，见 `audio/vad.rs`）。
 pub const VAD_OVERRIDE_PATH: &str = "models/vad.onnx";
 

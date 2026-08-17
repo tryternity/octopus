@@ -1,6 +1,6 @@
 # 桌面应用集成
 
-> `octopus-desktop`——基于 Tauri 2 的桌面应用，系统集成核心。管理 5 类窗口、全局快捷键、系统托盘、macOS Dock 显隐策略、跨平台贴图窗口、平台特性适配。
+> `octopus-desktop`——基于 Tauri 2 的桌面应用，系统集成核心。管理 15+ 窗口（结果窗/设置/图文编辑器/剪贴板/终端/截图×N/录屏×4/贴图/翻译浮窗/下载/引导/Action Bar/密码生成器/VaultPicker 等——各窗口详见对应功能文档）、全局快捷键、系统托盘、macOS Dock 显隐策略、跨平台贴图窗口、平台特性适配。
 
 源文件：`crates/desktop/src/`。
 
@@ -10,10 +10,12 @@
 
 | 窗口 | 用途 | 属性 |
 |------|------|------|
-| `result_window` | 识别结果展示 | 透明、无边框、置顶、可拖拽、多行滚动。720×480 物理固定，前端 CSS 切可见容器尺寸（默认 520×116 精简态 / 工具栏放大 720×480） |
-| `settings_window` | 系统设置 | 原生标题栏、圆角、可调大小。五页面侧边栏：系统设置 / 剪贴管理 / 模型管理 / 提示词 / 系统状态。窗口位置记忆 |
-| `compact_editor_window` | 统一内容查看器 | 原生标题栏、880×620 可调 + 记忆、居中、min 400×320。多 tab（文本/图片/语音） |
+| `result_window` | 识别结果展示 | 透明、无边框、置顶、可拖拽、多行滚动。720×480 物理固定，前端 CSS 切可见容器尺寸（默认 720×116 精简态 / 工具栏放大 720×480） |
+| `settings_window` | 系统设置 | 原生标题栏、圆角、可调大小。**10 页侧边栏**：设置（General）/ 模型管理 / 命令面板 / 剪贴板 / 录屏管理 / 热词 / 提示词 / 智能体 / 密码保险库 / 系统状态。窗口位置记忆 |
+| `compact_editor_window` | 统一内容查看器 | 原生标题栏、1100×680 可调 + 记忆、居中、min 600×360。多 tab（文本/图片/语音） |
 | `clipboard_window` | 剪贴板历史浮窗 | 300×600，无边框圆角透明置顶，`clipboard_shortcut`（默认 Alt+C）唤起 |
+| `translate_window` | 只读译文浮窗（2026-08-11） | 400×300 可调、透明置顶不抢焦点，截图翻译 + Action Bar 选中翻译共用（详见 architecture.md §窗口表） |
+| `onboarding_window` | 首启权限引导（2026-07-29） | 麦克风/辅助功能/屏幕录制三项权限引导，完成置 `onboarding_completed` |
 | ~~`notepad_window`~~ | （已移除 2026-07-03） | 随 `octopus-notepad` crate 一并删除 |
 | ~~`image_preview_window`~~ | （已移除 2026-07-04） | 合并入 CompactEditor 图片 tab |
 
@@ -35,7 +37,7 @@
 2. **50px 容差越界检测**（`is_position_visible`）：副屏拔接后保存的绝对坐标失效时走 fallback 居中/默认，避免窗口「消失」到不存在的屏。
 3. **`builder.maximized(true)` 在 WRY 不生效**——必须 `visible(false)` 建**接近全屏的大窗体**（屏尺寸减 margin 80）→ `show()` → `maximize()`；不能直接用主屏尺寸创建（`is_maximized=false` 会让关窗保存错误状态）。
 4. **最大化保存真实位置**：关窗时先 `unmaximize()` → 读 `inner_position()`+`inner_size()`（真实非最大化位置）→ `re-maximize()` → 存 `last_normal_pos`；不能直接读最大化时的 `inner_position()`（返回全屏位置可能跨屏到主屏原点）。
-5. **副屏未连接三层 fallback**：按 `last_normal_pos` 匹配已连接显示器 → 命中则该屏大窗体+maximize；未命中→ `primary_monitor` 大窗体+maximize；连主屏都拿不到→默认 880×620 居中。
+5. **副屏未连接三层 fallback**：按 `last_normal_pos` 匹配已连接显示器 → 命中则该屏大窗体+maximize；未命中→ `primary_monitor` 大窗体+maximize；连主屏都拿不到→默认 1100×680 居中。
 6. **`inner_position` + `inner_size` 对称**（均内容区坐标、不含标题栏），均 `÷ scale` 存逻辑像素；`scale_factor` 获取失败 `unwrap_or(1.0)` 兜底。
 
 > 全状态实现的窗口尺寸/最大化也记录于 [compact-editor.md](./compact-editor.md) §1。
@@ -60,7 +62,11 @@
 |--------|------|------|
 | `asr_shortcut` | OptRight | 单键三模式触发（长按=PTT / 双击=toggle / 短按=hands-free） |
 | `clipboard_shortcut` | Alt+C | 唤起剪贴板浮窗（toggle 按焦点判断） |
+| `paste_stack_shortcut` | CmdOrCtrl+Shift+V | 粘贴队列出栈粘贴 |
 | `screenshot_shortcut` | CmdOrCtrl+Shift+X | 截图 / 滚动截图模式 |
+| `record_shortcut` | CmdOrCtrl+Shift+R | 录屏 toggle（仅 macOS） |
+| `action_bar_shortcut` | Alt+D | Action Bar 命令面板（toggle） |
+| `vault_autotype_shortcut` | CmdOrCtrl+Shift+S | 密码箱 Auto-Type（vault feature） |
 | `edit_shortcut` | CmdOrCtrl+Enter | 结果窗内 toggle 编辑（非全局，不在设置页管理） |
 | `edit_global_shortcut` | Alt+E | 全局唤起结果窗 + toggle 编辑 |
 
@@ -134,15 +140,17 @@
 - 快捷键先注册后持久化（见 §3）
 - `edit_shortcut` / `hide_toolbar` / `clipboard_enabled` 改动发 `config-changed` 事件让结果窗 `refreshActive` 刷新 + 设置页/浮窗 `clipboard_enabled` toggle 双向同步
 
-**系统设置页**（GeneralPanel.tsx）：6 张卡片——交互 / 模型选择 / 快捷键 / 降噪 / 粘贴 / OCR。
+**系统设置页**（GeneralPanel.tsx，设置 tab）：7 张卡片——外观 / 交互 / 剪贴板 / 快捷键 / 语音识别 / 语音识别润色 / 终端字体（含 Git 同步子 tab）。
 
-**模型管理页**（page 3）：4 个命令（`list_downloadable_models` / `download_model` / `verify_model` / `set_download_mirror`）。详见 [db-and-config.md](./db-and-config.md)。
+**模型管理页**（nav `models`）：4 域 tab（语音识别 / 文本模型 / 扫描识别 / 翻译），命令（`list_downloadable_models` / `download_model` / `verify_model` / `set_download_mirror` 等）。详见 [db-and-config.md](./db-and-config.md)。
 
-**提示词页**（page 5）：6 个命令（`list_prompts` / `get_active_prompt` / `set_active_prompt` / `create_prompt` / `update_prompt` / `delete_prompt`），切换即时生效。
+**提示词页**（nav `prompts`）：6 个命令（`list_prompts` / `get_active_prompt` / `set_active_prompt` / `create_prompt` / `update_prompt` / `delete_prompt`），切换即时生效。
 
-**剪贴管理页**（page 2）：剪贴板历史的完整管理视图（FilterTabs + 多选 + 全选 sticky header + `ClipboardRow` 两行布局），与浮窗共用 `types/clipboard.ts` 工具（`detectUrl` / `fileMeta` / `metaParts`）。详见 [clipboard.md](./clipboard.md)。
+**剪贴板页**（nav `clipboard`）：剪贴板历史的完整管理视图（FilterTabs + 多选 + 全选 sticky header + `ClipboardRow` 两行布局），与浮窗共用 `types/clipboard.ts` 工具（`detectUrl` / `fileMeta` / `metaParts`）。详见 [clipboard.md](./clipboard.md)。
 
-**系统状态页**（page 6）：实时进程内存/CPU + 各本地模型估算内存 + sparkline 趋势。详见 §13。
+**系统状态页**（nav `system`）：实时进程内存/CPU + 各本地模型估算内存 + sparkline 趋势。详见 §13。
+
+另有命令面板（`actionbar`）/ 录屏管理（`recordings`）/ 热词（`hotword`）/ 智能体（`agent`）/ 密码保险库（`vault`）页，详见各功能文档。
 
 ---
 
@@ -221,7 +229,7 @@ cargo run --profile optimize -p octopus-desktop --features remote-grpc
 
 > 选中文本 → 热键 → 模拟 Cmd+C → 弹出迷你浮窗 → AI/搜索/翻译/网页 → CompactEditor 展示结果。源文件：`crates/desktop/src/action_bar_commands.rs`、`crates/desktop/frontend/src/pages/ActionBar/`。**仅 macOS**（依赖 CGEvent 鼠标坐标 + osascript 模拟 Cmd+C），非 macOS `trigger_action_bar` 直接 return + warn。
 
-**窗口**：`action_bar_window` 透明浮窗，定位鼠标正上方 X 居中；两级菜单（主菜单 + 子菜单）+ 键盘导航（↑↓ 切行、←→/Enter 进子菜单）；高度 82px（主菜单 38 + 子菜单 38 + 边框），缩小透明点击区。
+**窗口**：`action_bar_window` 透明浮窗，定位鼠标正上方 X 居中；两级菜单（主菜单 + 子菜单）+ 键盘导航（↑↓ 切行、←→/Enter 进子菜单）；初始 inner_size 480×76，前端按态动态 resize（主菜单 42px / 子菜单 85px），缩小透明点击区。
 
 **关键约束（反复踩坑）**：
 - **物理/逻辑坐标**：`CGEvent::location()` 返回**逻辑坐标（points）**，Tauri `LogicalPosition` 是逻辑像素，两者一致**不除 scale**；`Monitor::position()/size()` 返回物理像素**需除 scale**。曾误把 CGEvent 当物理坐标除 scale → 浮窗偏到无关位置。
@@ -232,7 +240,7 @@ cargo run --profile optimize -p octopus-desktop --features remote-grpc
 - **system_prompt 全局污染**：`run_ai_action` 不用 `set_system_prompt`/`polish`（会污染并发 ASR 润色），改用 `octopus_llm::chat_text_with_prompt(system, user, config)` 参数注入。
 - **剪贴板生命周期**：trigger 阶段 suppress_next → Cmd+C → 读选中 → 立即 write_text 恢复（选中文本不入库），存 `PENDING_CONTEXT`。
 - **trigger 重入 guard**：`TRIGGER_IN_PROGRESS: AtomicBool` 防热键连按，`finalize_action_bar` 统一收口。
-- **AI 结果不做 Run And Paste**（浏览器安全策略阻止模拟粘贴），改 CompactEditor isTemp 临时 tab 展示（不写 DB）。AI 超时：翻译 5s + 润色/摘要/解释 10s，前端 `timedOutRef` 丢弃超时后到达的结果。
+- **AI 结果不做 Run And Paste**（浏览器安全策略阻止模拟粘贴），改 CompactEditor isTemp 临时 tab 展示（不写 DB）。AI 超时统一在后端 `AI_TIMEOUT_SECS=10`（script.rs）控制，超时返回错误（翻译 5s）。
 
 ---
 
@@ -258,7 +266,7 @@ cargo run --profile optimize -p octopus-desktop --features remote-grpc
 
 ## 14. 命令面板菜单（action_bar_items DB）
 
-> AI 命令面板菜单项存储在 `action_bar_items` 表（自引用 `parent_id` 两级菜单，5 种 `action_type`：`submenu`/`ai`/`url`/`script`/`copy`）。
+> AI 命令面板菜单项存储在 `action_bar_items` 表（自引用 `parent_id` 两级菜单，**6 种 `action_type`**：`submenu` / `ai` / `url` / `script` / `agent` / `copy_path`——旧 `copy` 已于 2026-07-19 删除）。
 
 **关键约束**：
 - `#[serde(rename_all = "camelCase")]` **必须**——`parent_id`→`parentId` 不匹配会导致菜单渲染完全失败（曾踩坑）。

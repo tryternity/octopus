@@ -2,7 +2,7 @@
 
 > 单线程 mpsc channel 串行化所有录音生命周期事件，消除竞态条件——这是 octopus 桌面端语音输入的核心状态机。
 
-源文件：`crates/desktop/src/coordinator.rs`、`crates/desktop/src/db_queue.rs`、`crates/desktop/src/transcript.rs`、`crates/desktop/src/pipeline.rs`、`crates/desktop/src/cloud_pipeline.rs`、`crates/desktop/src/audio.rs`。
+源文件：`crates/desktop/src/engine/coordinator/`（目录，2026-07-29 拆分为 mod.rs + 8 子模块）、`crates/desktop/src/core/db_queue.rs`、`crates/desktop/src/engine/transcript.rs`、`crates/desktop/src/engine/pipeline.rs`、`crates/desktop/src/engine/cloud_pipeline.rs`、`crates/desktop/src/engine/audio.rs`、`crates/desktop/src/engine/ptt.rs`（单键三模式 FSM）。
 
 ---
 
@@ -51,12 +51,19 @@
 | `FinalPolishDone { result, session_id }` | 最终润色 spawn 完成 | 最终润色结果，`session_id` 护栏 |
 | `PasteDone` | `do_paste` 内 spawn_blocking 完成 | 粘贴落地 → Idle |
 | `PolishNow` | 工具栏「立即润色」→ `polish_now` 命令 | 忽略 `polish_mode` 立即润色 |
-| `EnterEditMode` / `UpdateEditBuffer { text }` / `CommitEdit { text }` / `CancelEdit` | 前端编辑按钮 / `edit_shortcut` | ASR 硬暂停 + 编辑缓冲 |
+| `CommitEdit { text, dirty_ranges, has_edited, caret, selection }` | 前端 CM6 提交（`edit_shortcut` / 保存按钮 / 2s idle / flush-edit） | 按 dirty ranges 劈段标 `Edited`；旧 `EnterEditMode`/`UpdateEditBuffer`/`CancelEdit` 已随 CM6 化移除 |
+| `EditFlushed { flush_id }` / `FlushTimeout { flush_id }` | 前端响应 `flush-edit` 事件 commit 后回传 / 200ms 超时 | 停止录音 / 立即润色前强制提交编辑器防抖内容（flush_id 校验，四路径：Toggle/InstantStop/HandsFreeStop/PolishNow） |
+| `InstantStart` / `InstantStop` | PTT 长按松开（`ptt.rs` FSM） | PTT 模式开/停——`INSTANT_MODE=true` 用 instant 视图（底部指示卡）不走 result 小条 |
+| `HandsFreeStart` / `HandsFreeStop` | 短按单键 / 静音超时 10s | hands-free 常驻录音模式开/停 |
+| `StartAgentRecording { task_id }` | Action Bar agent 动作（含 `{{voice}}`） | 录音给 agent 当输入，不粘贴 |
 | `SetCaret { offset }` | 前端非编辑态点击 | 劈段定位 `caret_gap` |
 | `SetSelection { start, end }` | 前端非编辑态拖选 | 记录 `pending_delete` + `selection_insert_offset` |
-| `StartRecording { prepare_id, selection }` | 前端响应 `prepare-record` 事件 | 校验 prepare_id 后 `begin_recording(selection)` |
+| `StartRecording { prepare_id, record_type, selection }` | 前端响应 `prepare-record` 事件 | 校验 prepare_id 后 `begin_recording(selection)`（`record_type` 区分 toggle/PTT/hands-free 视图） |
 | `FallbackStart { prepare_id }` | 看门狗 200ms 超时 | 前端未响应兜底普通开 |
+| `RestartCapture { stage_kind }` | 音频采集看门狗 3s 断推（§13.2） | 中断重连 + 复用 transcript |
 | `UpdateRuntime` | 设置窗口/工具栏改 RuntimeConfig | 同步 `polish_mode` / `asr_correct` / `output_simplified` / `hide_toolbar` 等到 config 快照（模型激活走 switch_active_model，不经此路径） |
+
+> **三模式层**（2026-08-01 单键化）：`ptt.rs` 的 `PttFsm` 6 态状态机用同一个键（`asr_shortcut` 单键名）按按键时长区分——长按（≥260ms）= PTT / 双击 = toggle / 短按 = hands-free；`INSTANT_MODE` + `RECORDING_MODE` static 标记视图与模式。**stage→Idle 出口统一 `reset_idle_flags()`**（2026-08-14）收口 `INSTANT_MODE` + `TRANSLATION_ACTIVE` + `RECORDING_MODE` 三 flag 清理（此前跨 6 轮审查修同型遗漏），单测守护。
 
 ---
 
@@ -184,7 +191,8 @@ samples: Vec<f32>（16k 单声道，已降噪 或 直通）—— 三种 stage �
 - **不重置流式引擎**（只读送 LLM，引擎状态原样保留）
 - 默认 600ms > Active Flush 500ms（须大于句间停顿最大值，否则润色先于尾音冲刷）
 - pending 期间新 delta 缓存到 `pending_delta`，PolishDone 后 flush
-- 节流 `MIN_POLISH_INTERVAL_SEC = 1.0s`
+- 节流 = `polish_min_interval`（可配，默认 **5.0s**）`.max(1.0s)` 下限兜底
+- **应用感知润色路由**（2026-08-01，`prompt_route.rs::resolve_polish_prompt`）：prompts 表 `app_bundle_ids` 绑定前台 app 选专用 prompt（空=全局），`inject_context=1` 时 user prompt 头部注入「当前应用：名称」
 
 **立即润色（PolishNow）**（`handle_polish_now`）：
 - **忽略 `polish_mode`**（不受 mode=0/1/2 限制，区别于停顿润色的 mode=2 限制）
@@ -263,7 +271,7 @@ samples: Vec<f32>（16k 单声道，已降噪 或 直通）—— 三种 stage �
 
 ## 12. DB 写入队列 actor（db_queue.rs）
 
-`crates/desktop/src/db_queue.rs`——ASR 识别结果的 DB 写入 actor，从 `coordinator.rs` 提取（原 ~180 行）。
+`crates/desktop/src/core/db_queue.rs`——ASR 识别结果的 DB 写入 actor。
 
 **`DbCommand` enum**：
 
@@ -274,12 +282,13 @@ samples: Vec<f32>（16k 单声道，已降噪 或 直通）—— 三种 stage �
 | `UpdatePolished` | id, text, status, model, segments | 停顿润色 / 立即润色完成 |
 | `Finalize` | id, raw_text, segments, polished_text, polish_status, polish_model, duration_ms | 停止时完整写入 |
 | `UpdateEditedSegments` | id, text, segments | 用户编辑提交 |
+| `UpdateMetaField` | id, key, value | meta_info 单字段写入（cloud-gated，`update_meta_field`） |
 | `Delete` | id | Cancel 时删除未完成记录 |
 
 **后台线程**：
 - `DB_SENDER: OnceLock<Sender<DbCommand>>` 懒初始化 spawn（`get_db_sender`）
 - 后台线程 `recv_timeout` 轮询 `DB_SHUTDOWN: AtomicBool` 关机标志
-- mpsc 的 FIFO 保证同 id 的 `Insert` 必在 `UpdateRaw` 之前被消费
+- mpsc 的 FIFO 保证同 id 的 `Insert` 必在 `UpdateTextSegments` 之前被消费
 - 调用方非阻塞 `send` 后即返回，落库在后台线程，识别主循环不被 SQLite I/O 阻塞
 
 **关机优雅 drain**（`shutdown_db`）：

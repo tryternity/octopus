@@ -1,6 +1,6 @@
 # 剪贴板管理
 
-> 独立的剪贴板历史核心库（`octopus-clipboard` crate），仅依赖 `octopus-infra`，基于 `clipboard-rs` 跨平台读写 + 监听。统一存储 text/voice/ocr/image/file 五类条目，FTS5 全文搜索，图片 JPEG q85 BLOB 压缩，自动清理。
+> 独立的剪贴板历史核心库（`octopus-clipboard` crate），仅依赖 `octopus-infra`，基于 `clipboard-rs` 跨平台读写 + 监听。统一存储 text/voice/ocr/image/file 五类条目，FTS5 全文搜索，图片原图文件系统存储 + 缩略图入 DB，自动清理 + 收藏跨设备同步。
 
 源文件：`crates/clipboard/src/`。
 
@@ -10,11 +10,12 @@
 
 | 模块 | 职责 |
 |------|------|
-| `model` | 数据结构：`ItemType`（Text/Image/File）、`Source`（Clipboard/Asr）、`ClipboardItem`（含 `ImageMeta`/`FileMeta`/`AsrMeta`）、`QueryFilter`（6 种过滤 + 分页 + 搜索） |
+| `model` | 数据结构：`ItemType`（Text/Voice/Ocr/Image/File 5 变体）、`ClipboardItem`（含 `ImageMeta`/`FileMeta`/`AsrMeta`；无 source 字段）、`QueryFilter`（9 种 filter 值 + 分页 + 搜索） |
 | `handle` | `ClipboardHandle`：`Mutex<ClipboardContext>` 全局单例（Windows 防锁竞争）+ `AtomicBool` suppress flag + `AtomicBool` recording_enabled gate |
 | `watcher` | `ClipboardWatcher`：后台线程跑 `ClipboardWatcherContext::start_watch()`（阻塞），`on_clipboard_change` 回调链 |
-| `store` | DB CRUD：通用插入 / ASR 插入 / OCR 插入 / FTS5 JOIN 搜索 / 分页 / 去重 / 引用计数清理 |
-| `image` | RGBA → PNG → SHA-256 去重 → JPEG q85 编码 → 缩略图 240×240 |
+| `store` | DB CRUD：通用插入 / ASR 插入 / OCR 插入 / FTS5 JOIN 搜索 / 分页 / 去重 / 引用计数清理 / voice 软删分流 |
+| `favorite` | **2026-08-05 新增**：收藏业务逻辑——维护 `clipboard_favorites` 表三态（active / tombstone epoch / 无记录），`toggle_favorite` 幂等切换（2026-08-14 事务化：单连接 `unchecked_transaction`）；跨设备 sync 详见 architecture.md §octopus-sync |
+| `image` | RGBA → MD5 去重 → JPEG q100 原图存文件系统 + 缩略图 240×240 JPEG q5 入 DB |
 | `cleanup` | 自动清理：按天数（默认 30）+ 按数量（默认 1000）删除非收藏 + 孤立 blob 回收 + FTS5 索引重建 |
 
 ---
@@ -22,17 +23,16 @@
 ## 2. 数据结构
 
 ```rust
-enum ItemType { Text, Image, File }
-enum Source   { Clipboard, Asr }
+enum ItemType { Text, Voice, Ocr, Image, File }
 
 struct ClipboardItem {
-    id: i64,
+    id: String,             // UUID v4（v59 起，作跨设备 sync 锚点；原 i64 毫秒戳已废）
     item_type: ItemType,
-    source: Source,
-    content: String,       // voice/ocr/text 全文；image/file 为空串
-    ref_data: String,      // image=blob_hash；file=JSON 路径数组
-    meta_info: Value,      // JSON，按 item_type 存不同 schema（见 §10）
+    content: String,        // voice/ocr/text 全文；image/file 为空串
+    ref_data: String,       // image=文件 hash；file=JSON 路径数组
+    meta_info: Value,       // JSON，按 item_type 存不同 schema（见 §10）
     segments: Option<String>, // 仅 voice 段 JSON
+    is_deleted: i64,        // 软删标志（仅 voice 用，见 §9.1）
     is_favorite: bool,
     is_rich: bool,
     has_thumbnail: bool,
@@ -40,10 +40,10 @@ struct ClipboardItem {
 }
 
 struct QueryFilter {
-    item_type: Option<ItemType>,  // 6 种过滤（全部/语音/文本/图片/文件/收藏）
-    search: Option<String>,       // >=3 字符 FTS5 MATCH；<3 字符 LIKE
-    limit: i64,
-    offset: i64,
+    filter: String,         // 9 种：all / asr / ocr / text / image / file / favorite / unfavorite / trash
+    search: Option<String>, // >=3 字符 FTS5 MATCH；<3 字符 LIKE
+    page: i64,
+    size: i64,
 }
 ```
 
@@ -81,13 +81,13 @@ struct QueryFilter {
 2. **recording_enabled gate**：recording_enabled=false → return（用户暂停了监听）
 3. **concealed hint 检测**（2026-08-05，跨平台）：粘贴板含密码管理器 concealed 标记（macOS `org.nspasteboard.ConcealedType` / Windows `ExcludeClipboardContentFromMonitorProcessing` / Linux `x-kde-passwordManagerHint`）→ 静默 return，防密码明文入库 / FTS 索引 / 跨设备 sync。详见 [spec](../superpowers/specs/archived/2026-08-05-macos-concealed-type-skip.md)
 4. **类型判断**（优先级 `files > image > text`，非三者则静默跳过避免 `read_text` 失败日志污染）
-5. **去重**：文本/文件按 `find_by_text(text, ItemType)` 匹配；图片按 `find_by_content_hash`
-6. **存 DB**：`insert_clipboard_item`
-7. **通知前端**：`emit("clipboard://changed")`
+5. **enqueue 信号到 `desktop/clipboard_queue.rs`**（2026-07-21 P0-5）——watcher 线程只发信号，去重 / 存 DB / emit 由 worker 线程串行处理（原直接在 watcher 线程同步处理会阻塞 NSPasteboard 下一次通知 → 连续复制延迟入库）
+
+worker 线程：**去重**（文本/文件按 `find_by_text` 匹配；图片按 `find_by_content_hash`）→ **存 DB**（`insert_clipboard_item`）→ **通知前端**（`emit("clipboard://changed")`）。
 
 ---
 
-## 6. DB schema v18
+## 6. DB schema v60
 
 ### clipboard_history 表
 
@@ -95,17 +95,21 @@ struct QueryFilter {
 
 | 列 | 类型 | 说明 |
 |---|---|---|
-| `id` | `INTEGER PRIMARY KEY` | voice = 识别开始毫秒时间戳；其他 = 自增 |
+| `id` | `TEXT PRIMARY KEY` | **UUID v4**（v59 改，原 INTEGER 毫秒戳——作跨设备 sync 锚点） |
 | `item_type` | `TEXT` | `text` / `voice` / `ocr` / `image` / `file` |
-| `source` | `TEXT` | `clipboard` / `asr` |
 | `content` | `TEXT` | voice/ocr/text 全文；image/file 为空串 |
-| `ref_data` | `TEXT` | image=blob_hash；file=JSON 路径数组；text/voice/ocr 为空 |
+| `ref_data` | `TEXT` | image=文件 hash；file=JSON 路径数组；text/voice/ocr 为空 |
 | `meta_info` | `TEXT` | JSON，按 item_type 存不同 schema（见 §10） |
 | `segments` | `TEXT` | 仅 voice 段 JSON `[{kind:raw\|polished\|edited, text}]` |
+| `is_deleted` | `INTEGER` | 软删标志（仅 voice 用，见 §9.1；v53） |
 | `is_favorite` | `INTEGER` | 0/1 |
 | `is_rich` | `INTEGER` | 0/1 |
 | `has_thumbnail` | `INTEGER` | 0/1 |
 | `created_at` | `TEXT` | iso 时间戳 |
+
+### clipboard_favorites 表（v59 新增）
+
+收藏的跨设备同步锚点（4 字段极简）：`history_id`（PK = clipboard_history.id，一对一，**无 FK**——物理删 history 后 favorite tombstone 须存活到 sync 传播）+ `is_deleted`（0=active / >0=epoch 秒 tombstone）+ `updated_at` + `sync_md5`。超期 tombstone 由 scheduler 每日 GC（30 天，`CLIPBOARD_TOMBSTONE_RETENTION_SECS`）。加密存储于 `.sync/clipboard/`（AES-256-GCM），经 `SyncEntity` trait 的 `merge_three_way` 与 vault/热词统一 merge。
 
 ### clipboard_history_fts 虚表
 
@@ -141,7 +145,7 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 | ≥3 字符 | FTS5 MATCH phrase（trigram 倒排索引，包成 `"phrase"` 走 phrase query） |
 | <3 字符 | LIKE `%text%` 子串 fallback（trigram 无法生成 3-gram） |
 
-- 6 种 item_type 过滤 + 分页（`LIMIT ? OFFSET ?`）
+- 9 种 filter 值过滤 + 分页（`LIMIT ? OFFSET ?`）
 - `ORDER BY created_at DESC, id DESC` 二级排序——消除秒级 `iso_now` 同秒不稳定（同秒内按 id 保证确定顺序）
 
 FTS5 索引一致性由 db.sql 触发器（`clip_fts_ai`/`clip_fts_ad`/`clip_fts_au`）事务内增量同步，无需周期 rebuild（原 `rebuild_fts_index` 已于 2026-07-29 删除——死代码）。
@@ -179,9 +183,11 @@ FTS5 索引一致性由 db.sql 触发器（`clip_fts_ai`/`clip_fts_ad`/`clip_fts
 - **孤立图片回收**：删除条目后引用计数为 0 的图片文件 + image_data 行（`cleanup_unreferenced_images`：删文件 `delete_image_file` + DELETE DB 行）
 - **FTS5 索引重建**：仅在有删除/回收时 rebuild，避免定时清理无删除时无谓全表重建
 
-**接入定时调用**：
-- `setup.rs` 启动时跑一次
-- 后台线程每小时从 DB 重读 `clipboard_max_items` / `clipboard_max_age_days` 跑一次（让设置页「最大保留条数 / 自动清理天数」真正生效；用户运行时改限额 1 小时内自动生效）
+**接入定时调用**（scheduler 任务 `clipboard_cleanup`，每 10 分钟）：
+- 启动时跑一次
+- 之后每 10 分钟从 DB 重读 `clipboard_max_items` / `clipboard_max_age_days` 跑一次（用户运行时改限额 10 分钟内自动生效）
+
+另有 scheduler 任务 `clipboard_favorite_gc`（每日）：硬删超期（>30 天）favorite tombstone + export 重建 `.sync`。
 
 ## 9.1 软删（voice 内部机制，用户不可见）（2026-07-29 重构）
 
@@ -191,7 +197,11 @@ FTS5 索引一致性由 db.sql 触发器（`clip_fts_ai`/`clip_fts_ad`/`clip_fts
 - **voice**：软删（`UPDATE is_deleted = 1`），数据保留在 DB 但列表不显示。软删内容主要用于**热词挖掘**（INV-C1：`list_recent_text` 不过滤 `is_deleted`，软删内容仍是热词来源）及后续优化语音识别准确性。
 - **text/ocr/image/file**：物理 DELETE（image 另做 blob 引用计数清理）。
 
-**voice 软删 100 条上限（INV-VT）**：voice 软删后实时保证 `is_deleted=1` 的 voice ≤ 100 条（`VOICE_TRASH_MAX`）。任何入口（`delete_item` / `delete_items` / `clear_history` / `clear_history_by_filter`）软删 voice 后，立即把最老的（`created_at ASC`）voice 物理删到恰好 100 条（`enforce_voice_trash_limit`）。
+**voice 软删 500 条上限（INV-VT，2026-08-02 从 100 提升）**：voice 软删后实时保证 `is_deleted=1` 的 voice ≤ 500 条（`VOICE_TRASH_MAX`）。任何入口（`delete_item` / `delete_items` / `clear_history` / `clear_history_by_filter`）软删 voice 后，立即把最老的（`created_at ASC`）voice 物理删到恰好 500 条（`enforce_voice_trash_limit`）。
+
+**短 voice 物理删**（2026-08-02）：content < 5 字符的 voice 直接物理删不进软删（对 bigram 语料无价值），`is_voice_worth_keeping` 判别；`clear_voice_aware` 分流——长语音软删带过滤 / 短语音物理删带过滤（2026-08-14 补齐 filter：原短语音分支无 filter 致跨 tab 清空误删全库短 voice）。
+
+**设置页删除联动**（2026-08-14）：设置页「删除语音记录」走 `clipboard::store::delete_items` voice-aware 分流（软删保语料）；三个 voice 列表查询统一加 `AND is_deleted = 0` 过滤软删行。
 
 **不变量**：收藏条目（`is_favorite=1`）任何删除入口都跳过。详见 [spec](../superpowers/specs/archived/2026-07-29-clipboard-softdelete-voice-only.md)。
 
@@ -219,7 +229,7 @@ FTS5 索引一致性由 db.sql 触发器（`clip_fts_ai`/`clip_fts_ad`/`clip_fts
 2. **成功后主动 `emit("clipboard://changed")`**：`paste::paste` 写剪贴板设 suppress flag，watcher 的 `on_clipboard_change` 命中后直接 return、不执行含 emit 的 `on_change` 闭包，故 ASR 记录需主动广播前端才能即时渲染
 3. 调 `paste::paste`（写系统剪贴板，suppress flag 阻止 watcher 重复记录）
 
-**删除已统一**：transcriptions 表已废弃（v17 DROP），所有 ASR 数据在 clipboard_history（item_type='voice'）；`delete_history` 直接调 `delete_transcriptions`（已写 clipboard_history），删除行数 >0 时主动 `emit("clipboard://changed")` 广播浮窗/设置页双端刷新。
+**删除已统一**：transcriptions 表已废弃（v17 DROP），所有 ASR 数据在 clipboard_history（item_type='voice'）；`delete_history` 走 `clipboard::store::delete_items` voice-aware 分流（2026-08-14——长语音软删保 bigram 语料 / 短语音物理删），删除行数 >0 时主动 `emit("clipboard://changed")` 广播浮窗/设置页双端刷新。
 
 ---
 
@@ -261,7 +271,7 @@ FTS5 索引一致性由 db.sql 触发器（`clip_fts_ai`/`clip_fts_ad`/`clip_fts
 | `Ctrl+1..7` | 直接跳 tab（写死，不可配置；不用 cmd 防 Accessory 策略下菜单栏拦截），用 `e.code`（物理键位 `Digit[1-7]`）匹配非 `e.key`（macOS Option+数字产生特殊字符如 `¡`） |
 
 - `selectedIndex` 索引驱动（非 `selectedId`）；items 变化（过滤/搜索/刷新）时 useEffect 夹紧越界索引。
-- TABS 顺序：all/favorite/asr/text/ocr/image/file（favorite 第 2）。
+- TABS 顺序：all/favorite/asr/text/ocr/image/file/**queue**（8 个，favorite 第 2，queue 第 8——数字快捷键 Ctrl+1..7 仅覆盖前 7 个，queue tab 无数字键）。tab 数 >6 时只显图标（`COMPACT_THRESHOLD` 动态阈值，title 出 tooltip）。
 - **写死 `Ctrl` 非 `Cmd`**：octopus 激活策略为 Accessory，浮窗显示时不切 Regular，前一 app 的菜单栏 key equivalent 会拦截 `Cmd+digit`；`Ctrl` 不产生特殊字符、非标准 menu equivalent、跨平台一致。固定 Ctrl 不再开放配置（原 `clipboard_tab_modifier` 配置项已移除）。
 - **闭包陷阱**：window keydown handler 用 `itemsRef`/`selectedIndexRef`/`searchRef`/`filterRef` 存最新值，避免注册时闭包过期。
 - `moveIndex`（边界夹紧，null 初态按方向落到首/末）/ `moveTab`（循环 `(cur+delta+len)%len`）抽纯函数单测。
@@ -274,6 +284,16 @@ FTS5 索引一致性由 db.sql 触发器（`clip_fts_ai`/`clip_fts_ad`/`clip_fts
 - **收藏 tab 自然删 0 条**：`filter="favorite"` + `keep_favorite=true` → `is_favorite = 1 AND is_favorite = 0` 恒假，后端无需特判，前端 `disabled` 按钮。
 - **两步 inline 确认**：点 1 次 → `confirming=true`（变红「再点确认」+ 3s 超时回退），再点才执行。filter 切换/卸载清 timer（防 A tab 点了第一步、切 B tab 误清 B）。
 - **与搜索框正交**：删整个 tab 类别非收藏，与搜索词无关。
+
+### 12.5 粘贴队列（Paste Stack，2026-08-05）
+
+批量粘贴场景的 FIFO 队列：
+
+- **入栈**：浮窗 `Cmd+点击` 多选条目（绿色高亮 + 序号 badge ①②③）→ 底部「入栈 N 条」→ `push_to_paste_stack(ids)`
+- **出栈**：切到目标应用按全局热键 `paste_stack_shortcut`（默认 `⌘⇧V`）逐条弹出粘贴（`pop_and_paste`：pop front → 写剪贴板 + suppress flag → restore_focus → simulate_paste → emit `paste-stack://updated` 更新计数）
+- **队列 tab**：渲染栈内容，序号 = 出栈顺序（index 0 = 下一个弹出）；拖拽排序用 `@dnd-kit/sortable`（WKWebView HTML5 DnD 不可靠）；单条删除 / 清空全部
+- 栈不持久化（内存 `Mutex<VecDeque>`，重启清空）
+- **命令**：`push_to_paste_stack` / `pop_and_paste` / `paste_stack_status` / `peek_paste_stack` / `remove_from_paste_stack` / `move_paste_stack_item` / `clear_paste_stack`
 
 ---
 

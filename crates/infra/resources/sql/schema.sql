@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS clipboard_history (
     created_at      TEXT    NOT NULL,
     has_thumbnail   INTEGER NOT NULL DEFAULT 0,
     segments        TEXT,                      -- 段 JSON（仅 voice，段模型真相源）
-    is_deleted      INTEGER NOT NULL DEFAULT 0 -- 软删标记（0=活跃；1=已进回收站）。与 vault_ciphers/folders 一致。
+    is_deleted      INTEGER NOT NULL DEFAULT 0 -- 软删标记（0=活跃；1=voice 软删标记，仅 voice 用；上限 VOICE_TRASH_MAX=500 条）。vault_ciphers/folders 为 i64 epoch tombstone（0=活跃，>0=删除时刻秒）。
                                                -- 仅 voice 软删（2026-07-29 重构）：voice 有还原价值，回收站 ≤100 条上限（INV-VT）。
                                                -- text/ocr/image/file 删除即物理 DELETE，is_deleted 对这些类型始终 0。
                                                -- 热词挖掘 list_recent_text 故意不过滤此列——软删内容仍是热词来源（INV-C1）。

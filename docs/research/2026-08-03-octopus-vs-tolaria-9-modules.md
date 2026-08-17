@@ -982,7 +982,7 @@ Sources:
 
 5. **EP 类型化补齐 + CoreML + 量化**——`OcrVersion` 加 `PPocrV6`、`RuntimeBackend` 加 `OnnxCuda`/`OnnxCoreMl`/`OnnxDirectMl`，`ProviderPreference` 加 `CoreMl`。macOS 走 CoreML EP（M 系列原生加速）。配合 PP-OCRv6 INT8 量化模型（官方有发布）进一步压体积和延迟。
 
-6. ~~**OcrBlock 保留旋转 + word-level box**——`return_word_box` 路径在 paddle-ocr 已实现但 octopus 默认关~~ **✅ word-level box 已启用（2026-08-13）**：`paddle_backend` 设 `return_word_box: Some(true)`，`OcrBlock.words: Option<Vec<OcrWord>>` 透出到前端，ImagePreview 渲染 HTML 透明文字层（`color: transparent` + `user-select: text`）实现原生拖选（对标 macOS Live Text / PixPin）。**仍缺**：旋转信息（`RotatedRect` 替代轴对齐矩形）。详见 [spec](../superpowers/specs/2026-08-13-image-text-selection-layer-design.md)。
+6. ~~**OcrBlock 保留旋转 + word-level box**——`return_word_box` 路径在 paddle-ocr 已实现但 octopus 默认关~~ **✅ word-level box 已启用（2026-08-13）**：`paddle_backend` 设 `return_word_box: Some(true)`，`OcrBlock.words: Option<Vec<OcrWord>>` 透出到前端，ImagePreview 渲染 HTML 透明文字层（`color: transparent` + `user-select: text`）实现原生拖选（对标 macOS Live Text / PixPin）。**仍缺**：旋转信息（`RotatedRect` 替代轴对齐矩形）。详见 [spec](../superpowers/specs/archived/2026-08-13-image-text-selection-layer-design.md)。
 
 7. **TBPU 式后处理升级**——参考 Umi-OCR 8 种 parser 方案（multi_para 默认 / single_code 代码截图 / 忽略区域），把当前启发式扩展为可切换策略，覆盖多栏与代码截图两个高频痛点。
 

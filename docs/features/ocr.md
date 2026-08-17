@@ -127,7 +127,18 @@ ASR/VAD 用各自 cache 常驻，无 idle 释放。
 
 ## 8. 触发方式
 
-**手动**——剪贴板浮窗/管理页图片条目点 OCR 按钮（ScanText 图标）。**不支持自动 OCR**。
+**手动**——**不支持自动 OCR**（2026-08-14 重构取消；`image_preview_auto_ocr` 配置字段已无消费方，死字段保留仅为 DB 兼容）。
+
+### 8.1 图片预览 OCR 按钮三态（2026-08-14）
+
+`useOcr.ts` 状态机 `ocrOverlay: 'off' | 'select' | 'mask'`：
+
+- **初始 `off`**——干净图片不叠加。即使后台截图 OCR 已推送 blocks（`ocr-screenshot://result` 事件填充 `ocrBlocks`）也保持 off，等用户手动点（用户打开图片要的是干净的图）
+- **首次点击** → 调 `ocr_image` 识别 → 进 **`select` 态**：`TextSelectLayer` HTML 透明文字层叠加（词级 `words` 数据），可直接拖选/复制文字（对标 macOS Live Text）；选中高亮 + 选择闪烁（WKWebView transparent 文字 + `::selection` 修复）
+- **再次点击** → **`select ↔ mask` 两态循环**：`mask` 态纯文字白底黑字遮罩（不可选，适合校对）
+- OCR 进行中他入口触发被 `OcrLockGuard` 拒 → 按钮琥珀三角 1.8s（§5）
+
+其他入口：剪贴板浮窗/管理页图片条目 OCR 按钮（ScanText 图标）、截图工具栏 OCR/翻译按钮。
 
 ---
 

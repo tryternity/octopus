@@ -2,7 +2,7 @@
 
 > 本地优先的密码管理功能。AES-256-GCM 加密存储，主密码派生密钥，不依赖 OS Keychain（macOS adhoc 签名限制）。含 Auto-Type 自动填充、URL 匹配（防钓鱼）、TOTP、密码生成器、健康检查、Bitwarden 导入导出、Git 跨设备同步。`feature = "vault"` 编译开关控制，默认启用。
 
-源文件：`crates/vault/`（纯逻辑库）+ `crates/desktop/src/vault_commands.rs`（Tauri 命令层）+ `crates/desktop/src/autotype/`（键盘模拟）+ `crates/desktop/frontend/src/pages/Settings/Vault/`（管理 UI）+ `pages/VaultPicker/`（Auto-Type 浮窗）。
+源文件：`crates/vault/`（纯逻辑库）+ `crates/desktop/src/vault/vault_commands/`（Tauri 命令层目录）+ `crates/desktop/src/vault/autotype/`（键盘模拟）+ `crates/desktop/frontend/src/pages/Settings/Vault/`（管理 UI）+ `pages/VaultPicker/`（Auto-Type 浮窗）。
 
 ---
 
@@ -17,11 +17,15 @@
 | `generator` | 密码生成器：random / passphrase-en / passphrase-zh / pin 四种模式 |
 | `health` | 健康检查：密码强度（zxcvbn）、重复密码检测 |
 | `importer` | Bitwarden JSON 导入（unencrypted）+ 导出 |
-| `totp` | TOTP 6 位验证码生成（RFC 6238） |
+| `totp` | TOTP 验证码生成（RFC 6238：6/8 位、SHA1/256/512、period 30/60、Base32 secret 或 otpauth URL） |
 | `unlock` | 解锁流程：主密码校验 → K_machine 派生 → app_key 解密 |
-| `sync` | Git 同步：md5 增量 diff + 文件序列化 + pull/push engine |
+| `sync` | Git 同步：md5 增量 diff + 文件序列化 + `merge_vault` 双向 merge（经 `SyncEntity` trait 统一 `merge_three_way`，见 §10） |
+| `keychain` | K_machine 本地文件加密存取（`~/.octopus/machine-key.enc`，obfuscation 而非 Keychain——macOS adhoc 签名限制） |
+| `meta_lock` | vault_meta 写锁（`OnceLock<Mutex>` + 锁下沉 `save_vault_meta`，防双 modal 并发写丢字段） |
+| `migrate` | models 表 secret_key 存量明文加密迁移 |
+| `error` | `VaultError` enum（12 个用户安全变体 + classify 启发式映射） |
 | `attempt_guard` | 主密码错误退避（指数退避 1s/2s/4s/8s/16s/30s） |
-| `validate` | 输入校验（bundle_id 白名单、主密码强度） |
+| `validate` | 输入校验（bundle_id 白名单、主密码强度、uuid path traversal 防护） |
 
 ---
 
@@ -61,7 +65,7 @@ struct LoginData {
 
 | 表 | 说明 |
 |---|---|
-| `vault_meta` | 单行：加密状态标记、K_machine 密文、app_key_local_enc、app_key_sync_enc、security_stamp、PBKDF2 参数 |
+| `vault_meta` | 单行：加密状态标记、K_machine 密文、app_key_local_enc、app_key_sync_enc、security_stamp、**Argon2id** KDF 参数（memory/iterations/parallelism） |
 | `vault_ciphers` | 密码条目：id(UUID) + folder_id + name(密文) + data(密文 JSON) + reprompt + is_deleted + sync_md5 |
 | `vault_folders` | 文件夹：id(UUID) + name(密文) + sync_md5 |
 
@@ -175,7 +179,7 @@ K_machine（本地文件密文）──┴── HKDF ──→ app_key
 
 ## 9. 导入导出
 
-- **导入**：Bitwarden unencrypted JSON（`encrypted: false`）。加密导出不支持。dedup 逻辑：软删后再导入同一份会重新入库
+- **导入**：Bitwarden unencrypted JSON（`encrypted: false`）。加密导出不支持。dedup 逻辑：软删后再导入同一份会重新入库。**内容 id 校验（2026-08-14）**：`import_all_from_files` 对 JSON 内容里的 id 补 `validate_uuid`（对称 outline 校验，防恶意 JSON 内嵌 traversal id）
 - **导出**：Bitwarden unencrypted JSON 格式（`encrypted: false`），解密全部 cipher 后序列化
 
 ---
@@ -186,7 +190,7 @@ K_machine（本地文件密文）──┴── HKDF ──→ app_key
 
 - 用 git repo（GitHub/Gitee private repo）同步，shell out 系统 git，SSH key 认证
 - `~/.octopus/.sync/` 目录：`vault/`（加密数据）+ `hotword/`（热词，明文）——所有同步数据在同一个 git repo
-- **merge_vault 双向 merge**（2026-07-27 重构，取代旧 pull/push engine）：pull+push 合并为单向 `merge_vault` 函数，按 `updated_at` 最新赢（同时间冲突 DB 赢）；`is_deleted`（INTEGER 0/1）统一字段（cipher + folder），删除走普通字段 merge（无删除传播，无 tombstone）
+- **merge_vault 双向 merge**（2026-07-27 重构，取代旧 pull/push engine；2026-08-05 接入 `SyncEntity` trait 统一 `merge_three_way`——vault cipher/folder + 热词 + 剪贴板收藏 5 实体共用）：按 `updated_at` 最新赢（同时间冲突 DB 赢）；`is_deleted` **i64 epoch tombstone**（v60 起，0=活跃 / >0=删除时刻秒）统一 cipher + folder——**删除跨设备传播**（单向优先：远程 tombstone 不被本地旧活跃数据复活），软删超 30 天由 scheduler 每日 GC（`VAULT_TOMBSTONE_RETENTION_SECS`）
 - md5 内容指纹（`sync_md5` 字段）做增量 diff——只 push 变化的文件
 - 跨设备密钥一致性：app_key_sync_enc 用主密码直接加密 app_key，任何设备只要知道主密码就能解
 - security_stamp 守卫：pull 时对比 stamp，不一致拒绝覆盖（防主密码改了但没同步）；**空库恢复旁路**（2026-07-28）：本地 cipher=0 + folder=0 + stamp 不一致时返 `EmptyRecoveryNeedsPassword` → 前端弹窗输源机器主密码 → `resolve_with_remote`（含密码校验 + meta 覆盖）
@@ -212,6 +216,9 @@ UI 入口：系统设置 → Git 同步 tab（不依赖 vault 解锁）。
 | `vault_import_bitwarden` / `vault_export` | 导入导出 |
 | `vault_change_password` | 改主密码（UI：VaultPanel KeyRound 按钮 → ChangePasswordModal） |
 | `vault_sync_resolve_remote` / `vault_sync_resolve_local` | stamp 冲突解决（以远程/本地为准 + 密码验证） |
+| `vault_sync_status` / `vault_sync_now` / `vault_sync_enable` / `vault_sync_disable` | Git 同步：状态查询 / 立即同步 / 启用 / 禁用 |
+| `vault_sync_test_connection` / `vault_is_git_available` | 连接测试 / git 可用性 |
+| `vault_add_remote` / `vault_remove_remote` / `vault_list_remotes` / `vault_clone` | 远程仓库管理：添加 / 删除 / 列表 / 从远程克隆 |
 | `vault_get_lock_timeout` / `vault_set_lock_timeout` | 锁定超时 |
 | `open_password_generator` / `password_generator_autotype` | 密码生成器浮窗 |
 
@@ -221,10 +228,13 @@ UI 入口：系统设置 → Git 同步 tab（不依赖 vault 解锁）。
 
 | 组件 | 说明 |
 |---|---|
-| `Settings/Vault/VaultPanel` | 主管理面板：解锁/初始化 + CipherList + 文件夹侧栏 |
+| `Settings/VaultPanel` | 主管理面板（在 Settings/ 根下，非 Vault/ 子目录）：解锁/初始化 + CipherList + 文件夹侧栏 |
 | `Settings/Vault/CipherList` | 列表 + 搜索 + tab（所有/收藏/类型/回收站）+ 卡片网格 |
 | `Settings/Vault/CipherEditor` | 编辑/新建表单：name/url/username/password/totp/notes/favorite/folder/reprompt |
 | `Settings/Vault/FolderSidebar` | 左侧导航：所有条目/收藏/folders/回收站 |
+| `Settings/Vault/HealthReport` | 密码健康报告 tab |
+| `Settings/Vault/ImportExport` | Bitwarden 导入导出 tab |
+| `Settings/Vault/FolderPromptDialog` | 文件夹新建/重命名对话框 |
 | `VaultPicker` | Auto-Type 浮窗：URL 匹配列表 + 搜索 + 三段式 cipher 行 + 内联新建 |
 | `PasswordGenerator` | 密码生成器主体（Modal / 独立浮窗两个外壳共用） |
 | `UnlockDialog` / `SetupWizard` | 解锁/初始化弹窗 |

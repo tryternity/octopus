@@ -10,7 +10,7 @@
 
 - 物理窗口固定 **720×480**（创建即定死，**不再运行时 setSize**——`transparent`+`decorations(false)` 悬浮窗上 NSWindow 拒绝 setFrame）
 - 前端 CSS 按模式切「可见容器」尺寸：
-  - **默认精简态**：只渲染顶部居中 520×116 小条（文本区 `max-h-[63px]`），容器外靠 `body{background:transparent}` 透明
+  - **默认精简态**：只渲染顶部居中 **720×116** 小条（`BAR_W=720` 与前端容器同宽——穿透 poller 判定依赖），容器外靠 `body{background:transparent}` 透明
   - **工具栏「放大」**：切换为完整 720×480 容器
 - 可拖拽、多行滚动、透明无边框、置顶
 - `#container` 默认 `opacity:0`，提前 show 不产生空窗闪烁
@@ -19,20 +19,22 @@
 
 ## 2. 工具栏
 
-顶部悬停工具栏：鼠标移入展开（窗口高度 116→148px），移出收起。
+顶部悬停工具栏：hover 显隐只切 opacity，容器高度恒 116px 不变。
 
-工具（精简为 5+ 个）：
+工具（8 个，2026-08 更新）：
 
 | 工具 | 说明 |
 |------|------|
 | **关闭**（首位） | 放弃内容保留 DB 记录（= Discard） |
-| 系统设置 | 打开设置窗口 |
 | 降噪模式 | 运行时切换（`set_denoise_mode`） |
 | 润色模式 | 运行时切换（`set_polish_mode`：0 关闭/1 仅最终/2 中间+最终） |
 | 立即润色 | 忽略 mode 立即润色（`polish_now`） |
-| 编辑 | 编辑态追加取消/保存 |
+| 翻译 | 进入/退出双语视图（见 §4a） |
+| 立即翻译 | 手动档重翻 |
+| 放大/缩小 | 精简态 ↔ 完整容器切换 |
+| 保存 | 提交编辑恢复 ASR（= `edit_shortcut` 同语义） |
 
-由 `app_config.hide_toolbar`（默认 `false`）控制：`true`=hover 显隐，`false`=始终显示。**运行时切换立即生效**：设置窗口改 `hide_toolbar` → emit `config-changed` 事件 → result window 的 `refreshActive()` 双向切换。
+由 `app_config.hide_toolbar` 控制：`true`=hover 显隐，`false`=始终显示。**默认值不一致**——schema seed `false`（全新库生效，常显）vs config.rs 缺省 fn `true`（缺键时生效），见 audit backlog。**运行时切换立即生效**：设置窗口改 `hide_toolbar` → emit `config-changed` 事件 → result window 的 `refreshActive()` 双向切换。
 
 语音模型和润色模型入口已移至 Settings 页面（模型太多，下拉空间有限）。
 
@@ -122,12 +124,15 @@ CM6 `selectionSet` 事件替代旧 contentEditable 拖选流程：
 
 ---
 
-## 10. 前端单测基建
+## 10. 前端单测基建 + 纯逻辑模块
 
-引入 vitest 4 + jsdom 29：
-- `measureCaretPx` / `codePointOffsetTo` / `codePointOffsetBefore` / `placeCaretAtCodePoint` 抽到 `Result/caret.ts`（纯函数可测，`locateCpOffset` 为 measure/place 共享 helper）
-- `caret.test.ts`（14 测）锁 code-point → UTF-16 offset 对齐 + null/空容器/多文本节点分支
+引入 vitest 4 + jsdom 29。CM6 化后 `pages/Result/` 的纯逻辑模块：
+- `hotwords.ts`——热词候选下拉纯逻辑（`parseSegments` / `segmentsMatchText` / `hotwordRanges` / `findCandidatesById` / `applyCandidate`），配合 CM6 `data-hw-id` 装饰（详见 [architecture.md §热词多命中候选下拉](../architecture.md)）
+- `translateMode.ts`——翻译模式（off/manual/4s/8s/12s）纯逻辑；`shortcut.ts`——快捷键解析
+- ~~`caret.ts`~~（contentEditable 手写光标系统，CM6 化后已删除）
 - jsdom 无 `Range.getBoundingClientRect`，defineProperty 补零矩形
+
+**翻译双语视图**（TranslationPane 上下分栏 + 停止时后端终翻）与**热词候选下拉**（波浪下划线 + 横向浮层换词）的行为细节见 [architecture.md](../architecture.md) §result_window 行与 §热词多命中候选下拉。
 
 ---
 
