@@ -7,7 +7,7 @@ octopus 是一款 macOS 桌面效率工具，把**语音听写、截图标注、
 
 核心理念：**你不用切换到 octopus，octopus 随时在你的指尖**。
 
-> 📷 **待补截图**（`images/app-overview.png`）：应用托盘菜单展开的样子，展示所有功能入口
+![应用托盘菜单展开的样子，展示所有功能入口](images/app-overview.png)
 
 ---
 
@@ -49,7 +49,7 @@ octopus 是一款 macOS 桌面效率工具，把**语音听写、截图标注、
 2. 双击打开，把 **octopus.app** 拖到「应用程序」文件夹。
 3. 首次打开若提示「无法验证开发者」：打开「系统设置 → 隐私与安全性 → 仍要打开」放行（应用未签名，仅自用 / 内测）。
 
-> 📷 **待补截图**（`images/install-dmg.png`）：DMG 拖拽安装界面
+![DMG 拖拽安装界面](images/install-dmg.jpg)
 
 ### 方式二：从源码构建
 
