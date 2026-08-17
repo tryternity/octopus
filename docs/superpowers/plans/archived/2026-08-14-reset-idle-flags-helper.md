@@ -29,7 +29,7 @@
 **Interfaces:**
 - Produces: `pub(crate) fn reset_idle_flags()` —— 清 INSTANT_MODE + TRANSLATION_ACTIVE + recording_mode 全部归零
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 mod.rs 的 `#[cfg(test)] mod tests` 末尾加：
 
@@ -49,12 +49,12 @@
     }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-desktop --features "cloud,embedded,vault" reset_idle_flags_clears_all_three_statics 2>&1 | tail -5`
 Expected: 编译失败（`reset_idle_flags` 未定义）
 
-- [ ] **Step 3: 实现 `reset_idle_flags()`**
+- [x] **Step 3: 实现 `reset_idle_flags()`**
 
 在 mod.rs `set_recording_mode` 函数之后（约 :97）加：
 
@@ -71,12 +71,12 @@ pub(crate) fn reset_idle_flags() {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cargo test -p octopus-desktop --features "cloud,embedded,vault" reset_idle_flags_clears_all_three_statics 2>&1 | tail -5`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/engine/coordinator/mod.rs
@@ -96,7 +96,7 @@ git commit -m "refactor: 新增 reset_idle_flags() helper + 单测"
 **Interfaces:**
 - Consumes: `reset_idle_flags()` from Task 1
 
-- [ ] **Step 1: session.rs —— 删旧 helper + 5 处调用改新**
+- [x] **Step 1: session.rs —— 删旧 helper + 5 处调用改新**
 
 删除 `reset_mode_flags_on_start_failure` 函数定义（约 :48-51），5 处 `reset_mode_flags_on_start_failure()` 调用改为 `super::reset_idle_flags()`。
 
@@ -107,7 +107,7 @@ grep -n "reset_mode_flags_on_start_failure" crates/desktop/src/engine/coordinato
 
 每处替换 `reset_mode_flags_on_start_failure()` → `super::reset_idle_flags()`。
 
-- [ ] **Step 2: lifecycle.rs —— 4 处替换**
+- [x] **Step 2: lifecycle.rs —— 4 处替换**
 
 四处手动 3-flag 序列（INSTANT_MODE.swap + TRANSLATION_ACTIVE.store + set_recording_mode(0)）替换为 `reset_idle_flags()`：
 
@@ -118,27 +118,27 @@ grep -n "reset_mode_flags_on_start_failure" crates/desktop/src/engine/coordinato
 
 注意：lifecycle.rs 已 import `INSTANT_MODE, TRANSLATION_ACTIVE, set_recording_mode`——替换后这些 import 可能变为 unused，需清理。同时需确保 `reset_idle_flags` 可通过 `use super::{..., reset_idle_flags}` 或直接 `super::reset_idle_flags()` 调用。
 
-- [ ] **Step 3: cancel_discard.rs —— 2 处替换**
+- [x] **Step 3: cancel_discard.rs —— 2 处替换**
 
 handle_cancel（约 :86-92）+ handle_discard（约 :253-259）的手动 3-flag 序列替换为 `reset_idle_flags()`。
 
 cancel_discard.rs 已 import `INSTANT_MODE, TRANSLATION_ACTIVE, set_recording_mode`——替换后清理 unused import。
 
-- [ ] **Step 4: polish.rs —— 1 处替换**
+- [x] **Step 4: polish.rs —— 1 处替换**
 
 start_final_polish_or_paste 空文本（约 :36-41）的 `set_recording_mode(0)` + `super::TRANSLATION_ACTIVE.store(false, ...)` 替换为 `super::reset_idle_flags()`。
 
-- [ ] **Step 5: 编译 + 看 warning**
+- [x] **Step 5: 编译 + 看 warning**
 
 Run: `cargo build -p octopus-desktop --features "cloud,embedded,vault" 2>&1 | tail -15`
 Expected: 0 error。如有 unused import warning，清理对应 import。
 
-- [ ] **Step 6: 跑全量测试**
+- [x] **Step 6: 跑全量测试**
 
 Run: `cargo test -p octopus-desktop --features "cloud,embedded,vault" 2>&1 | grep -E "test result|FAILED" | tail -3`
 Expected: 547 过 0 失败（546 + 1 新增 Task 1 测试）
 
-- [ ] **Step 7: grep 确认无残留手动序列**
+- [x] **Step 7: grep 确认无残留手动序列**
 
 Run: `grep -rn "INSTANT_MODE.swap(false\|INSTANT_MODE.store(false" crates/desktop/src/engine/coordinator/ | grep -v "test\|mod.rs:73\|reset_idle_flags"`
 Expected: 只剩 PasteDone handler（mod.rs 条件 swap）和 mod.rs 定义处，无手动清理残留。
@@ -146,7 +146,7 @@ Expected: 只剩 PasteDone handler（mod.rs 条件 swap）和 mod.rs 定义处�
 Run: `grep -rn "reset_mode_flags_on_start_failure" crates/desktop/src/`
 Expected: 零结果（旧 helper 已删）。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A
@@ -159,17 +159,17 @@ git commit -m "refactor: 替换 8 处手动 flag 清理为 reset_idle_flags()，
 
 **Files:**
 - Modify: `docs/architecture.md`（coordinator 描述补 reset_idle_flags）
-- Modify: `docs/superpowers/specs/2026-08-03-full-audit-bugfix.md`（§53 记录）
+- Modify: `docs/superpowers/specs/archived/2026-08-03-full-audit-bugfix.md`（§53 记录）
 
-- [ ] **Step 1: architecture.md 补 helper 说明**
+- [x] **Step 1: architecture.md 补 helper 说明**
 
 在 coordinator 状态机描述中补：`reset_idle_flags()` 统一收口 stage→Idle 出口的 INSTANT_MODE + TRANSLATION_ACTIVE + recording_mode 清理，根治同型遗漏。
 
-- [ ] **Step 2: 审查 spec §53 记录**
+- [x] **Step 2: 审查 spec §53 记录**
 
 在 audit-bugfix spec 末尾补 §53 记录本次重构。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/
