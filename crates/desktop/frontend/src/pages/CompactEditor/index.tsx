@@ -613,6 +613,15 @@ function CompactEditor() {
     <div className={`flex flex-col h-full bg-background ${dragOver ? "ring-2 ring-voice ring-inset" : ""}`}>
       {/* tab 栏（常驻——0 tab 时也要能打开文件） */}
       <div className={`flex-shrink-0 flex items-center gap-0.5 px-1.5 py-1 border-b border-border bg-muted overflow-x-auto thin-scrollbar ${dragOver ? "ring-2 ring-voice ring-inset" : ""}`}>
+        {/* 打开文件按钮（tab 栏最前，固定不随 tab 滚动） */}
+        <button
+          type="button"
+          title={t("editor.openFile")}
+          onClick={handleOpenFiles}
+          className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+        >
+          <FolderOpen className="w-3.5 h-3.5" />
+        </button>
         {tabs.map((tab, i) => (
             <div
               key={tab.key}
@@ -650,14 +659,6 @@ function CompactEditor() {
               )}
             </div>
           ))}
-        <button
-          type="button"
-          title={t("editor.openFile")}
-          onClick={handleOpenFiles}
-          className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-        >
-          <FolderOpen className="w-3.5 h-3.5" />
-        </button>
       </div>
 
       {/* 内容区：所有 tab hidden 挂载（图片保持状态），仅活跃 tab 可见 */}
