@@ -1,6 +1,8 @@
 //! 「转 Markdown」命令（action_type = "markdown"）的纯分派逻辑（spec §3/§5.2）。
 //! execute_action_bar_inner 的 markdown 分支是薄包装，本模块可单测。
 
+use octopus_convert::web::{self, FetchedPage};
+
 /// 输出文件名（不含扩展名）：源文件/文件夹 stem + 时间戳（yyyymmdd-HHMMSS）——
 /// 零碰撞可排序；text/html 源用 "markitdown"（spec §5.2 修订）。
 /// 同秒碰撞由 convert_and_save_to 的 `-1/-2` 后缀兜底。
@@ -43,8 +45,20 @@ pub(crate) fn convert_and_save_to(
     text: String,
     dir: &std::path::Path,
 ) -> Result<(std::path::PathBuf, String), String> {
+    // URL 输入（spec 2026-08-18-url-to-markdown §2）：files/html 空 + 显式 URL
+    if files.is_empty() && html.is_none() {
+        if let Some(url) = web::is_explicit_url(&text) {
+            return convert_and_save_url(&url, dir);
+        }
+    }
     let stem = output_file_stem(&files, html.as_deref(), &text);
     let md = run_markdown_convert(files, html, text)?;
+    let path = write_markdown_file(dir, &stem, &md)?;
+    Ok((path, md))
+}
+
+/// 落盘公共段：`<stem>_<yyyymmdd-HHMMSS>.md` + 同秒 `-N` 后缀（从 convert_and_save_to 抽出共用）。
+fn write_markdown_file(dir: &std::path::Path, stem: &str, md: &str) -> Result<std::path::PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let mut path = dir.join(format!("{}_{}.md", stem, ts));
@@ -53,8 +67,47 @@ pub(crate) fn convert_and_save_to(
         n += 1;
         path = dir.join(format!("{}_{}-{}.md", stem, ts, n));
     }
-    std::fs::write(&path, &md).map_err(|e| format!("写入文件失败: {}", e))?;
+    std::fs::write(&path, md).map_err(|e| format!("写入文件失败: {}", e))?;
+    Ok(path)
+}
+
+/// URL → md + 落盘（spec §2 决策树）。fetch/render 注入：生产绑真实现（网络），
+/// 测试绑 fake——编排逻辑（空壳判定/fallback/stem/落盘）完全可单测。
+#[allow(clippy::type_complexity)]
+pub(crate) fn convert_and_save_url_with(
+    url: &str,
+    dir: &std::path::Path,
+    fetch: impl FnOnce(&str) -> Result<FetchedPage, String>,
+    render: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<(std::path::PathBuf, String), String> {
+    let page = fetch(url).map_err(|e| format!("抓取失败: {}", e))?;
+    let to_md = |html: &str, base: &str| {
+        web::absolutize_md_links(&octopus_convert::html_to_markdown(html), base)
+    };
+    let (md, stem) = {
+        let md = to_md(&page.html, &page.final_url);
+        if md.trim().chars().count() < web::SPA_SHELL_THRESHOLD {
+            let html = render(url).map_err(|e| format!("渲染失败: {}", e))?;
+            let stem = web::sanitize_stem(web::extract_title(&html).as_deref(), &page.final_url);
+            (to_md(&html, &page.final_url), stem)
+        } else {
+            let stem = web::sanitize_stem(page.title.as_deref(), &page.final_url);
+            (md, stem)
+        }
+    };
+    let path = write_markdown_file(dir, &stem, &md)?;
     Ok((path, md))
+}
+
+/// 生产绑定：真静态抓取 + 渲染 fallback（Task 4 接 web_render；未接线/非 macOS 返回 Err）。
+fn convert_and_save_url(url: &str, dir: &std::path::Path) -> Result<(std::path::PathBuf, String), String> {
+    convert_and_save_url_with(
+        url,
+        dir,
+        |u| web::fetch_page(u).map_err(|e| e.to_string()),
+        // Task 4 接线 web_render 后替换（spec §2 渲染 fallback）
+        |_u| Err("渲染 fallback 尚未接线".to_string()),
+    )
 }
 
 /// 生产入口：转换并保存到 markitdown_dir()（~/Documents/octopus/markitdown，可配置覆盖）。
@@ -250,5 +303,80 @@ mod tests {
         let p = tmp_file("bad.bin", b"\x00");
         let err = convert_and_save_to(vec![p], None, String::new(), &dir).unwrap_err();
         assert!(err.contains("暂不支持 .bin"), "err={}", err);
+    }
+
+    // ── URL 编排（spec 2026-08-18-url-to-markdown §2，fake 注入——网络不进单测）──
+
+    fn fake_page(title: Option<&str>, html: &str, final_url: &str) -> octopus_convert::web::FetchedPage {
+        octopus_convert::web::FetchedPage {
+            html: html.to_string(),
+            final_url: final_url.to_string(),
+            title: title.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn test_url_route_static_non_shell_skips_render() {
+        let dir = std::env::temp_dir().join(format!("octopus-md-url-{}-a", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rich_html = "<title>文章标题</title>".to_string()
+            + &"<p>这是一篇足够长的文章内容，用来超过空壳阈值两百个字符。</p>".repeat(10);
+        let (path, md) = convert_and_save_url_with(
+            "https://example.com/post/1",
+            &dir,
+            |_u| Ok(fake_page(Some("文章标题"), &rich_html, "https://example.com/post/1")),
+            |_u| panic!("非空壳不应触发渲染"),
+        )
+        .unwrap();
+        assert!(md.contains("足够长的文章内容"));
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("文章标题_"), "name={}", name);
+        assert!(name.ends_with(".md"));
+    }
+
+    #[test]
+    fn test_url_route_shell_triggers_render_and_uses_rendered_title() {
+        let dir = std::env::temp_dir().join(format!("octopus-md-url-{}-b", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let shell_html = "<html><body><div id=\"root\"></div></body></html>";
+        let rendered_html = "<title>SPA 渲染后的标题</title><p>渲染出的正文内容，同样超过两百字符阈值。</p>".repeat(5);
+        let (path, _) = convert_and_save_url_with(
+            "https://spa.example.com/",
+            &dir,
+            |_u| Ok(fake_page(None, shell_html, "https://spa.example.com/")),
+            |_u| Ok(rendered_html),
+        )
+        .unwrap();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("SPA 渲染后的标题_"), "name={}", name);
+    }
+
+    #[test]
+    fn test_url_route_fetch_err_propagates() {
+        let dir = std::env::temp_dir().join(format!("octopus-md-url-{}-c", std::process::id()));
+        let err = convert_and_save_url_with(
+            "https://x.com/",
+            &dir,
+            |_u| Err("HTTP 404".to_string()),
+            |_u| panic!("fetch 失败不应触发渲染"),
+        )
+        .unwrap_err();
+        assert!(err.contains("404"), "err={}", err);
+    }
+
+    #[test]
+    fn test_url_route_render_err_no_partial_file() {
+        let dir = std::env::temp_dir().join(format!("octopus-md-url-{}-d", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let shell_html = "<div id=root></div>";
+        let err = convert_and_save_url_with(
+            "https://spa.example.com/",
+            &dir,
+            |_u| Ok(fake_page(None, shell_html, "https://spa.example.com/")),
+            |_u| Err("渲染超时".to_string()),
+        )
+        .unwrap_err();
+        assert!(err.contains("渲染超时"), "err={}", err);
+        assert!(dir.read_dir().map(|mut d| d.next().is_none()).unwrap_or(true), "不落半成品");
     }
 }
