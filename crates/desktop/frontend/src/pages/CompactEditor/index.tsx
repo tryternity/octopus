@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke, listen } from "@/lib/tauri";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
-  X, Type, Eye, Mic, FileText,
+  X, Type, Eye, Mic, FileText, FolderOpen,
 } from "lucide-react";
 import ImagePreviewComponent from "@/pages/ImagePreview";
 import { MarkdownPane } from "./MarkdownPane";
@@ -10,6 +12,8 @@ import { mergePendingTabs } from "./mergePendingTabs";
 import { promoteTempTab } from "./promoteTempTab";
 import TabHoverCard from "./TabHoverCard";
 import { useT, t as ti18n } from "@/lib/i18n";
+import { useToast, Toast } from "@/lib/useToast";
+import { normalizeDialogSelection, TEXT_IMAGE_EXTS } from "./openFilesUtils";
 
 export interface Tab {
   key: string;
@@ -533,6 +537,61 @@ function CompactEditor() {
     setActiveIdx(idx < activeIdx ? activeIdx - 1 : idx === activeIdx ? Math.min(activeIdx, next.length - 1) : activeIdx);
   };
 
+  const { toast, showToast, dismissToast } = useToast();
+  const [dragOver, setDragOver] = useState(false);
+
+  // 打开核心：按钮与拖拽共用。失败 warning toast（不自动消失——需看清单）。
+  const openFilesCore = useCallback(async (paths: string[]) => {
+    if (paths.length === 0) return;
+    try {
+      const res = await invoke<{ errors: string[] }>("open_files_in_editor", { paths });
+      if (res.errors.length > 0) {
+        showToast(
+          t("editor.openFailed", { n: String(res.errors.length), detail: res.errors.join("、") }),
+          "warning",
+        );
+      }
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }, [showToast, t]);
+  const openFilesCoreRef = useRef(openFilesCore);
+  openFilesCoreRef.current = openFilesCore;
+
+  const handleOpenFiles = useCallback(async () => {
+    const selected = await openDialog({
+      multiple: true,
+      filters: [{ name: "文本与图片", extensions: TEXT_IMAGE_EXTS }],
+    });
+    await openFilesCoreRef.current(normalizeDialogSelection(selected));
+  }, []);
+
+  // OS 文件拖入（Finder → 窗口）：Tauri onDragDropEvent（TerminalPane 同模式——
+  // WKWebView 下 HTML5 DnD 不可靠）。listener 一次挂载，回调经 ref 稳定化。
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    getCurrentWebview()
+      .onDragDropEvent((e) => {
+        const p = e.payload;
+        if (p.type === "enter" || p.type === "over") setDragOver(true);
+        else if (p.type === "leave") setDragOver(false);
+        else if (p.type === "drop") {
+          setDragOver(false);
+          if (p.paths.length) openFilesCoreRef.current(p.paths);
+        }
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch((err) => console.error("[CompactEditor] drag-drop listen failed:", err));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   // 字号记忆
   useEffect(() => { localStorage.setItem(FONT_KEY, String(fontSize)); }, [fontSize]);
 
@@ -551,11 +610,10 @@ function CompactEditor() {
   }, []);
 
   return (
-    <div className="flex flex-col h-full bg-background">
-      {/* tab 栏 */}
-      {tabs.length > 0 && (
-        <div className="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-1 border-b border-border bg-muted overflow-x-auto thin-scrollbar">
-          {tabs.map((tab, i) => (
+    <div className={`flex flex-col h-full bg-background ${dragOver ? "ring-2 ring-voice ring-inset" : ""}`}>
+      {/* tab 栏（常驻——0 tab 时也要能打开文件） */}
+      <div className={`flex-shrink-0 flex items-center gap-0.5 px-1.5 py-1 border-b border-border bg-muted overflow-x-auto thin-scrollbar ${dragOver ? "ring-2 ring-voice ring-inset" : ""}`}>
+        {tabs.map((tab, i) => (
             <div
               key={tab.key}
               className={`group/tab relative flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md text-xs whitespace-nowrap cursor-pointer transition-colors ${
@@ -592,8 +650,15 @@ function CompactEditor() {
               )}
             </div>
           ))}
-        </div>
-      )}
+        <button
+          type="button"
+          title={t("editor.openFile")}
+          onClick={handleOpenFiles}
+          className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+        >
+          <FolderOpen className="w-3.5 h-3.5" />
+        </button>
+      </div>
 
       {/* 内容区：所有 tab hidden 挂载（图片保持状态），仅活跃 tab 可见 */}
       {tabs.length > 0 ? (
@@ -654,6 +719,7 @@ function CompactEditor() {
       ) : (
         <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">{t("editor.noTabs")}</div>
       )}
+      <Toast toast={toast} onClose={dismissToast} />
     </div>
   );
 }

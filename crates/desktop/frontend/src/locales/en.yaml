@@ -22,6 +22,8 @@ editor:
   copied: Copied
   previewEmpty: Start typing to see preview
   previewTruncated: Large document — preview shows first ${shown} of ${total}. Use the editor pane for full content
+  openFile: Open File
+  openFailed: "${n} file(s) failed to open: ${detail}"
   translate: Translate
   translateFail: Translation failed
   translateConfirm: Press again to overwrite translation
