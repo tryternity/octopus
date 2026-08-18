@@ -20,6 +20,8 @@ export interface Context {
   kind: ContextKind;
   text: string;
   files: string[];
+  /** Cmd+C 同窗口读到的 HTML flavor（浏览器复制才有）；与后端 ActionBarContext.html camelCase 对应 */
+  html?: string | null;
   source?: AppSource;
   surrounding?: SurroundingText;
 }

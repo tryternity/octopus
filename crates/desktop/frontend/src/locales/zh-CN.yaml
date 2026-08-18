@@ -741,6 +741,8 @@ settings:
     typeAgentPlaceholder: "{{voice}}\n\n选中文本：\n{{text}}\n\n文件列表：\n{{files}}"
     typeCopyPath: 复制路径
     typeCopyPathDesc: 将选中文件的路径复制到剪贴板，支持纯路径 / file:// URL / 带引号三种格式
+    typeMarkdown: 转 Markdown
+    typeMarkdownDesc: 把选中的网页富文本/文件/文件夹转换为 Markdown，结果展示在浮窗并写入剪贴板
     extensionFilter: 扩展包
     extensionLabel: 扩展包
     importing: 导入中…

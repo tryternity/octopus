@@ -16,6 +16,7 @@ export const TYPE_META: Record<
   extension:  { bar: "bg-amber-500",      dot: "bg-amber-500",   label: "EXT",     descKey: "settings.actionBar.typeExtensionDesc",  placeholderKey: "" },
   agent:      { bar: "bg-rose-500",       dot: "bg-rose-500",    label: "AGENT",   descKey: "settings.actionBar.typeAgentDesc",      placeholderKey: "settings.actionBar.typeAgentPlaceholder" },
   copy_path:  { bar: "bg-cyan-500",       dot: "bg-cyan-500",    label: "PATH",    descKey: "settings.actionBar.typeCopyPathDesc",   placeholderKey: "" },
+  markdown:   { bar: "bg-teal-500",       dot: "bg-teal-500",    label: "MD",      descKey: "settings.actionBar.typeMarkdownDesc",   placeholderKey: "" },
 };
 
 export const ACTION_TYPES = [
@@ -26,6 +27,7 @@ export const ACTION_TYPES = [
   { value: "extension",  labelKey: "settings.actionBar.typeExtension" },
   { value: "agent",      labelKey: "settings.actionBar.typeAgent" },
   { value: "copy_path",  labelKey: "settings.actionBar.typeCopyPath" },
+  { value: "markdown",   labelKey: "settings.actionBar.typeMarkdown" },
 ];
 
 export function deriveAccepts(actionType: string | undefined, explicit?: string): string {
@@ -33,6 +35,7 @@ export function deriveAccepts(actionType: string | undefined, explicit?: string)
   if (actionType === "copy_path") return "file";
   if (actionType === "agent") return "any";
   if (actionType === "submenu") return "any";
+  if (actionType === "markdown") return "any";
   return "text";
 }
 

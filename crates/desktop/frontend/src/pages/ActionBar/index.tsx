@@ -528,7 +528,12 @@ export default function ActionBar() {
       }
       setView("loading");
       try {
-        await invoke("execute_action_bar", { itemId: item.id, text });
+        await invoke("execute_action_bar", {
+          itemId: item.id,
+          text,
+          html: ctx?.html ?? null,
+          files: ctx?.files?.length ? ctx.files : null,
+        });
       } catch (e) {
         showQuickError(String(e).slice(0, 40));
         setView("main");
@@ -536,9 +541,14 @@ export default function ActionBar() {
       return;
     }
 
-    // copy_path / url / script / copy
+    // copy_path / url / script / copy / markdown
     try {
-      await invoke("execute_action_bar", { itemId: item.id, text });
+      await invoke("execute_action_bar", {
+        itemId: item.id,
+        text,
+        html: ctx?.html ?? null,
+        files: ctx?.files?.length ? ctx.files : null,
+      });
     } catch (e) {
       showQuickError(String(e).replace(/^脚本执行失败:\s*/, "").slice(0, 40));
     }
@@ -630,10 +640,15 @@ export default function ActionBar() {
         return;
       }
 
-      // 其他（url/ai/script/copy_path/非voice agent）→ execute_action_bar
+      // 其他（url/ai/script/copy_path/markdown/非voice agent）→ execute_action_bar
       setView("loading");
       try {
-        await invoke("execute_action_bar", { itemId, text });
+        await invoke("execute_action_bar", {
+          itemId,
+          text,
+          html: ctx?.html ?? null,
+          files: ctx?.files?.length ? ctx.files : null,
+        });
         // ai/script 异步结果由后端收口（action_bar_show_result 隐藏浮窗）；
         // url/copy_path 后端 Ok(false) 外层收口。同步 dismiss 兜底。
         invoke("action_bar_dismiss", { reason: "slash-exec" });

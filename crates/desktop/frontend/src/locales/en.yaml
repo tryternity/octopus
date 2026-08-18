@@ -734,6 +734,8 @@ settings:
     typeAgentPlaceholder: "{{voice}}\n\nSelected text:\n{{text}}\n\nFiles:\n{{files}}"
     typeCopyPath: Copy Path
     typeCopyPathDesc: Copy selected file paths to clipboard, supports plain / file:// URL / quoted formats
+    typeMarkdown: To Markdown
+    typeMarkdownDesc: Convert selected rich text / files / folders to Markdown, shown in a floating window and copied to clipboard
     extensionFilter: Extension Package
     extensionLabel: Extension Package
     importing: Importing…
