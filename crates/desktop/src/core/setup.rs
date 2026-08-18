@@ -57,6 +57,7 @@ impl<'a> AppSetup<'a> {
         self.init_coordinator();
         self.init_pty();
         self.init_tray();
+        self.init_app_menu();
         self.create_result_window();
         self.register_shortcuts();
         Ok(())
@@ -826,9 +827,21 @@ impl<'a> AppSetup<'a> {
                 let cfg = octopus_infra::config::load_config().unwrap_or_default();
                 crate::ui::i18n::reload(&cfg.ui_language);
                 crate::ui::tray::rebuild_tray_labels(&cfg);
-                let _ = app_handle; // keep handle alive
+                crate::ui::app_menu::rebuild(&app_handle);
             });
         }
+    }
+
+    /// macOS 系统菜单：i18n 定制 + File「打开文件」（2026-08-18）。
+    /// 失败仅 warn——菜单缺失不阻断启动（Tauri 默认英文菜单兜底）。
+    fn init_app_menu(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            if let Err(e) = crate::ui::app_menu::build_and_install(self.app.handle()) {
+                log::warn!("[app-menu] 安装失败（退回默认菜单）: {}", e);
+            }
+        }
+        self.app.on_menu_event(crate::ui::app_menu::on_menu_event);
     }
 
     /// 结果窗创建（启动时预创建壳，触发时只 set_position + show）。

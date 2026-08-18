@@ -9,6 +9,7 @@ pub mod translate_window;
 pub mod download_window;
 pub mod terminal_window;
 pub mod tray;
+pub mod app_menu;
 pub mod i18n;
 pub mod theme;
 pub mod window_factory;

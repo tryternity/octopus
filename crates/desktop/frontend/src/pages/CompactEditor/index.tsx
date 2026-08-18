@@ -211,6 +211,7 @@ function CompactEditor() {
     let unlistenProgress: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
     let unlistenFileChanged: (() => void) | undefined;
+    let unlistenOpenErrors: (() => void) | undefined;
     (async () => {
       // 1. 先注册事件监听——确保 take pending 期间发出的 emit 不会丢失
       const fn = await listen("compact-editor://open-tab", (payload) => {
@@ -315,6 +316,19 @@ function CompactEditor() {
       if (cancelled) { fnFileChanged(); return; }
       unlistenFileChanged = fnFileChanged;
 
+      // open-files://errors：菜单栏「打开文件」路径的失败回显（Rust 侧 dialog 无前端入口，
+      // 后端 emit_to 本窗口；按钮/拖拽路径不经此事件）
+      const fnOpenErrors = await listen("open-files://errors", (payload) => {
+        const errors = (payload as string[]) || [];
+        if (errors.length === 0) return;
+        showToast(
+          t("editor.openFailed", { n: String(errors.length), detail: errors.join("、") }),
+          "warning",
+        );
+      });
+      if (cancelled) { fnOpenErrors(); return; }
+      unlistenOpenErrors = fnOpenErrors;
+
       // 2. 再 take pending tabs（此时 listen 已就绪）
       const pendingTabs = await invoke<PendingTabFull[]>("get_pending_compact_tabs");
       if (cancelled) return;
@@ -343,6 +357,7 @@ function CompactEditor() {
       unlistenProgress?.();
       unlistenDone?.();
       unlistenFileChanged?.();
+      unlistenOpenErrors?.();
     };
   }, [loadAndAddTab, updateActiveTextAt]);
 

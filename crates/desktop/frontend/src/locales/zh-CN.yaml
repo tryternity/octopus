@@ -4,6 +4,31 @@ common:
   copied: 已复制
   close: 关闭
 
+# ════════ macOS 系统菜单（后端 app_menu.rs 经 ui::i18n 读同份文件） ════════
+menu:
+  about: 关于 Octopus
+  services: 服务
+  hide: 隐藏 Octopus
+  hideOthers: 隐藏其他
+  showAll: 全部显示
+  quit: 退出 Octopus
+  file: 文件
+  openFiles: 打开文件…
+  closeWindow: 关闭窗口
+  edit: 编辑
+  undo: 撤销
+  redo: 重做
+  cut: 剪切
+  copy: 复制
+  paste: 粘贴
+  selectAll: 全选
+  view: 显示
+  fullscreen: 切换全屏
+  window: 窗口
+  minimize: 最小化
+  zoom: 缩放
+  close: 关闭
+
 # ════════ Editor 图文编辑器 ════════
 editor:
   undo: 撤销

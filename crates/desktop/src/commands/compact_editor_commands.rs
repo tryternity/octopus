@@ -316,7 +316,7 @@ fn ingest_image_file(path: &std::path::Path) -> Result<(String, i64, i64), Strin
 /// 图片 → 入库图片 tab（source="clipboard"，前端 loadAndAddTab 识别）；
 /// 其余 → UTF-8 文本读 → file tab（md5 路径 itemId，与 file tab 去重规则一致）。
 /// 失败逐个进 errors（`<文件名>（<原因>）`），不中断其他文件。
-fn collect_open_tabs(paths: Vec<String>) -> (Vec<PendingTabFull>, Vec<String>) {
+pub(crate) fn collect_open_tabs(paths: Vec<String>) -> (Vec<PendingTabFull>, Vec<String>) {
     let mut tabs = Vec::new();
     let mut errors = Vec::new();
     for p in paths {
@@ -416,7 +416,7 @@ pub async fn open_files_in_editor(
 /// - 窗口存在且 React 已 mount（PENDING_TABS 空）→ 逐个 emit + show/focus
 /// - 窗口存在未 mount → 全部 push pending（emit 会丢——listener 未注册）
 /// - 窗口不存在 → push pending + 一次建窗（批量一次，避免连续单开的中间态丢 tab）
-fn open_tabs_batched(tabs: Vec<PendingTabFull>, app: &tauri::AppHandle) {
+pub(crate) fn open_tabs_batched(tabs: Vec<PendingTabFull>, app: &tauri::AppHandle) {
     if tabs.is_empty() {
         return;
     }

@@ -4,6 +4,31 @@ common:
   copied: Copied
   close: Close
 
+# ════════ macOS system menu (backend app_menu.rs reads this file via ui::i18n) ════════
+menu:
+  about: About Octopus
+  services: Services
+  hide: Hide Octopus
+  hideOthers: Hide Others
+  showAll: Show All
+  quit: Quit Octopus
+  file: File
+  openFiles: Open File…
+  closeWindow: Close Window
+  edit: Edit
+  undo: Undo
+  redo: Redo
+  cut: Cut
+  copy: Copy
+  paste: Paste
+  selectAll: Select All
+  view: View
+  fullscreen: Toggle Full Screen
+  window: Window
+  minimize: Minimize
+  zoom: Zoom
+  close: Close
+
 # ════════ Editor ════════
 editor:
   undo: Undo
