@@ -4,9 +4,11 @@
 pub mod convert;
 pub mod dispatch;
 pub mod error;
+pub mod folder;
 
 pub use convert::FileSection;
 pub use error::ConvertError;
+pub use folder::{convert_files, convert_folder, MAX_FILES, MAX_TOTAL_BYTES};
 
 static HTML_CONVERTER: std::sync::OnceLock<htmd::HtmlToMarkdown> = std::sync::OnceLock::new();
 
