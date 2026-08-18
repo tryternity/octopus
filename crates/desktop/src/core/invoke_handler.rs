@@ -171,6 +171,7 @@ macro_rules! handler {
             crate::record::screenshot_commands::pin_screenshot,
             // ── compact_editor_commands ──
             crate::commands::compact_editor_commands::open_compact_editor_tab,
+            crate::commands::compact_editor_commands::open_files_in_editor,
             crate::commands::compact_editor_commands::get_pending_compact_tabs,
             crate::commands::compact_editor_commands::get_clipboard_item_text,
             crate::commands::compact_editor_commands::get_clipboard_item_type,

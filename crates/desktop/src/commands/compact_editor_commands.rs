@@ -1,9 +1,12 @@
 //! 统一内容查看器命令层（多 tab）：PENDING_TABS 暂存 + 开/取/读文本/关。
 //!
-//! Tab 类型：clipboard（文本/图片）| transcription（只读）。
+//! Tab 类型：clipboard（文本/图片）| transcription（只读）| file（磁盘文件）。
 //! - open_compact_editor_tab(item_id, source)：单开（前端命令）——转调 open_compact_editor_tabs
-//! - open_compact_editor_tabs(items)：批量开——一次 push 全部 + 一次 create/emit，
-//!   避免连续单开在「窗口刚 build、React 未 mount」中间态丢失第二个 tab
+//! - open_compact_editor_tabs(items)：批量开——组装完整 tab 后转调 open_tabs_batched
+//!   （一次 push 全部 + 一次 create/emit，避免连续单开在「窗口刚 build、React 未 mount」
+//!   中间态丢失第二个 tab）
+//! - open_files_in_editor(paths)：打开磁盘文件（图片入库开图片 tab、文本开 file tab，
+//!   spec 2026-08-18-compact-editor-open-files）——经 open_tabs_batched 批量送出
 //! - get_pending_compact_tabs()：前端 mount take 全部 pending（Vec）
 //! - get_clipboard_item_text(item_id)：读 clipboard_history content
 //! - get_transcription_text(id)：读 transcriptions 全文（只读 tab）
@@ -13,17 +16,9 @@
 use parking_lot::Mutex;
 use serde::Serialize;
 use crate::core::error_util::e2s;
-use tauri::{Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::compact_editor_window::{create_compact_editor_window, WINDOW_LABEL};
-
-/// 窗口已存在时，向已 mount 的前端推送「打开/切换到某 tab」事件。
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OpenTabPayload {
-    pub item_id: String,
-    pub source: String,
-}
 
 /// 临时 tab 打开参数（不写 DB）。mode=None 为单栏（现有行为），mode="contrast" 为翻译对照。
 ///
@@ -102,7 +97,11 @@ pub struct PendingTabFull {
 /// 待开 tab 队列（支持批量双开）。open 时 push，前端 mount take 全部。
 static PENDING_TABS: Mutex<Vec<PendingTabFull>> = Mutex::new(Vec::new());
 
-fn push_pending_tab(item_id: &str, source: &str) {
+/// DB 组装完整 pending tab（读 itemType + text + 图片尺寸，一次合并——前端只需 1 次 IPC）。
+/// 2026-08-18 从 push_pending_tab 抽出（open_compact_editor_tabs 组装后转调
+/// open_tabs_batched 用，spec 2026-08-18-compact-editor-open-files §3.2）。
+/// 查不到条目时降级 text/空串（保持原 push_pending_tab 行为）。
+fn build_pending_tab(item_id: &str, source: &str) -> PendingTabFull {
     // 读取 DB 获取 itemType + text + 图片尺寸，一次合并到 pending（前端只需 1 次 IPC）
     let (item_type, text, img_w, img_h) = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, item_id)
@@ -118,7 +117,7 @@ fn push_pending_tab(item_id: &str, source: &str) {
     })
     .unwrap_or_else(|| ("text".into(), String::new(), 0, 0));
 
-    PENDING_TABS.lock().push(PendingTabFull {
+    PendingTabFull {
         item_id: item_id.to_string(),
         source: source.to_string(),
         item_type,
@@ -131,7 +130,7 @@ fn push_pending_tab(item_id: &str, source: &str) {
         translated_text: None,
         translate_session_id: None, // 普通 tab（DB 查询）不走翻译，无 sessionId
         file_path: None,
-    });
+    }
 }
 
 /// 存储临时 tab（不查 DB，payload 直接传入）。
@@ -234,11 +233,9 @@ fn take_pending_tabs() -> Vec<PendingTabFull> {
 }
 
 // ── 打开已存在文件（spec 2026-08-18-compact-editor-open-files）──
-// Task 2（open_files_in_editor 命令 wrapper）接线前无生产调用点，暂 allow dead_code。
 
 /// 图片扩展名封闭清单（spec §1）；其余一律尝试 UTF-8 文本读。
 /// 注：svg 是文本（可编辑），归文本路径。
-#[allow(dead_code)] // Task 2 接线后移除
 fn is_image_ext(ext: &str) -> bool {
     matches!(
         ext.trim_start_matches('.').to_ascii_lowercase().as_str(),
@@ -249,7 +246,6 @@ fn is_image_ext(ext: &str) -> bool {
 /// 文件图片入库（镜像 watcher.rs:165-211 的 ingest 组合）：
 /// 读 bytes → 解码 → hash_rgba 去重（find_by_content_hash 命中则 touch 已有行）
 /// → insert_image_data + insert_clipboard_item(type=image)。返回 (historyId, w, h)。
-#[allow(dead_code)] // Task 2 接线后移除
 fn ingest_image_file(path: &std::path::Path) -> Result<(String, i64, i64), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读取失败: {}", e))?;
     let dyn_img = ::image::load_from_memory(&bytes)
@@ -312,7 +308,6 @@ fn ingest_image_file(path: &std::path::Path) -> Result<(String, i64, i64), Strin
 /// 图片 → 入库图片 tab（source="clipboard"，前端 loadAndAddTab 识别）；
 /// 其余 → UTF-8 文本读 → file tab（md5 路径 itemId，与 file tab 去重规则一致）。
 /// 失败逐个进 errors（`<文件名>（<原因>）`），不中断其他文件。
-#[allow(dead_code)] // Task 2 接线后移除
 fn collect_open_tabs(paths: Vec<String>) -> (Vec<PendingTabFull>, Vec<String>) {
     let mut tabs = Vec::new();
     let mut errors = Vec::new();
@@ -380,57 +375,78 @@ fn collect_open_tabs(paths: Vec<String>) -> (Vec<PendingTabFull>, Vec<String>) {
     (tabs, errors)
 }
 
-/// 批量打开多个 tab（一次调用）。每个 item push 进 PENDING_TABS；窗口不存在则
-/// create（URL 注入首个，前端 mount 时 take 全部），窗口存在则逐个 emit open-tab。
+/// 打开磁盘文件结果（camelCase，spec §3.3）。成功的 tab 经事件/pending 送出。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenFilesResult {
+    pub errors: Vec<String>,
+}
+
+/// 打开已存在的文件（spec 2026-08-18-compact-editor-open-files）：
+/// 图片入库开图片 tab、文本开 file tab；失败逐个收集返回，命令本身不 Err。
+#[tauri::command]
+pub async fn open_files_in_editor(
+    paths: Vec<String>,
+    app: AppHandle,
+) -> Result<OpenFilesResult, String> {
+    // 图片解码 + 多文件 IO——spawn_blocking 防卡 runtime
+    let (tabs, errors) = tokio::task::spawn_blocking(move || collect_open_tabs(paths))
+        .await
+        .map_err(|e| format!("打开任务异常: {}", e))?;
+    // create_compact_editor_window 含 set_dock_icon 需主线程（同 markdown 分支模式）
+    let ah = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        open_tabs_batched(tabs, &ah);
+    });
+    Ok(OpenFilesResult { errors })
+}
+
+/// 批量开 tab（完整 payload 直传，不查 DB）。2026-08-18 从 open_compact_editor_tabs
+/// 泛化（open-files 复用，spec §3.2）：
+/// - 窗口存在且 React 已 mount（PENDING_TABS 空）→ 逐个 emit + show/focus
+/// - 窗口存在未 mount → 全部 push pending（emit 会丢——listener 未注册）
+/// - 窗口不存在 → push pending + 一次建窗（批量一次，避免连续单开的中间态丢 tab）
+fn open_tabs_batched(tabs: Vec<PendingTabFull>, app: &tauri::AppHandle) {
+    if tabs.is_empty() {
+        return;
+    }
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let react_mounted = PENDING_TABS.lock().is_empty();
+        if react_mounted {
+            for tab in tabs {
+                let _ = window.emit("compact-editor://open-tab", tab);
+            }
+            let _ = window.show();
+            let _ = window.set_focus();
+        } else {
+            PENDING_TABS.lock().extend(tabs);
+        }
+    } else {
+        PENDING_TABS.lock().extend(tabs);
+        create_compact_editor_window(app, None);
+    }
+}
+
+/// 批量打开多个 tab（一次调用）。逐 item 经 build_pending_tab 查 DB 组装完整
+/// PendingTabFull，再转调 open_tabs_batched（emit-or-pending + 一次建窗）。
 ///
 /// 一次调用避免连续单开的中间态：第一次单开 `build()` 同步注册窗口 label 后，
 /// 第二次单开会命中 `get_webview_window=Some` 走 emit 分支，但此时 WebView/React
-/// 尚未 mount → emit 被丢 + `push_pending_tab` 覆盖首个 tab → 第二个 tab 永久丢失
+/// 尚未 mount → emit 被丢 + pending 覆盖首个 tab → 第二个 tab 永久丢失
 /// （截图 OCR 双开图片+文本 tab 即此 bug）。批量调用只走一次 create/emit，无中间态。
 pub fn open_compact_editor_tabs(items: &[(String, Option<&str>)], app_handle: &tauri::AppHandle) {
     if items.is_empty() {
         return;
     }
-    if let Some(window) = app_handle.get_webview_window(WINDOW_LABEL) {
-        // PENDING_TABS 是否为空 = React 是否已 mount 并 take 清空过的信号。
-        // 非空 = 窗口刚 create、React 还没 mount（首次 push 的还在队列）→ 这次也 push，
-        //        让 mount 时一并 take；不 emit（未 mount 时 listener 未注册，emit 会丢）。
-        // 空 = React 已 mount → emit 即时推送（并聚焦）。
-        // 修复：连续两次 open（如用户快速点两个条目）首次走 else 建窗 + push，第二次
-        // 命中 window exists 但 React 未 mount，旧实现 emit 会丢第二个 tab。
-        let react_mounted = PENDING_TABS.lock().is_empty();
-        if react_mounted {
-            log::info!("[compact-editor] window exists & mounted → emit {} open-tab(s)", items.len());
-            for (id, src) in items {
-                let s = src.unwrap_or("clipboard").to_string();
-                let _ = window.emit(
-                    "compact-editor://open-tab",
-                    OpenTabPayload { item_id: id.clone(), source: s },
-                );
-            }
-        } else {
-            log::info!("[compact-editor] window exists but not mounted → push {} tab(s) to pending", items.len());
-            for (id, src) in items {
-                let s = src.unwrap_or("clipboard");
-                push_pending_tab(id, s);
-            }
-        }
-        let _ = window.show();
-        let _ = window.set_focus();
-    } else {
-        // 窗口不存在：先清空残留（上次建窗后 React 未 mount 就关窗 / 建窗失败会留 stale，
-        // 否则下次 first() 返回 stale 污染首屏），再 push 全部 + create。
-        // 批量只 build 一次，无「build 后第二次 get_webview_window=Some」中间态。
-        log::info!("[compact-editor] window absent → create ({} tabs pending)", items.len());
-        let _ = take_pending_tabs();
-        for (id, src) in items {
+    let tabs: Vec<PendingTabFull> = items
+        .iter()
+        .map(|(id, src)| {
             let s = src.unwrap_or("clipboard");
-            log::info!("[compact-editor] open_tab item_id={} source={}", id, s);
-            push_pending_tab(id, s);
-        }
-        let pending_data = PENDING_TABS.lock().first().cloned();
-        create_compact_editor_window(app_handle, pending_data.as_ref());
-    }
+            log::info!("[compact-editor] open_tab item_id={} source={} ({} tab(s) batched)", id, s, items.len());
+            build_pending_tab(id, s)
+        })
+        .collect();
+    open_tabs_batched(tabs, app_handle);
 }
 
 /// 打开统一查看器并定位到某 tab（单开，前端命令）——转调批量版单元素。
@@ -498,9 +514,9 @@ mod tests {
     #[test]
     fn pending_tabs_push_multiple_and_take_all() {
         let _ = take_pending_tabs(); // 清空残留
-        // push_pending_tab 读 DB（测试环境无 DB，走 fallback "text"/""）
-        push_pending_tab("test-1", "clipboard");
-        push_pending_tab("test-2", "clipboard");
+        // build_pending_tab 读 DB（测试环境查不到条目，走 fallback "text"/""）
+        PENDING_TABS.lock().push(build_pending_tab("test-1", "clipboard"));
+        PENDING_TABS.lock().push(build_pending_tab("test-2", "clipboard"));
         let got = take_pending_tabs();
         assert_eq!(got.len(), 2, "push 两个应 take 出两个");
         assert_eq!(got[0].item_id, "test-1");
