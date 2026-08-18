@@ -34,7 +34,7 @@
 **Interfaces:**
 - Produces: `octopus_convert::ConvertError`（enum：`UnsupportedFormat(String)` / `Anydoc(String)` / `Html(String)` / `Io(std::io::Error)` / `TooManyFiles{count,max}` / `TooLarge{bytes,max_bytes}` / `Empty`），实现 `Display` + `std::error::Error` + `From<io::Error>`。后续所有 task 的错误类型。
 
-- [ ] **Step 1: 写失败的 error Display 测试**
+- [x] **Step 1: 写失败的 error Display 测试**
 
 `crates/convert/src/error.rs`（测试先行——先只写 tests mod，实现部分留空跑红）：
 
@@ -121,7 +121,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 建 crate 骨架（测试此时应编译失败——依赖未加）**
+- [x] **Step 2: 建 crate 骨架（测试此时应编译失败——依赖未加）**
 
 `crates/convert/Cargo.toml`：
 
@@ -160,7 +160,7 @@ htmd = "0.5"
 walkdir = "2"
 ```
 
-- [ ] **Step 3: 跑测试验证通过**
+- [x] **Step 3: 跑测试验证通过**
 
 ```bash
 cargo test -p octopus-convert --lib
@@ -168,7 +168,7 @@ cargo test -p octopus-convert --lib
 
 Expected: 5 passed（error.rs 的 5 个测试）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Cargo.toml crates/convert
@@ -186,7 +186,7 @@ git commit -m "feat(convert): octopus-convert crate 骨架 + ConvertError（TDD�
 **Interfaces:**
 - Produces: `FormatKind`（enum：`Anydoc/Html/Md/Code/Binary`）、`pub fn format_kind(ext: &str) -> FormatKind`、`pub fn code_language(ext: &str) -> &'static str`。Task 4 的 `convert_one` 消费。
 
-- [ ] **Step 1: 写失败的表驱动测试**
+- [x] **Step 1: 写失败的表驱动测试**
 
 `crates/convert/src/dispatch.rs`：
 
@@ -298,7 +298,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: lib.rs 注册模块**
+- [x] **Step 2: lib.rs 注册模块**
 
 `crates/convert/src/lib.rs` 的 `pub mod error;` 下加：
 
@@ -306,7 +306,7 @@ mod tests {
 pub mod dispatch;
 ```
 
-- [ ] **Step 3: 跑测试验证通过**
+- [x] **Step 3: 跑测试验证通过**
 
 ```bash
 cargo test -p octopus-convert --lib
@@ -314,7 +314,7 @@ cargo test -p octopus-convert --lib
 
 Expected: 9 passed（Task 1 的 5 + 本 task 4）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/convert
@@ -331,7 +331,7 @@ git commit -m "feat(convert): dispatch 格式分派矩阵（表驱动 TDD）"
 **Interfaces:**
 - Produces: `pub fn html_to_markdown(html: &str) -> String`。剪贴板 HTML flavor（Task 7 desktop）与 .html 文件（Task 4）共用。
 
-- [ ] **Step 1: 写失败测试（lib.rs 底部加 tests mod）**
+- [x] **Step 1: 写失败测试（lib.rs 底部加 tests mod）**
 
 ```rust
 static HTML_CONVERTER: std::sync::OnceLock<htmd::HtmlToMarkdown> = std::sync::OnceLock::new();
@@ -367,7 +367,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 跑测试验证通过**
+- [x] **Step 2: 跑测试验证通过**
 
 ```bash
 cargo test -p octopus-convert --lib
@@ -375,7 +375,7 @@ cargo test -p octopus-convert --lib
 
 Expected: 11 passed。若 `htmd::HtmlToMarkdown` builder API 与上述不符（编译错），查 `docs.rs/htmd` 修正调用方式——测试断言不变。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/convert
@@ -395,7 +395,7 @@ git commit -m "feat(convert): html_to_markdown（htmd + skip script/style）"
 - Consumes: `format_kind` / `code_language`（Task 2）、`html_to_markdown`（Task 3）、`ConvertError`（Task 1）、`anydoc::to_markdown(path) -> Result<String, anydoc::ConvertError>`（docs.rs 实测签名）
 - Produces: `pub struct FileSection { pub rel_path: String, pub content: Result<String, ConvertError> }`、`pub(crate) fn convert_one(abs: &Path, rel: &str) -> FileSection`。Task 5 消费。
 
-- [ ] **Step 1: 生成测试 fixture**
+- [x] **Step 1: 生成测试 fixture**
 
 ```bash
 cd crates/convert
@@ -408,7 +408,7 @@ ls -la assets/
 
 Expected: `sample.csv`（~22 字节）与 `sample.docx`（数 KB）存在。textutil 是 macOS 自带，无额外依赖。
 
-- [ ] **Step 2: 写失败的 convert_one 测试 + 实现**
+- [x] **Step 2: 写失败的 convert_one 测试 + 实现**
 
 `crates/convert/src/convert.rs`：
 
@@ -542,7 +542,7 @@ mod tests {
 
 注意：若 `anydoc::to_markdown` 的错误未实现 `Display`（`format!("{}", e)` 编译报错），改用 `format!("{:?}", e)`；测试断言不受影响。
 
-- [ ] **Step 3: lib.rs 注册 + 跑测试**
+- [x] **Step 3: lib.rs 注册 + 跑测试**
 
 `crates/convert/src/lib.rs` 的 `pub mod dispatch;` 下加：
 
@@ -558,7 +558,7 @@ cargo test -p octopus-convert --lib
 
 Expected: 18 passed（含 2 个 anydoc 真文件接线测试，毫秒级无需 ignore）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/convert
@@ -577,7 +577,7 @@ git commit -m "feat(convert): convert_one 单文件转换核心 + anydoc/csv/doc
 - Consumes: `convert_one` / `FileSection`（Task 4）、`ConvertError`（Task 1）
 - Produces: `pub fn convert_files(paths: &[PathBuf]) -> Result<String, ConvertError>`、`pub fn convert_folder(root: &Path) -> Result<String, ConvertError>`、`pub const MAX_FILES: usize = 200`、`pub const MAX_TOTAL_BYTES: u64 = 50*1024*1024`。Task 7 desktop 消费。
 
-- [ ] **Step 1: 写失败的合并/守卫测试 + 实现**
+- [x] **Step 1: 写失败的合并/守卫测试 + 实现**
 
 `crates/convert/src/folder.rs`：
 
@@ -812,7 +812,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: lib.rs 注册 + 跑测试**
+- [x] **Step 2: lib.rs 注册 + 跑测试**
 
 `crates/convert/src/lib.rs` 的 `pub use convert::FileSection;` 下加：
 
@@ -828,7 +828,7 @@ cargo test -p octopus-convert --lib
 
 Expected: 24 passed。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/convert
@@ -851,7 +851,7 @@ git commit -m "feat(convert): 文件夹递归 + 多文件合并（树头/skipped
 
 **说明**：NSPasteboard HTML flavor 读取是 macOS 胶水（spec §7 唯一不可单测处），本 task 以编译验证 + serde 单测为主。
 
-- [ ] **Step 1: clipboard read_html**
+- [x] **Step 1: clipboard read_html**
 
 `crates/clipboard/src/handle.rs` 的 `read_files` 方法后加：
 
@@ -865,7 +865,7 @@ git commit -m "feat(convert): 文件夹递归 + 多文件合并（树头/skipped
     }
 ```
 
-- [ ] **Step 2: context.rs 三处修改**
+- [x] **Step 2: context.rs 三处修改**
 
 1. `Selection::Text` 加 html 字体（`context.rs:83-86`）：
 
@@ -923,7 +923,7 @@ impl ActionBarContext {
 
    - 末尾 `Selection::Text { text, mouse }`（:281）改 `Selection::Text { text, html: html_after, mouse }`；Sublime 分支 `Selection::Text { text, mouse }`（:178）改 `Selection::Text { text, html: None, mouse }`。
 
-- [ ] **Step 3: 消费点透传（影响面追踪：rg "Selection::Text" 全部构造/匹配点）**
+- [x] **Step 3: 消费点透传（影响面追踪：rg "Selection::Text" 全部构造/匹配点）**
 
 `window.rs:49`（trigger_action_bar Text 分支）：
 
@@ -956,7 +956,7 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String, html: Opti
         .with_html(html);
 ```
 
-- [ ] **Step 4: serde casing 回归测试（context.rs tests mod 内加）**
+- [x] **Step 4: serde casing 回归测试（context.rs tests mod 内加）**
 
 ```rust
     #[test]
@@ -972,7 +972,7 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String, html: Opti
     }
 ```
 
-- [ ] **Step 5: 编译 + 测试（0 error 0 warning）**
+- [x] **Step 5: 编译 + 测试（0 error 0 warning）**
 
 ```bash
 cargo build -p octopus-clipboard -p octopus-desktop 2>&1 | tail -5
@@ -981,7 +981,7 @@ cargo test -p octopus-desktop --lib action_bar 2>&1 | tail -5
 
 Expected: 编译 0 warning；action_bar 相关测试全过。若有遗漏的 `Selection::Text` 匹配点（编译器逐个报出），按同样模式补 `html` 字段。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/clipboard crates/desktop
@@ -1003,7 +1003,7 @@ git commit -m "feat(action-bar): 选区采集 HTML flavor（read_html + ActionBa
 - Consumes: `octopus_convert::{convert_files, convert_folder, html_to_markdown}`（Task 5/3）、`PENDING_CONTEXT`（含 Task 6 的 html）
 - Produces: `pub(crate) fn run_markdown_convert(files: Vec<String>, html: Option<String>, text: String) -> Result<String, String>`；`execute_action_bar` 命令新参数 `html: Option<String>, files: Option<Vec<String>>`（Task 9 前端 invoke 对应 camelCase 直传）
 
-- [ ] **Step 1: desktop 加依赖**
+- [x] **Step 1: desktop 加依赖**
 
 `crates/desktop/Cargo.toml` 的 `octopus-clipboard = { path = "../clipboard" }` 附近加：
 
@@ -1011,7 +1011,7 @@ git commit -m "feat(action-bar): 选区采集 HTML flavor（read_html + ActionBa
 octopus-convert = { path = "../convert" }
 ```
 
-- [ ] **Step 2: 写失败的 run_markdown_convert 测试 + 实现**
+- [x] **Step 2: 写失败的 run_markdown_convert 测试 + 实现**
 
 `crates/desktop/src/action_bar/action_bar_commands/markdown.rs`：
 
@@ -1127,7 +1127,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: mod.rs 注册**
+- [x] **Step 3: mod.rs 注册**
 
 `crates/desktop/src/action_bar/action_bar_commands/mod.rs` 子模块声明区加：
 
@@ -1135,7 +1135,7 @@ mod tests {
 pub mod markdown;
 ```
 
-- [ ] **Step 4: execute_action_bar_inner 签名 + markdown 分支（script.rs）**
+- [x] **Step 4: execute_action_bar_inner 签名 + markdown 分支（script.rs）**
 
 签名（`:359`）与 PENDING 读取（`:364-366`）改为：
 
@@ -1201,7 +1201,7 @@ pub async fn execute_action_bar(
 
 （其余 match 体不变。）
 
-- [ ] **Step 5: action_hotkey.rs 两处调用补参数（编译器会逐个报出）**
+- [x] **Step 5: action_hotkey.rs 两处调用补参数（编译器会逐个报出）**
 
 `:177`：
 
@@ -1223,7 +1223,7 @@ pub async fn execute_action_bar(
 
 （以实际代码上下文对齐换行；参数多出的 `None, None` 是关键。）
 
-- [ ] **Step 6: 编译 + 测试**
+- [x] **Step 6: 编译 + 测试**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | tail -3
@@ -1232,7 +1232,7 @@ cargo test -p octopus-desktop --lib markdown 2>&1 | tail -5
 
 Expected: 0 warning；`run_markdown_convert` 8 个测试全过。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop Cargo.lock
@@ -1250,7 +1250,7 @@ git commit -m "feat(action-bar): markdown 命令分派 + execute_action_bar html
 **Interfaces:**
 - Produces: 系统菜单项 id=12「转 Markdown」（`action_type='markdown'`、`accepts='any'`、`write_output_to_clipboard=1`、icon=`file-code`）、`CURRENT_SCHEMA_VERSION = 61`。
 
-- [ ] **Step 1: 写失败的迁移测试（db/mod.rs tests mod，照抄 migrate_v59_to_v60 测试模式）**
+- [x] **Step 1: 写失败的迁移测试（db/mod.rs tests mod，照抄 migrate_v59_to_v60 测试模式）**
 
 ```rust
     /// v60→v61 迁移：seed「转 Markdown」系统菜单项（spec 2026-08-18）。
@@ -1287,7 +1287,7 @@ git commit -m "feat(action-bar): markdown 命令分派 + execute_action_bar html
     }
 ```
 
-- [ ] **Step 2: 实现迁移 + seed**
+- [x] **Step 2: 实现迁移 + seed**
 
 `crates/infra/src/db/mod.rs`：
 1. `:508` `pub const CURRENT_SCHEMA_VERSION: u32 = 60;` → `61`
@@ -1320,7 +1320,7 @@ VALUES
     (12, NULL, '转 Markdown', 'file-code', 'markdown', '', 4, 1, 'any', 1);
 ```
 
-- [ ] **Step 3: 跑测试**
+- [x] **Step 3: 跑测试**
 
 ```bash
 cargo test -p octopus-infra --lib migrate_v60_to_v61 2>&1 | tail -3
@@ -1328,7 +1328,7 @@ cargo test -p octopus-infra --lib migrate_v60_to_v61 2>&1 | tail -3
 
 Expected: 1 passed。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/infra
@@ -1351,7 +1351,7 @@ git commit -m "feat(infra): schema v61 seed 转 Markdown 系统菜单项"
 - Consumes: Task 7 的命令参数（camelCase 直传：`{ itemId, text, html, files }`）
 - Produces: `Context.html?: string | null`、`TYPE_META.markdown`、`deriveAccepts("markdown") === "any"`
 
-- [ ] **Step 1: 写失败的 deriveAccepts 测试**
+- [x] **Step 1: 写失败的 deriveAccepts 测试**
 
 `crates/desktop/frontend/src/pages/Settings/ActionBar/constants.test.ts`：
 
@@ -1377,7 +1377,7 @@ describe("markdown action type", () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 ```bash
 cd crates/desktop/frontend && npx vitest run src/pages/Settings/ActionBar/constants.test.ts
@@ -1385,7 +1385,7 @@ cd crates/desktop/frontend && npx vitest run src/pages/Settings/ActionBar/consta
 
 Expected: FAIL（markdown 未定义）。
 
-- [ ] **Step 3: 实现 constants + i18n + 图标 + types + 传参**
+- [x] **Step 3: 实现 constants + i18n + 图标 + types + 传参**
 
 `constants.tsx`——`TYPE_META` 的 `copy_path` 行后加：
 
@@ -1445,7 +1445,7 @@ i18n——`zh-CN.yaml` 的 `typeCopyPathDesc` 行后加：
     typeMarkdownDesc: Convert selected rich text / files / folders to Markdown, shown in a floating window and copied to clipboard
 ```
 
-- [ ] **Step 4: 跑测试 + 类型检查 + 构建**
+- [x] **Step 4: 跑测试 + 类型检查 + 构建**
 
 ```bash
 cd crates/desktop/frontend
@@ -1456,7 +1456,7 @@ npm run build
 
 Expected: 测试 PASS；tsc 0 error；build 成功。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend
@@ -1473,7 +1473,7 @@ git commit -m "feat(action-bar): 前端 markdown 命令类型/图标/i18n + exec
 - Modify: `AGENTS.md`（Cargo Workspace 结构列表 + 依赖关系）
 - Modify: `docs/superpowers/specs/2026-08-18-actionbar-markdown-conversion-design.md`（实施偏差回写，如有）
 
-- [ ] **Step 1: 全量编译 + 测试（核心层）**
+- [x] **Step 1: 全量编译 + 测试（核心层）**
 
 ```bash
 cargo build 2>&1 | tail -3          # default-members 全部（含 octopus-convert）
@@ -1495,7 +1495,7 @@ Expected: 0 error 0 warning；全部测试通过（含 octopus-convert 24 个 + 
 4. Finder 选一个含 .md/.py 的文件夹 → 转 Markdown → 文件树 + 各节内容
 5. 设置页 ActionBar 列表看到「转 Markdown」系统项（禁删）
 
-- [ ] **Step 3: 文档同步**
+- [x] **Step 3: 文档同步**
 
 `docs/architecture.md`：
 - crate 列表（与 AGENTS.md 同步的位置）加：`├── convert/       # octopus-convert — 文档转 Markdown（anydoc/htmd，ActionBar markdown 命令）`
@@ -1513,7 +1513,7 @@ Expected: 0 error 0 warning；全部测试通过（含 octopus-convert 24 个 + 
 
 spec 回写：实现与 spec 的任何偏差（如 anydoc API 细节、htmd 配置）回写到 spec 的「实施注记」段。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs AGENTS.md
@@ -1528,3 +1528,30 @@ git commit -m "docs: 同步转 Markdown 命令（architecture/desktop-app/AGENTS
 - **占位符**：全部步骤含完整代码/命令，无 TBD。
 - **类型一致性**：`ConvertError` 变体、`FileSection`、`convert_one(abs, rel)`、`convert_files(&[PathBuf])`、`convert_folder(&Path)`、`html_to_markdown(&str)`、`run_markdown_convert(files, html, text)`、`read_html()`、`with_html()`、`Selection::Text { text, html, mouse }` 跨 task 一致。
 - **已知实现期风险**（实现者注意，不阻塞）：① anydoc/htmd 错误类型若未实现 Display，用 `{:?}` 替代（Task 4 注记）；② `open_with_version` helper 若签名不同，照抄 `migrate_v59_to_v60` 测试的实际调用方式；③ worktree 前端跑 `npm install` 勿软链主干 node_modules（AGENTS.md Gotcha）。
+
+---
+
+## 实施记录（plan-as-record，2026-08-18 回写）
+
+**执行方式**：executing-plans inline（worktree `.worktree/markdown-conversion`，分支 `markdown-conversion`）。
+
+**Task → commit 映射**：
+
+| Task | Commit | 验证 |
+|---|---|---|
+| 1 骨架 + ConvertError | `afbc916b` | 5 测试过 |
+| 2 dispatch | `47a8e6b4` | 9 过 |
+| 3 html_to_markdown | `a53e453e` | 11 过 |
+| 4 convert_one + fixtures | `8f3318b8` | 18 过（anydoc csv/docx 接线双绿） |
+| 5 folder 合并 | `4a1f3fcc` | 24 过 |
+| 6 HTML flavor 采集 | `c68f7350` | 81 action_bar 测试 + serde 测试过 |
+| 7 markdown 分支 + 命令参数 | `8b898eb6` | 7 过（plan 预期「8 个」系笔误） |
+| 8 schema v61 | `046b3a77` | 红灯→绿灯；infra 195 过（2 个既有测试预期随 v61 演进更新） |
+| 9 前端 | `c3f1fa2c` | 3 新测试 + tsc 0 + build ✓ |
+| 10 文档 | `5fc5b0f8` | 全量 cargo test 0 failed |
+
+**交付后修订**（用户反馈，spec §9.1）：异步执行 + 落盘 `~/Documents/octopus/markitdown/` + CompactEditor file tab——commit `cf6e8b04`（markitdown_dir / open_disk_file_in_compact_editor 抽取 / run_markdown_convert 落盘 / tokio::spawn 异步）。
+
+**性能修复**（spec §9.2，z_perf）：commit `a2f1651d`——预览 256KB 行边界截断（2MB 预览 212ms→22ms）+ CM6 每键 O(N) 回声快路径。
+
+**遗留**：Task 10 Step 2 手动 e2e 冒烟未执行（用户侧验证项）；全部偏差详见 spec §9 实施注记。

@@ -55,7 +55,7 @@ fn is_image_ext(ext: &str) -> bool
 
 ```rust
 /// 批量开 tab（完整 payload 直传，不查 DB）。两条调用方：
-/// - open_compact_editor_tabs（原 (id, source) 元组路径，经 push_pending_tab 组装后转入）
+/// - open_compact_editor_tabs（原 (id, source) 元组路径，经 build_pending_tab 组装后转入——实施时 push_pending_tab 已删除，见 §8.3）
 /// - open_files_in_editor（file tab 全文 + 图片 tab imageId 直传）
 fn open_tabs_batched(tabs: Vec<PendingTabFull>, app: &AppHandle)
 ```
