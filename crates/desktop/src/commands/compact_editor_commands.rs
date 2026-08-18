@@ -233,6 +233,153 @@ fn take_pending_tabs() -> Vec<PendingTabFull> {
     std::mem::take(&mut *PENDING_TABS.lock())
 }
 
+// ── 打开已存在文件（spec 2026-08-18-compact-editor-open-files）──
+// Task 2（open_files_in_editor 命令 wrapper）接线前无生产调用点，暂 allow dead_code。
+
+/// 图片扩展名封闭清单（spec §1）；其余一律尝试 UTF-8 文本读。
+/// 注：svg 是文本（可编辑），归文本路径。
+#[allow(dead_code)] // Task 2 接线后移除
+fn is_image_ext(ext: &str) -> bool {
+    matches!(
+        ext.trim_start_matches('.').to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "tif",
+    )
+}
+
+/// 文件图片入库（镜像 watcher.rs:165-211 的 ingest 组合）：
+/// 读 bytes → 解码 → hash_rgba 去重（find_by_content_hash 命中则 touch 已有行）
+/// → insert_image_data + insert_clipboard_item(type=image)。返回 (historyId, w, h)。
+#[allow(dead_code)] // Task 2 接线后移除
+fn ingest_image_file(path: &std::path::Path) -> Result<(String, i64, i64), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读取失败: {}", e))?;
+    let dyn_img = ::image::load_from_memory(&bytes)
+        .map_err(|_| "图片解码失败".to_string())?;
+    let rgba_img = dyn_img.to_rgba8();
+    let (w, h) = (rgba_img.width(), rgba_img.height());
+    let rgba = rgba_img.to_vec();
+    let hash = octopus_clipboard::image::hash_rgba(&rgba);
+
+    // 历史级去重（watcher 同款）：同图 touch 已有行直接复用 id，不重复入库
+    let existing = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::find_by_content_hash(conn, &hash)
+    })
+    .map_err(|e| format!("DB 查询失败: {}", e))?;
+    if let Some(id) = existing {
+        let _ = octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::touch_created_at(conn, &id)
+        });
+        return Ok((id, w as i64, h as i64));
+    }
+
+    let dyn_img = ::image::DynamicImage::ImageRgba8(
+        ::image::RgbaImage::from_raw(w, h, rgba).ok_or("RgbaImage::from_raw failed")?,
+    );
+    let encoded = octopus_clipboard::image::encode_image(&dyn_img)
+        .map_err(|e| format!("编码失败: {}", e))?;
+    octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::insert_image_data(
+            conn, &hash, &encoded.image_blob, &encoded.thumb_blob, w as i64, h as i64,
+        )
+    })
+    .map_err(|e| format!("图片存储失败: {}", e))?;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::insert_clipboard_item(
+            conn,
+            &octopus_clipboard::store::NewClipboardItem {
+                id: id.clone(),
+                item_type: octopus_clipboard::model::ItemType::Image,
+                content: String::new(),
+                ref_data: Some(hash.clone()),
+                meta_info: Some(octopus_clipboard::model::MetaInfo {
+                    w: Some(w),
+                    h: Some(h),
+                    size: Some(format!("{}KB", encoded.image_blob.len() / 1024)),
+                    ..Default::default()
+                }),
+                created_at: octopus_clipboard::store::iso_now(),
+                has_thumbnail: Some(1),
+                is_rich: false,
+            },
+        )
+    })
+    .map_err(|e| format!("历史写入失败: {}", e))?;
+    Ok((id, w as i64, h as i64))
+}
+
+/// 分流 + 组装 tab（纯核心，无 AppHandle 便于单测，spec §3.3）：
+/// 图片 → 入库图片 tab（source="clipboard"，前端 loadAndAddTab 识别）；
+/// 其余 → UTF-8 文本读 → file tab（md5 路径 itemId，与 file tab 去重规则一致）。
+/// 失败逐个进 errors（`<文件名>（<原因>）`），不中断其他文件。
+#[allow(dead_code)] // Task 2 接线后移除
+fn collect_open_tabs(paths: Vec<String>) -> (Vec<PendingTabFull>, Vec<String>) {
+    let mut tabs = Vec::new();
+    let mut errors = Vec::new();
+    for p in paths {
+        let path = std::path::PathBuf::from(&p);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| p.clone());
+        if path.is_dir() {
+            errors.push(format!("{}（暂不支持文件夹）", name));
+            continue;
+        }
+        if !path.exists() {
+            errors.push(format!("{}（文件不存在）", name));
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_string();
+        if is_image_ext(&ext) {
+            match ingest_image_file(&path) {
+                Ok((id, w, h)) => tabs.push(PendingTabFull {
+                    item_id: id,
+                    source: "clipboard".into(),
+                    item_type: "image".into(),
+                    text: String::new(),
+                    img_width: w as u32,
+                    img_height: h as u32,
+                    is_temp: false,
+                    mode: None,
+                    original_text: None,
+                    translated_text: None,
+                    translate_session_id: None,
+                    file_path: None,
+                }),
+                Err(e) => errors.push(format!("{}（{}）", name, e)),
+            }
+        } else {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let hash = octopus_sync::store::md5_hex(p.as_bytes());
+                    let item_id = i64::from_str_radix(&hash[..16], 16).unwrap_or(0).to_string();
+                    tabs.push(PendingTabFull {
+                        item_id,
+                        source: "file".into(),
+                        item_type: "text".into(),
+                        text,
+                        img_width: 0,
+                        img_height: 0,
+                        is_temp: false,
+                        mode: None,
+                        original_text: None,
+                        translated_text: None,
+                        translate_session_id: None,
+                        file_path: Some(p),
+                    });
+                }
+                Err(_) => errors.push(format!("{}（非 UTF-8 文本或读取失败）", name)),
+            }
+        }
+    }
+    (tabs, errors)
+}
+
 /// 批量打开多个 tab（一次调用）。每个 item push 进 PENDING_TABS；窗口不存在则
 /// create（URL 注入首个，前端 mount 时 take 全部），窗口存在则逐个 emit open-tab。
 ///
@@ -359,5 +506,126 @@ mod tests {
         assert_eq!(got[0].item_id, "test-1");
         assert_eq!(got[1].item_id, "test-2");
         assert!(take_pending_tabs().is_empty(), "take 后应清空");
+    }
+
+    // ── open_files_in_editor（spec 2026-08-18-compact-editor-open-files）──
+
+    // 图片入库触达 with_db——init_test_db 切 in-memory，防绑开发库（AGENTS.md 测试隔离）
+    static OPEN_FILES_DB_SETUP: std::sync::Once = std::sync::Once::new();
+    fn setup_open_files_test_db() {
+        OPEN_FILES_DB_SETUP.call_once(|| {
+            octopus_infra::db::init_test_db();
+        });
+    }
+
+    /// 1×1 红色 PNG（经典 70 字节 base64）。
+    const TINY_PNG_B64: &str =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    fn tmp_path(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("octopus-open-files-{}-{}", std::process::id(), name));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    #[test]
+    fn test_is_image_ext_matrix() {
+        for ext in ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif"] {
+            assert!(is_image_ext(ext), "ext={}", ext);
+            assert!(is_image_ext(&ext.to_uppercase()), "大小写不敏感：{}", ext);
+        }
+        assert!(is_image_ext(".PNG"), "前导点容忍");
+        for ext in ["md", "txt", "pdf", "docx", "", "svg"] {
+            assert!(!is_image_ext(ext), "ext={} 应非图片", ext);
+        }
+    }
+
+    #[test]
+    fn test_collect_open_tabs_text_file() {
+        let p = tmp_path("note.md");
+        std::fs::write(&p, b"# hello").unwrap();
+        let (tabs, errors) = collect_open_tabs(vec![p.to_string_lossy().to_string()]);
+        assert!(errors.is_empty(), "errors={:?}", errors);
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].source, "file");
+        assert_eq!(tabs[0].text, "# hello");
+        assert_eq!(tabs[0].file_path.as_deref(), Some(p.to_string_lossy().as_ref()));
+        // itemId = md5(路径) 前 16 hex → i64（与 open_disk_file_in_compact_editor 同规则）
+        let hash = octopus_sync::store::md5_hex(p.to_string_lossy().as_bytes());
+        let expect = i64::from_str_radix(&hash[..16], 16).unwrap_or(0).to_string();
+        assert_eq!(tabs[0].item_id, expect);
+    }
+
+    #[test]
+    fn test_collect_open_tabs_non_utf8_rejected() {
+        let p = tmp_path("bad.bin");
+        std::fs::write(&p, [0xFFu8, 0xFE, 0x00, 0x01]).unwrap();
+        let (tabs, errors) = collect_open_tabs(vec![p.to_string_lossy().to_string()]);
+        assert!(tabs.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("非 UTF-8"), "err={}", errors[0]);
+        assert!(errors[0].contains("bad.bin"));
+    }
+
+    #[test]
+    fn test_collect_open_tabs_dir_rejected() {
+        let dir = tmp_path("adir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (tabs, errors) = collect_open_tabs(vec![dir.to_string_lossy().to_string()]);
+        assert!(tabs.is_empty());
+        assert!(errors[0].contains("暂不支持文件夹"));
+    }
+
+    #[test]
+    fn test_collect_open_tabs_image_ingests() {
+        setup_open_files_test_db();
+        let p = tmp_path("tiny.png");
+        std::fs::write(&p, base64_decode(TINY_PNG_B64)).unwrap();
+        let (tabs, errors) = collect_open_tabs(vec![p.to_string_lossy().to_string()]);
+        assert!(errors.is_empty(), "errors={:?}", errors);
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].source, "clipboard");
+        assert_eq!(tabs[0].item_type, "image");
+        assert_eq!(tabs[0].img_width, 1);
+        assert_eq!(tabs[0].img_height, 1);
+        assert!(!tabs[0].item_id.is_empty());
+    }
+
+    #[test]
+    fn test_collect_open_tabs_mixed_partial_success() {
+        setup_open_files_test_db();
+        let ok = tmp_path("ok.md");
+        std::fs::write(&ok, b"fine").unwrap();
+        let bad = tmp_path("no.txt");
+        std::fs::write(&bad, [0xFFu8, 0xFE]).unwrap();
+        let img = tmp_path("i.png");
+        std::fs::write(&img, base64_decode(TINY_PNG_B64)).unwrap();
+        let (tabs, errors) = collect_open_tabs(vec![
+            ok.to_string_lossy().to_string(),
+            bad.to_string_lossy().to_string(),
+            img.to_string_lossy().to_string(),
+        ]);
+        assert_eq!(tabs.len(), 2, "文本+图片成功");
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("no.txt"));
+    }
+
+    /// 最小 base64 解码（测试专用，避免引依赖）。
+    fn base64_decode(s: &str) -> Vec<u8> {
+        const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = Vec::new();
+        let mut buf = 0u32;
+        let mut bits = 0u32;
+        for c in s.bytes().filter(|c| *c != b'=' && !c.is_ascii_whitespace()) {
+            let v = TABLE.iter().position(|t| *t == c).expect("非法 base64") as u32;
+            buf = (buf << 6) | v;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((buf >> bits) as u8);
+            }
+        }
+        out
     }
 }

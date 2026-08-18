@@ -35,7 +35,7 @@ unicode-normalization.workspace = true
 octopus-ocr = { path = "../ocr" }
 # Screenshot
 octopus-capx = { path = "../capx" }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 
 # Audio
 cpal = "0.16"
