@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/infra", "crates/onnx-infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download", "crates/clipboard", "crates/ocr", "crates/paddle-ocr", "crates/capx", "crates/translation", "crates/search", "crates/vault", "crates/sync", "crates/scheduler", "crates/record", "crates/pty"]
+members = ["crates/infra", "crates/onnx-infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download", "crates/clipboard", "crates/ocr", "crates/paddle-ocr", "crates/capx", "crates/translation", "crates/search", "crates/vault", "crates/sync", "crates/scheduler", "crates/record", "crates/pty", "crates/convert"]
 # dlp 是独立 sidecar（yt-dlp 封装），无任何 crate 依赖它（cli 通过 shell-out
 # 查找预编译二进制）。排除出 default-members，让日常 cargo build/test 不编译它，
 # 加速迭代；cargo build -p octopus-dlp 仍可单独编译 sidecar。
-default-members = ["crates/infra", "crates/onnx-infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/download", "crates/clipboard", "crates/ocr", "crates/paddle-ocr", "crates/capx", "crates/translation", "crates/search", "crates/vault", "crates/sync", "crates/scheduler", "crates/record"]
+default-members = ["crates/infra", "crates/onnx-infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/download", "crates/clipboard", "crates/ocr", "crates/paddle-ocr", "crates/capx", "crates/translation", "crates/search", "crates/vault", "crates/sync", "crates/scheduler", "crates/record", "crates/convert"]
 exclude = ["xcap"]
 resolver = "2"
 
@@ -48,6 +48,10 @@ anyhow = "1"
 once_cell = "1"
 async-trait = "0.1"
 sha2 = "0.10"
+# 转 Markdown（ActionBar markdown 命令，spec 2026-08-18）。anydoc 0.1.x 锁死防 API 变动。
+anydoc = "=0.1.9"
+htmd = "0.5"
+walkdir = "2"
 # tokio：workspace 声明 full（desktop 等需要）。record/translation 刻意用细分 features
 # 精简（独立编译时不拉 full），不用 workspace 引用。
 tokio = { version = "1", features = ["full"] }

@@ -1,0 +1,9 @@
+[package]
+name = "octopus-convert"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anydoc = { workspace = true }
+htmd = { workspace = true }
+walkdir = { workspace = true }
