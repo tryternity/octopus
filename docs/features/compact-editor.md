@@ -86,6 +86,11 @@ type Tab = {
 
 **预览 debounce 150ms**；CM6 `updateListener` 同步触发 `onChange`（无 debounce）。
 
+**大文档防护**（2026-08-18，z_perf baseline 见 `largeDocPerf.test.ts`）：
+- **预览截断**：source > 256KB 时 `sliceForPreview`（`previewTruncate.ts` 纯函数）按行边界截到 256KB 再渲染，顶部提示条显示「前 X KB / 共 Y KB」——修复打开 MB 级转 Markdown 产物时整篇 markdown-it 渲染 + 数 MB `innerHTML` 的 WKWebView 布局冻结（实测 2MB：JS 渲染 212ms→22ms，HTML 4.8MB→~600KB；DOM 布局成本随之有界）。截断可能切在 fence 内部——markdown-it 把未闭合 fence 渲染为代码块到截断末尾，无结构破坏。
+- **每键 O(N) 消除**：`CodeMirrorEditor` 的 value 回流先比对 `lastEmittedRef`（自己 emit 的回声）O(1) 跳过，仅外部真实变更才做全量 diff 替换——大文档打字不再每键 `doc.toString()` 全量序列化。
+- CM6 建态实测 1MB 仅 ~14ms（viewport 渲染 + Lezer 增量解析），无需大文档语言降级。
+
 **滚动同步**（`useSyncScroll`）：双向比例同步，rAF 节流 + echo count 防回环。
 
 **i18n 基础设施**（`lib/i18n.ts`，~60 行，无 i18next）：`initI18n()` 读 `ui_language` config → `setLocale()` 通知 `useT()` 订阅者 → `${name}` 插值。详见 [architecture.md](../architecture.md) i18n 全面覆盖段。

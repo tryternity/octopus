@@ -129,6 +129,9 @@ export function CodeMirrorEditor({ value, readOnly, fontSize, onChange, viewRef:
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // 最近一次经 updateListener emit 出去的文本（z_perf 2026-08-18）：value 回流等于它
+  // 即为「自己 emit 的回声」——O(1) 跳过，消除大文档每键 O(N) doc.toString() 比对。
+  const lastEmittedRef = useRef(value);
   const themeCompartment = useRef(new Compartment());
   const readOnlyCompartment = useRef(new Compartment());
 
@@ -152,7 +155,9 @@ export function CodeMirrorEditor({ value, readOnly, fontSize, onChange, viewRef:
         themeCompartment.current.of(buildTheme(fontSize)),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
-            onChangeRef.current(update.state.doc.toString());
+            const next = update.state.doc.toString();
+            lastEmittedRef.current = next;
+            onChangeRef.current(next);
           }
         }),
       ],
@@ -173,9 +178,13 @@ export function CodeMirrorEditor({ value, readOnly, fontSize, onChange, viewRef:
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
+    // 回声快路径：本次 value 就是编辑器自己 emit 的（键入 → onChange → 父 state → prop 回流）
+    if (value === lastEmittedRef.current) return;
+    // 外部真实变更（file tab 重开/paste 等）才做全量比对替换
     const current = view.state.doc.toString();
     if (current !== value) {
       view.dispatch({ changes: { from: 0, to: current.length, insert: value } });
+      lastEmittedRef.current = value;
     }
   }, [value]);
 

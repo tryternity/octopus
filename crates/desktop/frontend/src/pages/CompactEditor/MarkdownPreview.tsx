@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { renderMarkdown } from "@/lib/markdown";
 import { t } from "@/lib/i18n";
+import { sliceForPreview } from "./previewTruncate";
 
 interface MarkdownPreviewProps {
   source: string;
@@ -21,14 +22,21 @@ export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
   const debouncedSource = useDebounced(source, 150);
   const articleRef = useRef<HTMLElement>(null);
   // 第十二轮 P1-2：click listener 委托到容器 div（两分支都渲染的稳定容器）。
-  // 旧实现绑到 <article>，但空内容分支不渲染 <article> → effect mount 时 articleRef=null
+  // 旧实现绑到 <article>，空内容分支不渲染 <article> → effect mount 时 articleRef=null
   // 早返回、listener 不注册 → 后续内容到达 <article> 挂载但 effect 不重跑（deps []）
   // → 链接点击无 preventDefault → WKWebView 导航到外链，编辑上下文丢失。
   // 委托到容器：click 冒泡，closest("a") 仍命中 article 内链接，空内容分支也生效。
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // useMemo 同步派生 HTML（避免 setState 额外重绘周期）
-  const html = useMemo(() => renderMarkdown(debouncedSource), [debouncedSource]);
+  // 大文档截断（z_perf 2026-08-18）：>PREVIEW_LIMIT 只渲染前缀（行边界），DOM 与
+  // markdown-it 成本 O(limit)——打开 MB 级转 Markdown 产物不再整篇 innerHTML 冻结。
+  const { html, truncatedInfo } = useMemo(() => {
+    const sliced = sliceForPreview(debouncedSource);
+    return {
+      html: renderMarkdown(sliced ?? debouncedSource),
+      truncatedInfo: sliced ? { shown: sliced.length, total: debouncedSource.length } : null,
+    };
+  }, [debouncedSource]);
 
   // innerHTML 命令式写入（非 dangerouslySetInnerHTML——保留 mermaid/代码块 DOM 装饰）
   useEffect(() => {
@@ -79,10 +87,20 @@ export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
     return () => container.removeEventListener("click", onClick);
   }, []);
 
+  const fmtKB = (n: number) => `${Math.round(n / 1024)}KB`;
+
   // 单容器：空内容显示提示（CSS 隐藏 article），非空显示 article（CSS 隐藏提示）。
   // div 始终同一个 → listener 不随内容变化失效。
   return (
     <div ref={containerRef} className="md-preview flex-1 overflow-auto p-5" style={{ userSelect: "text", fontSize: fontSize ? `${fontSize}px` : undefined }}>
+      {truncatedInfo && (
+        <div className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-muted-foreground">
+          {t("editor.previewTruncated", {
+            shown: fmtKB(truncatedInfo.shown),
+            total: fmtKB(truncatedInfo.total),
+          })}
+        </div>
+      )}
       {isEmpty ? (
         <div className="flex w-full h-full items-center justify-center">
           <span className="text-sm text-muted-foreground">{t("editor.previewEmpty")}</span>

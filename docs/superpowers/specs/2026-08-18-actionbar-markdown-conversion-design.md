@@ -220,3 +220,21 @@ NSPasteboard HTML flavor 读取是唯一不可单测的 macOS 胶水，保持单
 3. **CompactEditor file tab 打开**：从 `prompt_files.rs::open_file_in_editor` 抽取 `open_disk_file_in_compact_editor` 共用（prompt 文件查看与转 Markdown 输出同一条打开链路）；prompt_files 重构为薄包装。
 4. **错误反馈**：后台失败开 CompactEditor 错误 temp tab（放弃 `agent-task://error`——其监听方 Result 浮窗不一定可见）。
 5. 新增测试：`markitdown_dir` 兜底（含 `init_test_db` 隔离，防绑开发库）、`output_file_stem` ×4、`convert_and_save_to` ×3（写入/碰撞/错误透传）。
+
+### 9.2 CompactEditor 大文件加载修复（2026-08-18，z_perf 流程）
+
+落盘打开链路上线后发现 CompactEditor 打开大文件（MB 级转 Markdown 产物）冻结。按 z_perf measurement-first 修复：
+
+**Baseline**（`largeDocPerf.test.ts`，可复现 workload 保留在测试套件）：
+- `renderMarkdown`（markdown-it 全文）~100ms/MB 线性；2MB→212ms、HTML 4.8MB
+- CM6 `EditorState.create` 1MB：plain 7.4ms / +markdown() 13.9ms——建态不是热点
+- jsdom 测不到的主成本：整篇 `innerHTML` 的 WKWebView DOM 解析+布局（数 MB HTML，秒级冻结）
+- 次要：`CodeMirrorEditor` value effect 每键 `doc.toString()` O(N) 比对（2MB 每键数 ms）
+
+**修复**（只修证明过的热点）：
+1. **预览截断**（`previewTruncate.ts`，TDD 4 测试）：>256KB 按行边界截断渲染 + 提示条（i18n `editor.previewTruncated`）。after 实测：2MB 预览 JS 渲染 212ms→22ms，HTML 4.8MB→~600KB，DOM 成本有界。编辑栏/保存仍承载全文（file tab 保存写回不受影响）。
+2. **每键 O(N) 消除**：`lastEmittedRef` 回声快路径，外部变更才全量 diff。
+
+**明确不做**（YAGNI，未证明热点）：大文档 CM6 语言降级（1MB +markdown() 仅 14ms）、IPC 分片传输（一次性 MB 级 IPC 数十 ms）、preview 虚拟滚动（截断已使 DOM 有界，复杂度不值）。
+
+同步文档：`docs/features/compact-editor.md`「大文档防护」段。

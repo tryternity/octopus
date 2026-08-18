@@ -21,6 +21,7 @@ editor:
   copyCode: 复制
   copied: 已复制
   previewEmpty: 开始输入即可看到预览
+  previewTruncated: 文档较大，预览仅显示前 ${shown}（全文 ${total}）——完整内容请用编辑栏
   translate: 翻译
   translateFail: 翻译失败
   translateConfirm: 再按确认覆盖译文
