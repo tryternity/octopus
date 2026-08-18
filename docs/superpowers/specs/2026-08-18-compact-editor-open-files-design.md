@@ -113,3 +113,18 @@ pub async fn open_files_in_editor(paths: Vec<String>, app: AppHandle) -> Result<
 - `docs/features/compact-editor.md`：「打开已存在文件」段（双入口/类型/图片入库语义/错误反馈）
 - `docs/architecture.md`：CompactEditor 段落补一句（如有对应章节）
 - 本 spec 实施注记回写
+
+## 8. 实施注记（2026-08-18 实施回写）
+
+实现四 commit：`7d99d021`（纯核心 TDD）/ `0965633e`（open_tabs_batched 泛化 + 命令）/ `a4d434a6`（建窗分支防幽灵 tab 修复）/ `e96ad056`（前端双入口 + toast）。与 spec 的偏差与补充决策：
+
+1. **图片历史级去重实际启用**（优于 §1「范围外」的保守表述）：`ingest_image_file` 直接镜像剪贴板 watcher 的 ingest 组合——`hash_rgba` → `find_by_content_hash` 命中同图则 `touch_created_at` 复用已有行 id、不新增历史条目；未命中才走 `insert_image_data` + `insert_clipboard_item`。同一图片文件重复打开**不再多一条历史**（spec 原预期「history 行可删」）。
+2. **desktop `image` crate 解码 feature 扩充**：原仅 png/jpeg，补 gif/webp/bmp/tiff（`crates/desktop/Cargo.toml` features），支撑 §1 封闭清单全格式解码。
+3. **`push_pending_tab` 与 Rust 侧 `OpenTabPayload` 在重构中删除**：`open_tabs_batched` 泛化时，`push_pending_tab`（查 DB 组装 pending）逻辑迁入 `build_pending_tab`，`open_compact_editor_tabs` 逐项组装后转调；Rust 手写 emit JSON 构造被 `PendingTabFull` 直接序列化（camelCase）取代。两者零剩余调用方。前端 `OpenTabPayload` interface 保留（emit listener 入口类型）。
+4. **建窗分支恢复 `take_pending_tabs()` 清 stale pending**（`a4d434a6`）：`open_tabs_batched` 窗口不存在分支建窗前先清队列——上次建窗失败 / React 未 mount 即关窗会留幽灵 tab（`close_compact_editor` 不清队列），污染下次首屏。
+5. **主线程调度**：`collect_open_tabs` 在 `spawn_blocking` 跑（图片解码 + 多文件 IO），完成后经 `app.run_on_main_thread` 转 `open_tabs_batched`——`create_compact_editor_window` 含 `set_dock_icon` 需主线程（同 actionbar markdown 分支模式）。spec §3.3 未展开此点。
+6. **错误文案合并**：§5 的「非 UTF-8 文本」与「IO 错误原因」实际合并为「非 UTF-8 文本或读取失败」（`fs::read_to_string` 单次尝试不区分两类错误）；文件不存在单独前置判断报「文件不存在」。
+7. **YAML 引号偏差**（Task 3）：en 值 `"${n} file(s) failed to open: ${detail}"` 含 `": "` 序列，裸标量会被 YAML 解析为嵌套 map，必须加引号；zh-CN 值用全角冒号无此问题。
+8. **`editor.dropHint` 未加**（§4.6「如需」判定为不需）：拖拽反馈用容器 `ring` 视觉高亮，无文字提示。i18n 实际新增 `editor.openFile` / `editor.openFailed`（`zh-CN.yaml` / `en.yaml` 各 2 键）。
+9. **tab 栏常驻化**：原 0 tab 时 tab 栏整条隐藏；为承载「打开」按钮改为常驻（0 tab 也能打开文件），属 spec 未提及的连带 UI 变化。
+10. **svg 归文本路径**：`is_image_ext` 清单不含 svg（svg 是文本、可编辑、Cmd+S 写回），实现注释明确记录。

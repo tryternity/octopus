@@ -20,13 +20,14 @@
 ```typescript
 type Tab = {
   key: string;       // `${source}:${itemId}`；temp tab 用 `temp:${ts}_${rand}` 避免冲突
-  source: 'clipboard' | 'transcription' | 'temp';
-  itemId: number;    // temp tab 为 0，保存入库后升级为真 id
+  source: 'clipboard' | 'transcription' | 'temp' | 'file';
+  itemId: string;    // clipboard 条目为 UUID；file tab 为 md5(路径) 前 16 hex（同路径去重）；temp tab 保存入库后升级为真 id
   itemType?: 'text' | 'image';
   text?: string;
   imgWidth?: number;
   imgHeight?: number;
   isTemp?: boolean;  // 临时 tab（不写 DB，图文编辑空白入口）；保存后升级为 clipboard tab
+  filePath?: string; // file source tab 的磁盘路径（Cmd+S 写回用）
 }
 ```
 
@@ -43,11 +44,12 @@ type Tab = {
 | 命令 | 说明 |
 |------|------|
 | `open_compact_editor_tab(item_id, source?)` | 单开（转调批量版）；已开则 emit `compact-editor://open-tab` 推送并聚焦、未开建窗 |
-| `open_compact_editor_tabs(items)` | 批量开（避免连续单开在「窗口刚 build、React 未 mount」中间态丢 tab）；每项 push PENDING_TABS + 一次 create/emit |
+| `open_compact_editor_tabs(items)` | 批量开（避免连续单开在「窗口刚 build、React 未 mount」中间态丢 tab）；逐项查 DB 组装后经 `open_tabs_batched` emit-or-pending + 一次建窗 |
 | `get_pending_compact_tabs() -> Vec<PendingTabFull>` | 前端 mount take 全部（含 itemType/text/图片尺寸，合并到一次 IPC） |
 | `get_clipboard_item_text(item_id)` | 读 content 供文本 tab 载入 |
 | `get_clipboard_item_type(item_id) -> 'text'\|'image'\|'file'` | 前端据此渲染 CodeMirror 或 ImagePreview |
 | `get_transcription_text(id) -> String` | 读 clipboard_history voice 条目的 content，供语音只读 tab |
+| `open_files_in_editor(paths) -> { errors }` | 打开磁盘文件（2026-08-18）：图片入库开图片 tab、文本按 UTF-8 开 file tab，失败逐个进 errors（见 §7） |
 | `insert_clipboard_text_item(text) -> i64` | 插入新文本条目（temp tab 保存用）：入库 + 同步系统剪贴板 + emit `clipboard://changed`，返回新 id |
 | `close_compact_editor` | 关窗 |
 
@@ -113,9 +115,39 @@ type Tab = {
 
 语音结果窗**不用**独立编辑器——改为原地尺寸双模式（见 [result-window.md](./result-window.md)）。
 
+上面入口之外，CompactEditor 自身可直接**打开磁盘上已存在的文件**（见下节）。
+
 ---
 
-## 7. ImagePreview 组件
+## 7. 打开已存在文件（2026-08-18）
+
+> spec：[2026-08-18-compact-editor-open-files-design](../superpowers/specs/2026-08-18-compact-editor-open-files-design.md)。双入口收敛到同一命令 `open_files_in_editor(paths)`，多选/多文件逐个开 tab。
+
+### 双入口
+
+| 入口 | 实现 |
+|------|------|
+| 工具栏「打开」按钮 | tab 栏尾部 `FolderOpen` 图标 → plugin-dialog `open({ multiple: true })`，filter 提示文本+图片扩展名（`openFilesUtils.ts::TEXT_IMAGE_EXTS`——**仅选择器提示用**，后端才是真相源：拖拽不限扩展名）。tab 栏因此**常驻**（0 tab 也能打开文件） |
+| 拖文件入窗口 | `getCurrentWebview().onDragDropEvent`（WKWebView 下 HTML5 DnD 不可靠，Terminal 同模式）；listener 回调经 ref 稳定化 + `useEffect([])` 只挂一次（跨窗口 listener 踩坑规范）；drag-over 期间容器加 `ring` 高亮 |
+
+### 类型分流（后端 `collect_open_tabs`，spawn_blocking 防卡 runtime）
+
+- **图片**（png/jpg/jpeg/gif/webp/bmp/tiff/tif，大小写不敏感、容忍前导点）→ **入库复用全能力**：镜像剪贴板 watcher 的 ingest 组合——读 bytes → `image::load_from_memory` → `hash_rgba` → **历史级去重**（`find_by_content_hash` 命中同图则 `touch_created_at` 复用已有行 id，**不新增历史条目**；未命中才 `insert_image_data` + `insert_clipboard_item(type=image)`）→ imageId + 宽高 → 图片 tab（`source="clipboard"`，ImagePreview 零改造，OCR/二维码/复制/缩放全可用）
+- **其余**（含 svg——按文本读可编辑）→ `fs::read_to_string` 按 UTF-8 读 → file tab（itemId = md5(路径) 前 16 hex，同路径重复打开去重聚焦；Cmd+S 写回磁盘）
+
+### 约束与错误反馈
+
+- **图片 tab 上限**沿用 `MAX_IMAGE_TABS = 5`（超 5 替换最旧，loadAndAddTab 既有逻辑同路径生效）
+- 失败**不中断批次**，逐个收集进返回值 `errors`（`<文件名>（<原因>）`）；前端非空时聚合 warning toast（不自动消失——需看清失败清单）。原因：文件夹（暂不支持文件夹）/ 文件不存在 / 非 UTF-8 文本或读取失败 / 图片解码失败。空 paths / 全部失败命令本身不 Err
+- 大文本自动受益**预览截断防护**（>256KB 行边界截断，见 §5 大文档防护），无需专门处理
+
+### 批量送出（`open_tabs_batched`）
+
+从 `open_compact_editor_tabs` 泛化的共用出口：窗口在且 React 已 mount（pending 队列空）→ 逐个 emit + show/focus；在但未 mount → 全部 push `PENDING_TABS`（emit 会丢）；不在 → 先 `take_pending_tabs()` 清 stale 残留再 push + 一次建窗（防幽灵 tab）。
+
+---
+
+## 8. ImagePreview 组件
 
 `frontend/src/pages/ImagePreview/index.tsx`（**组件，非路由**）
 
@@ -133,7 +165,7 @@ type Tab = {
 
 ---
 
-## 8. 已移除
+## 9. 已移除
 
 - ~~`image_preview_commands.rs` + `image_preview_window.rs`~~（统一查看器 Task 5）——独立图片预览窗口废弃，功能合并入 CompactEditor 图片 tab
 - ~~`pages/Notepad/`~~（随 `octopus-notepad` crate 一并删除）
