@@ -549,6 +549,14 @@ UPDATE action_bar_items SET trigger_keyword='baidu'  WHERE id=9 AND trigger_keyw
 UPDATE action_bar_items SET trigger_keyword='bing'   WHERE id=10 AND trigger_keyword='';
 UPDATE action_bar_items SET trigger_keyword='github' WHERE id=11 AND trigger_keyword='';
 
+-- 转 Markdown 命令（v61）——accepts=any（文本/文件/文件夹/无选中都可用），
+-- 结果默认同时写剪贴板（喂 AI/存笔记场景，spec 2026-08-18 §5.3）
+INSERT OR IGNORE INTO action_bar_items
+    (id, parent_id, title, icon, action_type, action_data,
+     sort_order, is_system, accepts, write_output_to_clipboard)
+VALUES
+    (12, NULL, '转 Markdown', 'file-code', 'markdown', '', 4, 1, 'any', 1);
+
 -- 「问豆包」（用 title 去重，不固定 id 避免与用户自建项冲突；放在固定 id seed 之后）
 INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system)
 SELECT NULL, '问豆包', 'sparkles', 'script', '#osascript

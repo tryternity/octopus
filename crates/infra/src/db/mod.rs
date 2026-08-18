@@ -479,6 +479,18 @@ fn init_schema(conn: &Connection) -> Result<()> {
                     updated_folders
                 );
             }
+            60 => {
+                // v60→v61：ActionBar 新增「转 Markdown」系统菜单项（spec 2026-08-18）
+                conn.execute_batch(
+                    "INSERT OR IGNORE INTO action_bar_items
+                        (id, parent_id, title, icon, action_type, action_data,
+                         sort_order, is_system, accepts, write_output_to_clipboard)
+                     VALUES
+                        (12, NULL, '转 Markdown', 'file-code', 'markdown', '', 4, 1, 'any', 1);",
+                )
+                .context("迁移 v60→v61：seed 转 Markdown 菜单项")?;
+                log::info!("DB migrated v60→v61: seed 转 Markdown 菜单项");
+            }
             _ => {
                 anyhow::bail!(
                     "DB schema version {} is outdated (current {}). \
@@ -499,13 +511,14 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
 /// 当前 schema 版本——db.sql 建出的库就是这个版本。
 /// 升 schema 时：改 db.sql + 改这个常量 + 改 db.sql 顶部注释。
+/// v61（2026-08-18）：ActionBar seed「转 Markdown」系统菜单项（id=12，action_type=markdown，spec 2026-08-18）。
 /// v60（2026-08-04）：vault_ciphers / vault_folders 的 is_deleted 从 bool 改 i64（0=活跃，>0=删除时刻 epoch 秒，tombstone）——与 hotword/clipboard 统一。
 /// v58（2026-08-02）：hotword_sets 加 set 级软删——is_deleted 存删除时刻 epoch 秒 + UNIQUE(name,is_deleted) 复合约束（建表复制法迁移）。
 /// v57（2026-08-01）：热词拆分单记录——hotword_words 表（每词一条，确定性 UUID v5 + 原始拼音 + 软删）+ hotword_sets DROP words_text 列。
 /// v56（2026-08-01）：方言规则 DB 化——fuzzy_dialect_rules 表 + 旧 fuzzy_dialect 开关迁移。
 /// v55（2026-08-01）：数据迁移——asr_correct 强制翻 true（让存量用户热词生效，无表结构变更）。
 /// v54（2026-07-30）：image_data 表移除 blob + image_type 列（原图改文件系统存储）。
-pub const CURRENT_SCHEMA_VERSION: u32 = 60;
+pub const CURRENT_SCHEMA_VERSION: u32 = 61;
 
 /// v28 迁移：为所有 source_type IN (0,1)（builtin+local）且 secret_key 为空的模型填充 manifest JSON。
 /// 按 domain 分发到 model_manifests 常量。
@@ -999,9 +1012,9 @@ mod tests {
 
         init_schema(&conn).expect("v59→v60 迁移应成功（纯数据迁移，无破坏性）");
 
-        // 版本应升到 60
+        // 版本应升到 61（迁移链跑到 CURRENT——v61 起 v59 库会继续过 v60→v61 seed 臂）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 60);
+        assert_eq!(v, CURRENT_SCHEMA_VERSION);
 
         // active 行 is_deleted 仍为 0
         let active_c: i64 = conn
@@ -1046,6 +1059,52 @@ mod tests {
             "软删 folder is_deleted 应被刷成 epoch 秒（>1），实际 {}",
             deleted_f
         );
+    }
+
+    /// v60→v61 迁移：seed「转 Markdown」系统菜单项（spec 2026-08-18）。
+    /// open_init 跑的是当前 schema（已含 id=12 seed），先删掉模拟真实 v60 库（无此行），
+    /// 再 init_schema 验证迁移臂 INSERT OR IGNORE 补种。
+    #[test]
+    fn migrate_v60_to_v61_seeds_markdown_item() {
+        let conn = open_with_version(60, "true");
+        conn.execute("DELETE FROM action_bar_items WHERE id = 12", []).unwrap();
+        let pre: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM action_bar_items WHERE id = 12",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre, 0, "前置：模拟 v60 库无 id=12");
+
+        init_schema(&conn).expect("v60→v61 迁移应成功（纯 seed，无破坏性）");
+
+        // 版本应升到 61
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 61);
+
+        let (action_type, accepts, clipboard): (String, String, i64) = conn
+            .query_row(
+                "SELECT action_type, accepts, write_output_to_clipboard \
+                 FROM action_bar_items WHERE id = 12",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(action_type, "markdown");
+        assert_eq!(accepts, "any");
+        assert_eq!(clipboard, 1, "结果默认写剪贴板（spec §5.3）");
+
+        // 幂等：再跑一次（此时已是 CURRENT）no-op，不重复
+        init_schema(&conn).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM action_bar_items WHERE id = 12",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     /// v55 库（已是最新）→ init_schema → no-op（不重复迁移）。

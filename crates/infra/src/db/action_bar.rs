@@ -675,10 +675,13 @@ mod tests {
         // db.sql 中非 submenu 类型 seed 项的 accepts 为 'text'（列默认值）。
         // 排除 v40/v43 外置 seed 注入的 Agent 子菜单（action_type='agent', accepts='file'）——
         // 它们有独立测试覆盖。
+        // v61 起「转 Markdown」（action_type='markdown'）显式 seed accepts='any'
+        //（文本/文件/文件夹/无选中都可用，spec 2026-08-18 §5.3）。
         let conn = open_init();
         let non_submenu: Vec<(String, String)> = conn.prepare(
             "SELECT action_type, accepts FROM action_bar_items
              WHERE action_type != 'submenu'
+               AND action_type != 'markdown'
                AND title NOT IN ('PPT 大纲', 'PPT 制作') ORDER BY id"
         ).unwrap()
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap()
@@ -687,6 +690,12 @@ mod tests {
         for (atype, accepts) in &non_submenu {
             assert_eq!(accepts, "text", "{} 类型 accepts 应为 'text'，实际: {}", atype, accepts);
         }
+        // markdown 型单独断言：显式 any
+        let md_accepts: String = conn.query_row(
+            "SELECT accepts FROM action_bar_items WHERE id = 12",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(md_accepts, "any", "转 Markdown accepts 应为 'any'");
     }
 
     /// 回归 S2：save_app_index 全量替换语义 + launcher_index wrapper 正确性。
