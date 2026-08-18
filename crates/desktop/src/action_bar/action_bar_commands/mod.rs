@@ -24,6 +24,9 @@ pub use script::*;
 mod context;
 pub use context::*;
 
+// markdown 模块仅 crate 内消费（pub(crate) fn），无 pub 项可 glob re-export
+mod markdown;
+
 use parking_lot::Mutex;
 
 /// 暂存选中对象 + 上下文（trigger 时写入，前端 mount 时读）。

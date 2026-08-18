@@ -5640,6 +5640,7 @@ dependencies = [
  "octopus-asr-local",
  "octopus-capx",
  "octopus-clipboard",
+ "octopus-convert",
  "octopus-download",
  "octopus-infra",
  "octopus-llm",

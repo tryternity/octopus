@@ -175,7 +175,7 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String, html: Opti
     let app_clone = app.clone();
     // 用 tauri::async_runtime::block_on 复用全局 runtime——不可 Runtime::new()（嵌套 panic，
     // translate.rs:74 / cloud_pipeline.rs:122 同模式）。
-    let result = tauri::async_runtime::block_on(crate::action_bar::action_bar_commands::execute_action_bar_inner(item_id, text, &app_clone));
+    let result = tauri::async_runtime::block_on(crate::action_bar::action_bar_commands::execute_action_bar_inner(item_id, text, None, None, &app_clone));
 
     match result {
         Ok(true) => log::info!("[action-hotkey] 执行完成（结果已在 CompactEditor 展示）"),
@@ -259,6 +259,8 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
             crate::action_bar::action_bar_commands::execute_action_bar_inner(
                 item_id,
                 String::new(),
+                None,
+                None,
                 &app_clone,
             ),
         );

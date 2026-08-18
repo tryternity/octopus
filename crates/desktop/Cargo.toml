@@ -108,6 +108,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # 剪贴板历史管理（clipboard-rs 监听 + 存储 + 图片处理）
 octopus-clipboard = { path = "../clipboard" }
 
+# 文档转 Markdown（ActionBar「转 Markdown」命令，spec 2026-08-18）
+octopus-convert = { path = "../convert" }
+
 # 密码 vault（AppState + 解锁态管理）—— follow-up #10: vault feature gate，
 # 关闭后整个 password manager 不编入（更小 binary、无 Keychain 访问）。
 octopus-vault = { path = "../vault", optional = true }

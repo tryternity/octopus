@@ -356,14 +356,25 @@ const AI_TIMEOUT_SECS: u64 = 10;
 /// Ok(true) = ai 已自行收口；Ok(false) = 成功需外层统一收口；Err = 异常需外层 finalize。
 /// Quick Execute（全局快捷键）和 ActionBar 路径共用——action_bar_show_result_internal
 /// 用 is_visible 检查自动适配 ActionBar 可见/不可见。
-pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
+pub(crate) async fn execute_action_bar_inner(
+    item_id: i64,
+    text: String,
+    html: Option<String>,
+    files: Option<Vec<String>>,
+    app: &AppHandle,
+) -> Result<bool, String> {
     let item = octopus_infra::db::load_action_bar_item(item_id)
         .map_err(e2s)?
         .ok_or("菜单项不存在")?;
 
-    // 从 PENDING_CONTEXT 取 files（Files 场景）
-    let app_state_files: Vec<String> = PENDING_CONTEXT.lock()
-        .as_ref().map(|c| c.files.clone()).unwrap_or_default();
+    // 从 PENDING_CONTEXT 取 files + html（Quick Execute 路径数据源，spec §3 优先级）
+    let (app_state_files, pending_html) = {
+        let guard = PENDING_CONTEXT.lock();
+        guard
+            .as_ref()
+            .map(|c| (c.files.clone(), c.html.clone()))
+            .unwrap_or_default()
+    };
 
     match item.action_type.as_str() {
         "ai" => {
@@ -579,16 +590,42 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             write_clipboard_text(app, &formatted);
             Ok(false)
         }
+        "markdown" => {
+            // 输入优先级（spec §3）：显式 files > PENDING files > html（显式 > PENDING）> text
+            let files_in = files.filter(|f| !f.is_empty()).unwrap_or(app_state_files);
+            let html_in = html.or(pending_html);
+            let text_in = text.clone();
+            let title = item.title.clone();
+            let write_clipboard = item.write_output_to_clipboard;
+            // 本地转换毫秒级但仍是同步 IO——spawn_blocking 防卡 runtime（对齐 ai 分支）
+            let result = tokio::task::spawn_blocking(move || {
+                crate::action_bar::action_bar_commands::markdown::run_markdown_convert(
+                    files_in, html_in, text_in,
+                )
+            })
+            .await
+            .map_err(|e| format!("转换线程异常: {}", e))??;
+            // 剪贴板写入由 show_result 内部统一处理（对齐 ai 分支模式，spec §5.2）
+            action_bar_show_result(result, String::new(), title, app.clone(), write_clipboard);
+            Ok(true)
+        }
         // "copy" 类型已从 Settings UI 删除（2026-07-19）——用户改用 Cmd+C。
         // 旧 DB 残留的 actionType="copy" 菜单走 _ 分支返回错误，提示用户去 Settings 改类型。
         _ => Err(format!("未知动作类型: {}", item.action_type)),
     }
 }
 
-/// 统一执行菜单项动作。
+/// 统一执行菜单项动作。html/files 为前端透传的可选上下文（markdown 命令用，spec §5.2）；
+/// Quick Execute 路径传 None，由 inner 回退读 PENDING_CONTEXT。
 #[tauri::command]
-pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
-    match execute_action_bar_inner(item_id, text, &app).await {
+pub async fn execute_action_bar(
+    item_id: i64,
+    text: String,
+    html: Option<String>,
+    files: Option<Vec<String>>,
+    app: AppHandle,
+) -> Result<(), String> {
+    match execute_action_bar_inner(item_id, text, html, files, &app).await {
         Ok(true) => Ok(()),
         Ok(false) => {
             // url/script/copy 成功 → 统一收口：标准隐藏 + 焦点交还 + 重入锁复位
