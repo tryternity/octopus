@@ -123,9 +123,33 @@ fn convert_and_save_url(
     )
 }
 
+/// 输入路由结果（spec §2 修订 2026-08-18 终审 ⑬）。
+#[derive(Debug, PartialEq)]
+pub(crate) enum InputRoute {
+    Files,
+    Url(String),
+    Html,
+    Text,
+}
+
+/// 输入路由（spec §2 修订 2026-08-18 终审 ⑬）：files > **url（意图优先——单行显式 URL
+/// 即抓取意图，浏览器对纯文本选区也写 html flavor，html 检查必须让位）** > html > text。
+pub(crate) fn route_input(files: &[String], html: Option<&str>, text: &str) -> InputRoute {
+    if !files.is_empty() {
+        return InputRoute::Files;
+    }
+    if let Some(url) = web::is_explicit_url(text) {
+        return InputRoute::Url(url);
+    }
+    if html.filter(|h| !h.trim().is_empty()).is_some() {
+        return InputRoute::Html;
+    }
+    InputRoute::Text
+}
+
 /// 生产入口：转换并保存到 markitdown_dir()（~/Documents/octopus/markitdown，可配置覆盖）。
-/// URL 路由（spec 2026-08-18-url-to-markdown §2）：files/html 空 + 显式 URL 时
-/// 走 fetch + 渲染 fallback（需 AppHandle 接 web_render）。
+/// URL 路由（spec 2026-08-18-url-to-markdown §2 修订 ⑬，route_input）：files > url（意图
+/// 优先） > html > text——url 走 fetch + 渲染 fallback（需 AppHandle 接 web_render）。
 pub(crate) fn convert_and_save(
     app: &tauri::AppHandle,
     files: Vec<String>,
@@ -133,15 +157,16 @@ pub(crate) fn convert_and_save(
     text: String,
 ) -> Result<(std::path::PathBuf, String), String> {
     let dir = octopus_infra::paths::markitdown_dir();
-    if files.is_empty() && html.is_none() {
-        if let Some(url) = web::is_explicit_url(&text) {
-            return convert_and_save_url(app, &url, &dir);
+    match route_input(&files, html.as_deref(), &text) {
+        InputRoute::Url(u) => convert_and_save_url(app, &u, &dir),
+        InputRoute::Files | InputRoute::Html | InputRoute::Text => {
+            convert_and_save_to(files, html, text, &dir)
         }
     }
-    convert_and_save_to(files, html, text, &dir)
 }
 
-/// 输入分派（优先级 spec §3）：files > html > text；全空 Err。
+/// 输入分派（优先级主 spec §3；显式 URL 已在 route_input 层分流，不进本函数）：
+/// files > html > text；全空 Err。
 /// 混合文件夹+文件：文件夹逐个 convert_folder，与文件结果以 `---` 分隔拼接。
 pub(crate) fn run_markdown_convert(
     files: Vec<String>,
@@ -327,6 +352,44 @@ mod tests {
         assert!(err.contains("暂不支持 .bin"), "err={}", err);
     }
 
+    // ── route_input（spec §2 修订 2026-08-18 终审 ⑬：files > url > html > text，表驱动）──
+
+    #[test]
+    fn test_route_input_priority_table() {
+        use InputRoute::*;
+        // files 压过一切（含显式 URL 与 html flavor）
+        assert_eq!(
+            route_input(&["/tmp/a.md".into()], Some("<h1>x</h1>"), "https://a.b"),
+            Files
+        );
+        // url 意图优先：压过 html flavor——浏览器对纯文本选区也写 html（终审 ⑬ 核心场景）
+        assert_eq!(
+            route_input(&[], Some("<a href=\"x\">链接选区</a>"), "https://a.b"),
+            Url("https://a.b".into())
+        );
+        assert_eq!(
+            route_input(&[], Some("<p>选区</p>"), "www.x.com"),
+            Url("https://www.x.com".into())
+        );
+        assert_eq!(route_input(&[], None, "http://a.b"), Url("http://a.b".into()));
+        // html 压过普通文本
+        assert_eq!(route_input(&[], Some("<h1>H</h1>"), "普通文本"), Html);
+        // 纯文本直通
+        assert_eq!(route_input(&[], None, "普通文本"), Text);
+    }
+
+    #[test]
+    fn test_route_input_empty_whitespace_is_text() {
+        use InputRoute::Text;
+        assert_eq!(route_input(&[], None, ""), Text);
+        assert_eq!(route_input(&[], None, "  \n\t "), Text);
+        assert_eq!(
+            route_input(&[], Some("   "), "  "),
+            Text,
+            "空白 html flavor 视为无"
+        );
+    }
+
     // ── URL 编排（spec 2026-08-18-url-to-markdown §2，fake 注入——网络不进单测）──
 
     fn fake_page(title: Option<&str>, html: &str, final_url: &str) -> octopus_convert::web::FetchedPage {
@@ -383,7 +446,8 @@ mod tests {
             |_u| panic!("fetch 失败不应触发渲染"),
         )
         .unwrap_err();
-        assert!(err.contains("404"), "err={}", err);
+        // §9⑭ 前缀去重回归：编排层唯一前缀（双重前缀会破坏等值断言）
+        assert_eq!(err, "抓取失败: HTTP 404");
     }
 
     #[test]
@@ -398,7 +462,8 @@ mod tests {
             |_u| Err("渲染超时".to_string()),
         )
         .unwrap_err();
-        assert!(err.contains("渲染超时"), "err={}", err);
+        // §9⑭ 前缀去重回归：编排层唯一前缀（双重前缀会破坏等值断言）
+        assert_eq!(err, "渲染失败: 渲染超时");
         assert!(dir.read_dir().map(|mut d| d.next().is_none()).unwrap_or(true), "不落半成品");
     }
 }

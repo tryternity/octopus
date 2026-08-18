@@ -820,3 +820,15 @@ git commit -m "docs: 同步 URL 抓取转 Markdown（desktop-app/architecture/sp
 **验证**：`cargo build` 0 error 0 warning；`cargo test` 全 workspace 902 passed / 1 failed（`test_collect_open_tabs_oversized_image_rejected`，pre-existing flake——Task 4 已在干净 HEAD 验证与本 feature 无关，单跑通过）/ 17 ignored；前端 `tsc --noEmit` + `vite build` 通过。
 
 **未完成**：Task 5 Step 2 手动 e2e（用户侧执行——5 场景见上）。
+
+## 实施记录 · 终审修复（2026-08-18）
+
+单 commit `fix(url-md): 终审修复——URL 意图优先路由/错误前缀去重/UA 标签/stale guard`（代码 + 文档同步），修复终审 3 项 finding（详见 spec §9⑬-⑯）：
+
+| Finding | 级别 | 修复 |
+|---|---|---|
+| URL 输入被 html flavor 遮蔽 | Important | `convert_and_save` 原 gate 要求 `files.is_empty() && html.is_none()`，但浏览器对纯文本选区也写 html flavor → 页内选中 URL 被遮蔽进 html-conversion（垃圾 `[url](url)`）。路由抽为纯函数 `route_input`：**files > url（意图优先） > html > text**，表驱动单测 2 个（markdown.rs） |
+| 错误前缀双重叠加 | Important | ① `ConvertError` 新增 `Web(String)` 裸变体（Display 无前缀）替换 `Html`（fetch_page 唯一使用者，变体删除）→「抓取失败: HTTP 404」单前缀；② `render_html` 返裸消息（去掉自带「渲染失败: 」前缀）→「渲染失败: 渲染超时（SPA 页面）」单前缀 |
+| Minor bundle | Minor | ⑮ UA 注释/spec 标签 Chrome→Safari（与 WKWebView 渲染一致）；⑯-① stale probe guard（settled 后忽略旧探针迟到 Failed）；⑯-② create 派发 fail-fast（`run_on_main_thread` Err 立即 Failed，避免 20s 空转） |
+
+**验证**：`cargo build -p octopus-convert -p octopus-desktop` 0 error 0 warning；`cargo test -p octopus-convert --lib` 33 passed（+`Web` Display 测试）；`cargo test -p octopus-desktop markdown` 20 passed（18 既有 + 2 route_input，404/渲染超时传播测试保持绿）。

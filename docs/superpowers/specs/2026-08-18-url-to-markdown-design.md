@@ -12,15 +12,19 @@
 |---|---|
 | 抓取深度 | **静态 + 渲染 fallback**：静态抓到 SPA 空壳时用离屏 WKWebView 渲染后重转 |
 | URL 识别 | **仅显式**：text trim 后单行且以 `http://` / `https://` / `www.` 开头（www. 补全 https://）；其余照旧纯文本直通——裸域名/IP 不识别（防误抓） |
-| 识别位置 | **后端**（`convert_and_save_to` 入口）——前端零改动，Quick Execute 自动覆盖 |
+| 识别位置 | **后端**（`convert_and_save` 入口 `route_input`，⑬ 修订后 files > url > html > text）——前端零改动，Quick Execute 自动覆盖 |
 
 **范围外（v1 不做）**：URL 直连 PDF/办公文档转换（Content-Type 非 HTML 直接报错；后续可用 anydoc 扩展）；登录墙/个性化内容（WKWebView 干净会话，不共享 cookie）；渲染后页面的滚动触发懒加载（settle 固定 2s）。
 
 ## 2. 数据流与决策树
 
+> 输入优先级（2026-08-18 终审 ⑬ 修订，与 §9 注记一致）：**files > url > html > text**。
+
 ```
-convert_and_save_to(files, html, text)：
-  files/html 空 && is_explicit_url(text)
+convert_and_save(files, html, text)——route_input 纯函数分流：
+  files 非空 → 现有 run_markdown_convert + output_file_stem（零变化）
+  is_explicit_url(text)（单行显式 URL——意图优先于 html flavor：浏览器对纯文本
+    选区也写 html，原「files/html 空」gate 会遮蔽页内选中的 URL）
     → URL 路径：
        1. 静态抓取 fetch_page（octopus-convert::web）
        2. md = absolutize + htmd(html)
@@ -30,10 +34,10 @@ convert_and_save_to(files, html, text)：
               → outerHTML → absolutize + htmd → (md, stem)
               → 渲染超时/失败 → Err（不落半成品）
     → 落盘 <stem>_<时间戳>.md（复用碰撞后缀）→ CompactEditor file tab
-  其余输入 → 现有 run_markdown_convert + output_file_stem（零变化）
+  html / text → 现有 run_markdown_convert + output_file_stem（零变化）
 ```
 
-`run_markdown_convert` 签名与语义不变（URL 编排在 `convert_and_save_to` 层，其 7 个测试零波及）。
+`run_markdown_convert` 签名与语义不变（URL 编排在 `convert_and_save` 层经 `route_input` 分流，其既有测试零波及）。
 
 ## 3. 静态抓取（octopus-convert 新 `web.rs`）
 
@@ -50,7 +54,7 @@ fn sniff_charset(headers: &[u8], body_head: &[u8]) -> &'static encoding_rs::Enco
 |---|---|
 | 客户端 | reqwest 0.12（desktop 已依赖；**补 `gzip` feature**——部分站点强制 gzip） |
 | 超时 | `WEB_FETCH_TIMEOUT_SECS = 15`（infra HTTP_TIMEOUT 120s 是长任务语义，不适用） |
-| 请求头 | Chrome macOS UA + `Accept-Language: zh-CN`（默认 reqwest UA 会被 403） |
+| 请求头 | Safari macOS UA（Version/17.4，与 WKWebView 渲染 fallback 同族——⑮ 修正，原误写 Chrome）+ `Accept-Language: zh-CN`（默认 reqwest UA 会被 403） |
 | 重定向 | reqwest 默认跟随；base 用 `response.url()`（重定向后最终 URL） |
 | 非 2xx / 非 HTML / 大小 | 报错（含状态码）/「该 URL 不是 HTML 页面」/ HTML > `WEB_MAX_HTML_BYTES = 20MB` 拒绝 |
 | charset | Content-Type charset → BOM → 前 2KB `<meta charset>` 嗅探 → 默认 UTF-8；非 UTF-8 经 `encoding_rs` 解码（GBK/GB18030/Shift_JIS/Big5/Latin1 常见表） |
@@ -134,4 +138,13 @@ pub fn render_html(url: &str) -> Result<String, String>  // 返回 outerHTML
 11. **absolutize 已知限制**（§3）：代码块内的示例相对路径同样被正则改写（md 后处理不理解代码块语义，接受）。
 12. **plan brief 两处笔误修正**：sniff_charset 偏移（见 6）；Task 1 期望计数「24 既有 + 7 新」——实际新增 **6** 个测试 fn（24+6=30，最终 30 passed 与期望值吻合，「+7」为笔误）。
 
+终审修复追加（2026-08-18 终审，同一 worktree 单 commit）：
+
+13. **输入优先级修订**（§2）：**url 提升到 html 之前**（files > url > html > text）——意图优先。终审发现浏览器对纯文本选区也写 html flavor，原「files/html 空 && 显式 URL」gate 把页内选中的 URL 遮蔽进 html-conversion（产出垃圾 `[url](url)`），§1 核心场景「选中 URL → 抓取」失效。路由抽为纯函数 `route_input`（markdown.rs，表驱动单测 2 个）。
+14. **错误前缀去重**（§6）：`ConvertError` 新增 `Web(String)` **裸变体**（Display 无前缀）替换 `Html` 变体——原「HTML 转换失败: 」与编排层「抓取失败: 」叠加成双重前缀（「抓取失败: HTML 转换失败: HTTP 404」）；fetch_page 是 `Html` 唯一使用者，变体已删。`render_html` 同步改返**裸消息**（「渲染超时（SPA 页面）」/「通道关闭」/ JS 错误原文，去掉自带的「渲染失败: 」前缀）——两条链的前缀均由编排层（`convert_and_save_url_with`）唯一叠加 → 「抓取失败: HTTP 404」/「渲染失败: 渲染超时（SPA 页面）」各单前缀。
+15. **UA 标签修正**（§3）：`DESKTOP_UA` 实为 **Safari macOS UA**（Version/17.4 Safari/605.1.15，与 WKWebView 渲染 fallback 同族）——原 spec 表格与 fetch_page 注释误写 Chrome。
+16. **web_render 加固**（§4）：① **stale probe guard**——monitor 循环收到 `Signal::Failed` 时若已 settled（final evaluate 在途）则忽略并 continue（旧探针迟到失败不是权威结果；代价：final evaluate 自身失败时以 deadline 超时文案兜底）；② **create fail-fast**——`run_on_main_thread` 派发失败（app 退出中）立即发 `Failed("主线程派发失败")`，避免监控循环空转 20s。
+
 **验证**（2026-08-18，worktree `markdown-conversion`）：`cargo build` 0 error 0 warning；`cargo test` 全 workspace 902 passed / 1 failed / 17 ignored——唯一失败 `test_collect_open_tabs_oversized_image_rejected` 为 **pre-existing flake**（Task 4 已在干净 HEAD `dda1b583` 验证全量跑失败、单跑通过；Task 5 复跑单跑同样通过，测试隔离问题，与本 feature 无关）；前端 `tsc --noEmit` 0 error + `vite build` 通过。手动 e2e（spec §7）待用户侧执行。
+
+**终审修复验证**（2026-08-18）：`cargo build -p octopus-convert -p octopus-desktop` 0 error 0 warning；`cargo test -p octopus-convert --lib` **33 passed**（32 + `Web` Display 裸前缀测试）；`cargo test -p octopus-desktop markdown` **20 passed**（18 既有含 404/渲染超时传播两测试 + 2 新 route_input 表驱动）。

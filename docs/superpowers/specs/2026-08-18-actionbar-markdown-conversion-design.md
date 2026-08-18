@@ -67,7 +67,7 @@
         → write_output_to_clipboard=1 时同时写剪贴板；失败开错误 temp tab
 ```
 
-**inner 输入优先级**：显式 `files` 参数 > `PENDING_CONTEXT.files` > `html` > `text`；全空报「没有可转换的内容」。文件路径按 `is_dir` 分流 `convert_folder` / `convert_files`。
+**inner 输入优先级**：显式 `files` 参数 > `PENDING_CONTEXT.files` > `url`（单行显式 URL，意图优先于 `html`——2026-08-18 终审修订，见 [URL spec §9⑬](2026-08-18-url-to-markdown-design.md)）> `html` > `text`；全空报「没有可转换的内容」。文件路径按 `is_dir` 分流 `convert_folder` / `convert_files`。
 
 ### 3.1 格式分派矩阵（octopus_convert::dispatch）
 

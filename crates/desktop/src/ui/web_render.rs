@@ -56,6 +56,8 @@ enum Signal {
 
 /// 离屏 WKWebView 渲染 URL → outerHTML（spec §2 决策树的渲染 fallback）。
 /// 阻塞调用（≤ `RENDER_TIMEOUT_SECS` + settle 余量），供 spawn_blocking 线程使用。
+/// 返回**裸**错误消息（超时/通道关闭/JS 错误原文）——「渲染失败: 」前缀由编排层
+/// （markdown.rs `convert_and_save_url_with`）唯一叠加（spec §9⑭ 前缀去重）。
 pub fn render_html(app: &tauri::AppHandle, url: &str) -> Result<String, String> {
     let (tx, rx) = mpsc::channel::<Signal>();
     let done = Arc::new(AtomicBool::new(false));
@@ -68,27 +70,34 @@ pub fn render_html(app: &tauri::AppHandle, url: &str) -> Result<String, String> 
     let tx_create = tx.clone();
     let done_create = done.clone();
     let slot_create = slot.clone();
-    let _ = app.run_on_main_thread(move || {
-        let Some(mtm) = MainThreadMarker::new() else {
-            let _ = tx_create.send(Signal::Failed("主线程标记获取失败".into()));
-            return;
-        };
-        // SAFETY: mtm 证明在主线程（WKWebView 必须主线程创建）；离屏（不 attach
-        // window），加载与 JS 执行由 Tauri 的 NSApplication 主 runloop 驱动。
-        let webview = unsafe { WKWebView::new(mtm) };
-        let Some(nsurl) = NSURL::URLWithString(&NSString::from_str(&url_owned)) else {
-            // webview 随闭包结束 drop（Retained 引用计数归零，主线程释放）
-            let _ = tx_create.send(Signal::Failed("非法 URL".into()));
-            return;
-        };
-        let request = NSURLRequest::requestWithURL(&nsurl);
-        // SAFETY: request 为有效引用；返回的 Retained<WKNavigation> 立即 drop
-        //（一次 release）不影响已发起的导航。
-        let _ = unsafe { webview.loadRequest(&request) };
-        // SAFETY: into_raw 裸指针经 slot 传递——见模块 unsafe 契约。
-        slot_create.store(Retained::into_raw(webview) as usize, Ordering::SeqCst);
-        probe_once(&slot_create, tx_create, done_create);
-    });
+    // 派发失败（app 退出中）立即 Failed——否则闭包永不执行、监控循环空转到 20s deadline
+    //（spec §9⑯ create fail-fast）。
+    if app
+        .run_on_main_thread(move || {
+            let Some(mtm) = MainThreadMarker::new() else {
+                let _ = tx_create.send(Signal::Failed("主线程标记获取失败".into()));
+                return;
+            };
+            // SAFETY: mtm 证明在主线程（WKWebView 必须主线程创建）；离屏（不 attach
+            // window），加载与 JS 执行由 Tauri 的 NSApplication 主 runloop 驱动。
+            let webview = unsafe { WKWebView::new(mtm) };
+            let Some(nsurl) = NSURL::URLWithString(&NSString::from_str(&url_owned)) else {
+                // webview 随闭包结束 drop（Retained 引用计数归零，主线程释放）
+                let _ = tx_create.send(Signal::Failed("非法 URL".into()));
+                return;
+            };
+            let request = NSURLRequest::requestWithURL(&nsurl);
+            // SAFETY: request 为有效引用；返回的 Retained<WKNavigation> 立即 drop
+            //（一次 release）不影响已发起的导航。
+            let _ = unsafe { webview.loadRequest(&request) };
+            // SAFETY: into_raw 裸指针经 slot 传递——见模块 unsafe 契约。
+            slot_create.store(Retained::into_raw(webview) as usize, Ordering::SeqCst);
+            probe_once(&slot_create, tx_create, done_create);
+        })
+        .is_err()
+    {
+        let _ = tx.send(Signal::Failed("主线程派发失败".into()));
+    }
 
     // ── 监控循环（本线程）：recv 超时 = 探针重投节拍；deadline 兜底退出 ──
     let deadline = Instant::now() + Duration::from_secs(RENDER_TIMEOUT_SECS);
@@ -104,8 +113,14 @@ pub fn render_html(app: &tauri::AppHandle, url: &str) -> Result<String, String> 
                 return Ok(h);
             }
             Ok(Signal::Failed(e)) => {
+                if settled {
+                    // 陈旧探针的 Failed（spec §9⑯ stale guard）：settle 后 final evaluate
+                    // 已在途——它是权威出口（自身失败会再发 Failed / 成功发 Html），
+                    // 旧探针迟到失败不应中断本轮渲染。
+                    continue;
+                }
                 cleanup_on_main(app, &slot, &done);
-                return Err(format!("渲染失败: {}", e));
+                return Err(e);
             }
             Ok(Signal::Ready) => {
                 if settled {
@@ -135,7 +150,7 @@ pub fn render_html(app: &tauri::AppHandle, url: &str) -> Result<String, String> 
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 cleanup_on_main(app, &slot, &done);
-                return Err("渲染失败: 通道关闭".into());
+                return Err("通道关闭".into());
             }
         }
     }

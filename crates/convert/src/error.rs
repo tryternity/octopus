@@ -5,7 +5,11 @@ use std::fmt;
 pub enum ConvertError {
     UnsupportedFormat(String),
     Anydoc(String),
-    Html(String),
+    /// 网络抓取（`web::fetch_page`）裸消息——Display **不加前缀**，由编排层
+    /// （desktop markdown.rs `convert_and_save_url_with`）统一叠「抓取失败: 」
+    /// （spec 2026-08-18-url-to-markdown §9⑭ 前缀去重——原 `Html` 变体的
+    /// 「HTML 转换失败: 」前缀与编排层叠加成双重前缀，且 fetch_page 是其唯一使用者，已删）。
+    Web(String),
     Io(std::io::Error),
     TooManyFiles { count: usize, max: usize },
     TooLarge { bytes: u64, max_bytes: u64 },
@@ -17,7 +21,7 @@ impl fmt::Display for ConvertError {
         match self {
             Self::UnsupportedFormat(ext) => write!(f, "暂不支持 .{} 格式", ext),
             Self::Anydoc(e) => write!(f, "文档转换失败: {}", e),
-            Self::Html(e) => write!(f, "HTML 转换失败: {}", e),
+            Self::Web(msg) => write!(f, "{}", msg),
             Self::Io(e) => write!(f, "文件读取失败: {}", e),
             Self::TooManyFiles { count, max } => {
                 write!(f, "{} 个文件超出上限（最多 {} 个），请缩小范围", count, max)
@@ -70,6 +74,16 @@ mod tests {
     #[test]
     fn test_display_empty() {
         assert_eq!(ConvertError::Empty.to_string(), "没有可转换的内容");
+    }
+
+    #[test]
+    fn test_display_web_bare_no_prefix() {
+        // §9⑭ 前缀去重：Web 变体 Display 裸消息——前缀由编排层（markdown.rs）唯一叠加
+        assert_eq!(ConvertError::Web("HTTP 404".into()).to_string(), "HTTP 404");
+        assert_eq!(
+            ConvertError::Web("该 URL 不是 HTML 页面".into()).to_string(),
+            "该 URL 不是 HTML 页面"
+        );
     }
 
     #[test]

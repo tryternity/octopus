@@ -60,26 +60,28 @@ pub struct FetchedPage {
     pub title: Option<String>,
 }
 
+/// Safari macOS UA——与 WKWebView 渲染 fallback 同一浏览器族（spec §9⑮：原注释误标 Chrome）。
 const DESKTOP_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
 
 /// 静态抓取（spec §3）：GET → 状态/类型/大小守卫 → charset 解码 → title。
-/// 网络函数不进单测（编译级 + 手动 e2e）；15s 超时、Chrome UA、gzip。
+/// 网络函数不进单测（编译级 + 手动 e2e）；15s 超时、Safari macOS UA（与渲染
+/// fallback 一致）、gzip。错误统一 `ConvertError::Web` 裸消息（§9⑭——前缀由编排层叠）。
 /// blocking client——调用方（Tauri 命令层）在 spawn_blocking 上下文里执行。
 pub fn fetch_page(url: &str) -> Result<FetchedPage, ConvertError> {
     let resp = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS))
         .user_agent(DESKTOP_UA)
         .build()
-        .map_err(|e| ConvertError::Html(e.to_string()))?
+        .map_err(|e| ConvertError::Web(e.to_string()))?
         .get(url)
         // brief 将 header 挂在 ClientBuilder 上——reqwest 0.12 blocking 无此方法，
         // 移到 RequestBuilder（语义等价：本请求的 Accept-Language）。
         .header("Accept-Language", "zh-CN,zh;q=0.9")
         .send()
-        .map_err(|e| ConvertError::Html(format!("网络请求失败: {}", e)))?;
+        .map_err(|e| ConvertError::Web(format!("网络请求失败: {}", e)))?;
     let status = resp.status();
     if !status.is_success() {
-        return Err(ConvertError::Html(format!("HTTP {}", status.as_u16())));
+        return Err(ConvertError::Web(format!("HTTP {}", status.as_u16())));
     }
     let content_type = resp
         .headers()
@@ -88,7 +90,7 @@ pub fn fetch_page(url: &str) -> Result<FetchedPage, ConvertError> {
         .unwrap_or("")
         .to_ascii_lowercase();
     if !content_type.contains("text/html") && !content_type.contains("xhtml") && !content_type.contains("xml") {
-        return Err(ConvertError::Html("该 URL 不是 HTML 页面".into()));
+        return Err(ConvertError::Web("该 URL 不是 HTML 页面".into()));
     }
     let final_url = resp.url().to_string();
     let header_charset = content_type
@@ -96,9 +98,9 @@ pub fn fetch_page(url: &str) -> Result<FetchedPage, ConvertError> {
         .find_map(|p| p.trim().strip_prefix("charset=").map(str::to_string));
     let bytes = resp
         .bytes()
-        .map_err(|e| ConvertError::Html(format!("读取响应失败: {}", e)))?;
+        .map_err(|e| ConvertError::Web(format!("读取响应失败: {}", e)))?;
     if bytes.len() > WEB_MAX_HTML_BYTES {
-        return Err(ConvertError::Html("页面过大（上限 20MB）".into()));
+        return Err(ConvertError::Web("页面过大（上限 20MB）".into()));
     }
     let enc = sniff_charset(header_charset.as_deref(), &bytes);
     let (html, _, _) = enc.decode(&bytes);
