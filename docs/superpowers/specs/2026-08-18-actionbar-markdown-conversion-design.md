@@ -21,7 +21,7 @@
 
 ### 范围外（v1 明确不做）
 
-- **URL 抓取**：选中 URL 不做本地 GET + html→md，留作后续独立 task（含静态抓取 vs WKWebView 渲染的取舍）
+- **URL 抓取**：v1 不做——已于 2026-08-18 独立 spec 落地设计：[url-to-markdown](2026-08-18-url-to-markdown-design.md)（静态 + WKWebView 渲染 fallback）
 - **图片 → OCR → Markdown**：现有 `octopus-ocr::layout::to_markdown` 链路可作后续扩展点，v1 图片一律 skipped
 - **zip/tar 压缩包递归**：v1 视为 Binary 跳过
 - **剪贴板恢复时保留 HTML flavor**：模拟 Cmd+C 覆盖剪贴板后恢复写回，原剪贴板自带的 HTML flavor 会丢失（少见场景，接受）
