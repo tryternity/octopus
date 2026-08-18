@@ -8,7 +8,7 @@ import {
 import ImagePreviewComponent from "@/pages/ImagePreview";
 import { MarkdownPane } from "./MarkdownPane";
 import { TranslationContrastPane } from "./TranslationContrastPane";
-import { mergePendingTabs } from "./mergePendingTabs";
+import { mergePendingTabs, MAX_IMAGE_TABS } from "./mergePendingTabs";
 import { promoteTempTab } from "./promoteTempTab";
 import TabHoverCard from "./TabHoverCard";
 import { useT, t as ti18n } from "@/lib/i18n";
@@ -79,7 +79,6 @@ function pendingToTab(p: PendingTabFull): Tab {
 const FONT_KEY = "compact-editor-font-size";
 const FONT_MIN = 12;
 const FONT_MAX = 24;
-const MAX_IMAGE_TABS = 5;
 
 function tabTitle(tab: Tab): string {
   const text = tab.text || "";
@@ -322,7 +321,7 @@ function CompactEditor() {
         const errors = (payload as string[]) || [];
         if (errors.length === 0) return;
         showToast(
-          t("editor.openFailed", { n: String(errors.length), detail: errors.join("、") }),
+          t("editor.openFailed", { n: String(errors.length), detail: errors.join(t("editor.errorsSep")) }),
           "warning",
         );
       });
@@ -562,7 +561,7 @@ function CompactEditor() {
       const res = await invoke<{ errors: string[] }>("open_files_in_editor", { paths });
       if (res.errors.length > 0) {
         showToast(
-          t("editor.openFailed", { n: String(res.errors.length), detail: res.errors.join("、") }),
+          t("editor.openFailed", { n: String(res.errors.length), detail: res.errors.join(t("editor.errorsSep")) }),
           "warning",
         );
       }
@@ -576,7 +575,7 @@ function CompactEditor() {
   const handleOpenFiles = useCallback(async () => {
     const selected = await openDialog({
       multiple: true,
-      filters: [{ name: "文本与图片", extensions: TEXT_IMAGE_EXTS }],
+      filters: [{ name: t("editor.openFilesFilter"), extensions: TEXT_IMAGE_EXTS }],
     });
     await openFilesCoreRef.current(normalizeDialogSelection(selected));
   }, []);

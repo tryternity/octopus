@@ -134,3 +134,9 @@ pub async fn open_files_in_editor(paths: Vec<String>, app: AppHandle) -> Result<
 11. **md5 itemId i64 溢出修复（pre-existing bug，Critical）**：`open_disk_file_in_compact_editor` 与 `collect_open_tabs` 两处的 `i64::from_str_radix(&hash[..16], 16)` 在 md5 首位为 8-f 时超 `i64::MAX` 解析失败 → `unwrap_or(0)` → itemId "0"（~50% 路径在 tab key `file:0` 上碰撞，多选文本第二 tab 被去重丢弃）。两处统一改 `u64::from_str_radix`（16 hex 恒 ≤ u64::MAX，永不溢出）——表达式一字不差，跨路径去重依赖两处一致。回归测试 `test_collect_open_tabs_md5_no_i64_overflow`：固定探针路径 md5 首位 'c'，断言 itemId ≠ "0" 且等于 u64 期望值 + 同批次重复打开共享 itemId。
 12. **`ingest_image_file` 补 40MB 尺寸守卫（Important）**：镜像 `watcher.rs:159-164` 的超大图跳过——`load_from_memory` 后按 `w * h * 4 > 40 * 1024 * 1024` 拒绝（在 `to_rgba8` 前拦截，否则 48MP 照片瞬时 ~500MB RGBA），错误文案「图片过大（上限约 40MB 解码后）」流入 errors。回归测试 `test_collect_open_tabs_oversized_image_rejected`（4000×3000 ≈ 45.8MiB）。
 13. **建窗首 tab URL 注入恢复（Important，撤销注记 3 的连带丢失）**：`open_tabs_batched` 泛化时窗口不存在分支的 `create_compact_editor_window(app, None)` 丢失了原 `open_compact_editor_tabs` 的 `pending_data.as_ref()` 首参——URL 注入块（`compact_editor_window.rs`）与前端 `readInitialTabFromUrl` 成死代码，与 `docs/architecture.md` 记载的「零 IPC 首屏」矛盾。恢复为传本批次首 tab（`tabs.first().cloned()`；另两个调用方 `open_temp_compact_editor` / `open_disk_file_in_compact_editor` 维持 `None` 不变）。
+
+### 后续批次（2026-08-18 P1/P2 回写）
+
+14. **错误文案全 i18n（P1）**：`collect_open_tabs`/`ingest_image_file` 的原因串改经 `ui::i18n::t("editor.openErr*")`；dialog filter 名（`editor.openFilesFilter`）与 errors 分隔符（`editor.errorsSep`：zh `、` / en `; `）前后端同源。en 用户不再见中文（菜单栏 ⌘O 入口的 filter 名同步修正——此前误用 `menu.openFiles`）。
+15. **文本 50MB 帽（P2）**：`collect_open_tabs` 文本分支读前按 metadata 拦截（mirror `watcher.rs:219`），错误 `editor.openErrTextTooLarge`；测试 `test_collect_open_tabs_text_size_cap`。
+16. **pending 路径 MAX_IMAGE_TABS 强制（P2）**：`MAX_IMAGE_TABS` 常量迁至 `mergePendingTabs.ts` 导出（index.tsx 复用）；合并时超 5 挤掉最旧图片 tab（对齐 loadAndAddTab 逐事件语义），§4.4 的「同路径生效」由部分成立变为完全成立。测试 +3（超限挤旧/恰好不挤/混合只挤图片）。

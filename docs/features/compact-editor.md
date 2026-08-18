@@ -127,7 +127,8 @@ type Tab = {
 
 | 入口 | 实现 |
 |------|------|
-| 工具栏「打开」按钮 | tab 栏尾部 `FolderOpen` 图标 → plugin-dialog `open({ multiple: true })`，filter 提示文本+图片扩展名（`openFilesUtils.ts::TEXT_IMAGE_EXTS`——**仅选择器提示用**，后端才是真相源：拖拽不限扩展名）。tab 栏因此**常驻**（0 tab 也能打开文件） |
+| 工具栏「打开」按钮 | tab 栏**最前**（所有 tab 之前，`flex-shrink-0` 不随横向滚动移位）`FolderOpen` 图标 → plugin-dialog `open({ multiple: true })`，filter 提示文本+图片扩展名（`openFilesUtils.ts::TEXT_IMAGE_EXTS`——**仅选择器提示用**，后端才是真相源：拖拽不限扩展名）。tab 栏因此**常驻**（0 tab 也能打开文件） |
+| 菜单栏 File「打开文件…」（⌘O） | macOS 系统菜单（`ui/app_menu.rs`，2026-08-18）→ Rust 侧 plugin-dialog 同款选择器 → 复用 `collect_open_tabs` → `open_tabs_batched` 同一后端管线；失败经 `open-files://errors` emit 给 CompactEditor toast（编辑器未开仅日志）。系统菜单全量 i18n 并随 `locale-changed` 重建 |
 | 拖文件入窗口 | `getCurrentWebview().onDragDropEvent`（WKWebView 下 HTML5 DnD 不可靠，Terminal 同模式）；listener 回调经 ref 稳定化 + `useEffect([])` 只挂一次（跨窗口 listener 踩坑规范）；drag-over 期间容器加 `ring` 高亮 |
 
 ### 类型分流（后端 `collect_open_tabs`，spawn_blocking 防卡 runtime）
@@ -137,8 +138,10 @@ type Tab = {
 
 ### 约束与错误反馈
 
-- **图片 tab 上限**沿用 `MAX_IMAGE_TABS = 5`（超 5 替换最旧，loadAndAddTab 既有逻辑同路径生效）
-- 失败**不中断批次**，逐个收集进返回值 `errors`（`<文件名>（<原因>）`）；前端非空时聚合 warning toast（不自动消失——需看清失败清单）。原因：文件夹（暂不支持文件夹）/ 文件不存在 / 非 UTF-8 文本或读取失败 / 图片解码失败。空 paths / 全部失败命令本身不 Err
+- **图片 tab 上限** `MAX_IMAGE_TABS = 5`（`mergePendingTabs.ts` 导出，index.tsx 复用）——emit 路径经 loadAndAddTab 逐事件强制、**pending 批量路径由 `mergePendingTabs` 合并时强制**（超 5 挤掉最旧图片 tab，文本不受影响；P2 2026-08-18 补齐——此前关窗状态拖 N 张图可绕过上限）
+- **文本 50MB 帽**（P2 2026-08-18，watcher.rs:219 同款）：`collect_open_tabs` 读文本前按 metadata 拦截——超大文本全量进 CM6 会秒级建态 + 双倍内存（预览截断只护 preview 不护 editor）
+- 失败**不中断批次**，逐个收集进返回值 `errors`（`<文件名>（<原因>）`）；前端非空时聚合 warning toast（不自动消失——需看清失败清单）。原因：文件夹 / 文件不存在 / 非 UTF-8 / 图片解码失败 / 图片过大（~40MB）/ 文本过大（50MB）。空 paths / 全部失败命令本身不 Err
+- **错误文案全 i18n**（P1 2026-08-18）：后端原因串经 `ui::i18n::t("editor.openErr*")`（与前端共用 locales yaml），dialog filter 名（`editor.openFilesFilter`）与 errors 分隔符（`editor.errorsSep`，zh `、` / en `; `）同源——en 用户不再见中文
 - 大文本自动受益**预览截断防护**（>256KB 行边界截断，见 §5 大文档防护），无需专门处理
 
 ### 批量送出（`open_tabs_batched`）

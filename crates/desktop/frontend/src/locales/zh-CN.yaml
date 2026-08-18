@@ -49,6 +49,19 @@ editor:
   previewTruncated: 文档较大，预览仅显示前 ${shown}（全文 ${total}）——完整内容请用编辑栏
   openFile: 打开文件
   openFailed: "${n} 个文件打开失败：${detail}"
+  openFilesFilter: 文本与图片
+  errorsSep: 、
+  openErrDir: 暂不支持文件夹
+  openErrNotExist: 文件不存在
+  openErrNotUtf8: 非 UTF-8 文本或读取失败
+  openErrRead: 读取失败
+  openErrDecode: 图片解码失败
+  openErrTooLarge: 图片过大（上限约 40MB 解码后）
+  openErrTextTooLarge: 文本过大（上限 50MB）
+  openErrDb: DB 查询失败
+  openErrEncode: 编码失败
+  openErrStore: 图片存储失败
+  openErrHistory: 历史写入失败
   translate: 翻译
   translateFail: 翻译失败
   translateConfirm: 再按确认覆盖译文

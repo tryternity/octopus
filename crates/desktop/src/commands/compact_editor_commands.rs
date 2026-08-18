@@ -249,14 +249,14 @@ fn is_image_ext(ext: &str) -> bool {
 /// 读 bytes → 解码 → hash_rgba 去重（find_by_content_hash 命中则 touch 已有行）
 /// → insert_image_data + insert_clipboard_item(type=image)。返回 (historyId, w, h)。
 fn ingest_image_file(path: &std::path::Path) -> Result<(String, i64, i64), String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("读取失败: {}", e))?;
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {}", crate::ui::i18n::t("editor.openErrRead", &[]), e))?;
     let dyn_img = ::image::load_from_memory(&bytes)
-        .map_err(|_| "图片解码失败".to_string())?;
+        .map_err(|_| crate::ui::i18n::t("editor.openErrDecode", &[]))?;
     // 超大图守卫（终审 Finding 2，镜像 watcher.rs 超过 40MB 跳过）：估算 RGBA 尺寸
     // 超限直接拒绝，在 to_rgba8 前拦截——否则 48MP 照片瞬时分配 ~500MB RGBA。
     let estimated_size = (dyn_img.width() as usize) * (dyn_img.height() as usize) * 4;
     if estimated_size > 40 * 1024 * 1024 {
-        return Err("图片过大（上限约 40MB 解码后）".to_string());
+        return Err(crate::ui::i18n::t("editor.openErrTooLarge", &[]));
     }
     let rgba_img = dyn_img.to_rgba8();
     let (w, h) = (rgba_img.width(), rgba_img.height());
@@ -267,7 +267,7 @@ fn ingest_image_file(path: &std::path::Path) -> Result<(String, i64, i64), Strin
     let existing = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::find_by_content_hash(conn, &hash)
     })
-    .map_err(|e| format!("DB 查询失败: {}", e))?;
+    .map_err(|e| format!("{}: {}", crate::ui::i18n::t("editor.openErrDb", &[]), e))?;
     if let Some(id) = existing {
         let _ = octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::touch_created_at(conn, &id)
@@ -279,13 +279,13 @@ fn ingest_image_file(path: &std::path::Path) -> Result<(String, i64, i64), Strin
         ::image::RgbaImage::from_raw(w, h, rgba).ok_or("RgbaImage::from_raw failed")?,
     );
     let encoded = octopus_clipboard::image::encode_image(&dyn_img)
-        .map_err(|e| format!("编码失败: {}", e))?;
+        .map_err(|e| format!("{}: {}", crate::ui::i18n::t("editor.openErrEncode", &[]), e))?;
     octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::insert_image_data(
             conn, &hash, &encoded.image_blob, &encoded.thumb_blob, w as i64, h as i64,
         )
     })
-    .map_err(|e| format!("图片存储失败: {}", e))?;
+    .map_err(|e| format!("{}: {}", crate::ui::i18n::t("editor.openErrStore", &[]), e))?;
 
     let id = uuid::Uuid::new_v4().to_string();
     octopus_infra::db::with_db(|conn| {
@@ -308,7 +308,7 @@ fn ingest_image_file(path: &std::path::Path) -> Result<(String, i64, i64), Strin
             },
         )
     })
-    .map_err(|e| format!("历史写入失败: {}", e))?;
+    .map_err(|e| format!("{}: {}", crate::ui::i18n::t("editor.openErrHistory", &[]), e))?;
     Ok((id, w as i64, h as i64))
 }
 
@@ -326,11 +326,11 @@ pub(crate) fn collect_open_tabs(paths: Vec<String>) -> (Vec<PendingTabFull>, Vec
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| p.clone());
         if path.is_dir() {
-            errors.push(format!("{}（暂不支持文件夹）", name));
+            errors.push(format!("{}（{}）", name, crate::ui::i18n::t("editor.openErrDir", &[])));
             continue;
         }
         if !path.exists() {
-            errors.push(format!("{}（文件不存在）", name));
+            errors.push(format!("{}（{}）", name, crate::ui::i18n::t("editor.openErrNotExist", &[])));
             continue;
         }
         let ext = path
@@ -357,6 +357,16 @@ pub(crate) fn collect_open_tabs(paths: Vec<String>) -> (Vec<PendingTabFull>, Vec
                 Err(e) => errors.push(format!("{}（{}）", name, e)),
             }
         } else {
+            // 文本尺寸帽（watcher.rs:219 同款 50MB）——超大文本全量进 CM6 会秒级建态
+            // + 双倍内存（预览截断只护 preview 不护 editor）。
+            if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > 50 * 1024 * 1024 {
+                errors.push(format!(
+                    "{}（{}）",
+                    name,
+                    crate::ui::i18n::t("editor.openErrTextTooLarge", &[])
+                ));
+                continue;
+            }
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     let hash = octopus_sync::store::md5_hex(p.as_bytes());
@@ -378,7 +388,7 @@ pub(crate) fn collect_open_tabs(paths: Vec<String>) -> (Vec<PendingTabFull>, Vec
                         file_path: Some(p),
                     });
                 }
-                Err(_) => errors.push(format!("{}（非 UTF-8 文本或读取失败）", name)),
+                Err(_) => errors.push(format!("{}（{}）", name, crate::ui::i18n::t("editor.openErrNotUtf8", &[]))),
             }
         }
     }
@@ -548,6 +558,8 @@ mod tests {
     fn setup_open_files_test_db() {
         OPEN_FILES_DB_SETUP.call_once(|| {
             octopus_infra::db::init_test_db();
+            // 错误文案经 ui::i18n 产生——初始化 zh 字典，断言按中文文案
+            crate::ui::i18n::init("zh-CN");
         });
     }
 
@@ -641,6 +653,7 @@ mod tests {
 
     #[test]
     fn test_collect_open_tabs_non_utf8_rejected() {
+        setup_open_files_test_db();
         let p = tmp_path("bad.bin");
         std::fs::write(&p, [0xFFu8, 0xFE, 0x00, 0x01]).unwrap();
         let (tabs, errors) = collect_open_tabs(vec![p.to_string_lossy().to_string()]);
@@ -652,6 +665,7 @@ mod tests {
 
     #[test]
     fn test_collect_open_tabs_dir_rejected() {
+        setup_open_files_test_db();
         let dir = tmp_path("adir");
         std::fs::create_dir_all(&dir).unwrap();
         let (tabs, errors) = collect_open_tabs(vec![dir.to_string_lossy().to_string()]);
@@ -691,6 +705,19 @@ mod tests {
         assert_eq!(tabs.len(), 2, "文本+图片成功");
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("no.txt"));
+    }
+
+    #[test]
+    fn test_collect_open_tabs_text_size_cap() {
+        setup_open_files_test_db();
+        let p = tmp_path("huge.txt");
+        // 51MB——metadata 帽在读取前拦截（watcher.rs:219 同款 50MB 文本上限）
+        let buf = vec![b'0'; 51 * 1024 * 1024];
+        std::fs::write(&p, &buf).unwrap();
+        let (tabs, errors) = collect_open_tabs(vec![p.to_string_lossy().to_string()]);
+        assert!(tabs.is_empty(), "超大文本不应开 tab");
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("文本过大"), "err={}", errors[0]);
     }
 
     /// 最小 base64 解码（测试专用，避免引依赖）。

@@ -121,7 +121,7 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         let picked = app
             .dialog()
             .file()
-            .add_filter(tr("menu.openFiles"), TEXT_IMAGE_EXTS)
+            .add_filter(tr("editor.openFilesFilter"), TEXT_IMAGE_EXTS)
             .blocking_pick_files();
         let paths: Vec<String> = picked
             .unwrap_or_default()

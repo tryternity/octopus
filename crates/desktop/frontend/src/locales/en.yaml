@@ -49,6 +49,19 @@ editor:
   previewTruncated: Large document — preview shows first ${shown} of ${total}. Use the editor pane for full content
   openFile: Open File
   openFailed: "${n} file(s) failed to open: ${detail}"
+  openFilesFilter: Text & Images
+  errorsSep: "; "
+  openErrDir: folders not supported
+  openErrNotExist: file not found
+  openErrNotUtf8: not UTF-8 text or unreadable
+  openErrRead: read failed
+  openErrDecode: image decode failed
+  openErrTooLarge: image too large (max ~40MB decoded)
+  openErrTextTooLarge: text too large (max 50MB)
+  openErrDb: DB query failed
+  openErrEncode: encode failed
+  openErrStore: image store failed
+  openErrHistory: history write failed
   translate: Translate
   translateFail: Translation failed
   translateConfirm: Press again to overwrite translation
