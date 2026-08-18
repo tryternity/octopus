@@ -37,3 +37,6 @@ package.json
 /config/
 /binaries/
 docs/dictionaries/
+
+# worktree 隔离工作区（功能开发）
+/.worktree/
