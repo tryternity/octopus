@@ -7,3 +7,5 @@ edition = "2021"
 anydoc = { workspace = true }
 htmd = { workspace = true }
 walkdir = { workspace = true }
+regex = "1"
+url = "2"
