@@ -126,6 +126,7 @@ crates/
 ├── asr/          # octopus-asr-local — 核心推理库（Whisper/SenseVoice/Paraformer/Zipformer + Silero VAD）
 ├── asr-cloud/    # octopus-asr-cloud — 云端 ASR 协议层（Aliyun/ByteDance/Tencent/Baidu WS 流式 + 批引擎）
 ├── clipboard/    # octopus-clipboard — 剪贴板历史管理（监听 / 存储 / FTS5 / image_data / 软删回收站）
+├── convert/      # octopus-convert — 文档转 Markdown（anydoc 14 格式 + htmd HTML→md + 文件夹递归合并）
 ├── ocr/          # octopus-ocr — OCR 图片识别（统一接口，分发到 paddle-ocr）
 ├── paddle-ocr/   # octopus-paddle-ocr — PaddleOCR ONNX 推理（PP-OCRv6 检测+识别）
 ├── capx/         # octopus-capx — 屏幕截图（xcap 封装 / 滚动截图 / 区域选区）
@@ -150,6 +151,7 @@ scheduler ← (desktop)  — desktop setup 创建 Scheduler 实例 + 注册定�
 asr ← (cli, server, desktop via "embedded" feature)
 asr-cloud ← (desktop via "cloud" feature)
 clipboard ← (desktop)
+convert ← (desktop)  — ActionBar「转 Markdown」命令（2026-08-18）
 ocr ← (desktop) → paddle-ocr  — ocr 分发到 paddle-ocr 实现
 capx ← (desktop)
 translation ← (desktop)
@@ -341,7 +343,7 @@ docs/
 
 ```
 ~/.octopus/
-├── octopus.db          # SQLite（唯一存储：models/app_config/clipboard_history/vault_*/hotword_sets/hotword_words 等表，schema v60）
+├── octopus.db          # SQLite（唯一存储：models/app_config/clipboard_history/vault_*/hotword_sets/hotword_words 等表，schema v61）
 ├── config.yaml         # 应用配置（缺失用默认值）
 ├── VOICE_POLISH.md     # 自定义润色 prompt（可选，覆盖内置默认）
 ├── .sync/              # git 同步仓库根（GitHub/Gitee private repo 的本地 clone）

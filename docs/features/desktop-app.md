@@ -266,7 +266,7 @@ cargo run --profile optimize -p octopus-desktop --features remote-grpc
 
 ## 14. 命令面板菜单（action_bar_items DB）
 
-> AI 命令面板菜单项存储在 `action_bar_items` 表（自引用 `parent_id` 两级菜单，**6 种 `action_type`**：`submenu` / `ai` / `url` / `script` / `agent` / `copy_path`——旧 `copy` 已于 2026-07-19 删除）。
+> AI 命令面板菜单项存储在 `action_bar_items` 表（自引用 `parent_id` 两级菜单，**7 种 `action_type`**：`submenu` / `ai` / `url` / `script` / `agent` / `copy_path` / `markdown`——旧 `copy` 已于 2026-07-19 删除；`markdown` 2026-08-18 v61 新增）。
 
 **关键约束**：
 - `#[serde(rename_all = "camelCase")]` **必须**——`parent_id`→`parentId` 不匹配会导致菜单渲染完全失败（曾踩坑）。
@@ -297,6 +297,14 @@ cargo run --profile optimize -p octopus-desktop --features remote-grpc
 **Prompt 外部文件引用**（2026-07-23）：
 - agent/ai 类型菜单的 `action_data` 支持 `@文件名` 语法引用 `~/.octopus/.sync/prompts/command/<文件名>.md`（运行时 `resolve_prompt_reference` 展开）。
 - 前端 PromptEditor 组件：Segmented 切换「内联」/「引用文件」模式；引用模式用可编辑 input + datalist（可选已有 + 自由输入新名）+ Plus 创建 + hover 浮层预览。详见 [spec](../superpowers/specs/archived/2026-07-23-prompt-file-reference.md)。
+
+**转 Markdown 命令**（2026-08-18，v61，[spec](../superpowers/specs/2026-08-18-actionbar-markdown-conversion-design.md)）：
+- `action_type='markdown'`（seed id=12「转 Markdown」，`accepts='any'`——文本/文件/文件夹/无选中都显示）；引擎为 `octopus-convert` crate（anydoc 14 种办公格式 + htmd HTML→md，纯 Rust 无 sidecar）。
+- **输入优先级**：显式 files 参数 > `PENDING_CONTEXT.files`（Quick Execute 热键路径）> html（剪贴板 HTML flavor）> text（直通）。混合文件夹+文件：文件夹逐个 `convert_folder`，结果以 `---` 分隔拼接。
+- **选区采集**：`detect_selection` 模拟 Cmd+C 后在恢复剪贴板前同窗口读 `public.html` flavor（浏览器才有；TextEdit 等无则 None）——选中网页文本保留粗体/链接/列表/表格的关键。`ActionBarContext` 加 `html: Option<String>`（camelCase 序列化）。
+- **格式分派**（`convert` crate `dispatch.rs` 封闭清单）：办公格式 → anydoc；html → htmd（skip script/style）；md → 原样；源码/文本 → fenced code block（按扩展名标语言）；其余 Binary——单文件报「暂不支持 .xxx」，文件夹场景 `> ⚠️ skipped` 标注不中断。
+- **文件夹守卫**：`MAX_FILES=200`、`MAX_TOTAL_BYTES=50MB`，忽略 `.git/node_modules/target/__pycache__/.venv/dist/build` + 隐藏文件；输出合并单文档（文件树头 + 逐节）。单文件无树头直接输出（便于复制）。
+- 结果走 `action_bar_show_result`（CompactEditor 临时 tab + `write_output_to_clipboard` 由 item 字段控制，seed 默认 1）。
 
 ---
 

@@ -196,3 +196,14 @@ NSPasteboard HTML flavor 读取是唯一不可单测的 macOS 胶水，保持单
 - `docs/features/desktop-app.md` §12/§14：「转 Markdown」命令说明
 - `AGENTS.md`：Cargo Workspace 结构列表加 `convert/`
 - 本 spec 为设计真相源；实施偏差回写
+
+## 9. 实施注记（2026-08-18 实施回写）
+
+实施于 worktree `.worktree/markdown-conversion`（分支 `markdown-conversion`），与设计的偏差与补充：
+
+1. **anydoc/htmd API 无偏差**：`anydoc::to_markdown(path)` 与 `htmd::HtmlToMarkdown::builder().skip_tags(...)` 均按 §2.1 预期工作，错误类型实现 Display。
+2. **desktop `markdown.rs` 注册方式微调**：子模块经 `mod markdown;` 声明（无 `pub use markdown::*` glob re-export）——`run_markdown_convert` 是 `pub(crate)`，glob re-export 会产生 warning（无 pub 项可导出），与兄弟模块模式略异但语义一致。
+3. **既有测试预期更新**（v61 演进导致，非 bug）：`action_bar_non_submenu_accepts_default_text` 排除 markdown 型并单独断言其 `accepts='any'`；`migrate_v59_to_v60` 的版本断言改为 `CURRENT_SCHEMA_VERSION`（迁移链跑到最新）。
+4. **assets fixture 精简**：xlsx/pdf fixture 未生成（textutil 只产 docx/rtf）——csv + docx 已覆盖 anydoc 接线路径，xlsx/pdf 同代码路径，风险极低。
+5. **worktree 基线补充**：desktop 依赖 gitignore 的 `binaries/octopus-sck-helper`（tauri resource），新 worktree 须先跑 `./scripts/build-macos-helper.sh` 才能 `cargo build/test`。
+6. **plan 测试计数笔误**：Task 7 的 `run_markdown_convert` 测试实际 7 个（plan 误写「8 个测试全过」预期）。
