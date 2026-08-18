@@ -1,5 +1,7 @@
 //! URL → Markdown 纯函数层（spec 2026-08-18-url-to-markdown §3）。
-//! fetch_page（网络）在 Task 2 加入；本层全部纯函数可单测。
+//! fetch_page（网络）不进单测——编译级验证 + 手动 e2e；其余纯函数可单测。
+
+use crate::error::ConvertError;
 
 /// 静态抓取整体超时（秒）。
 pub const WEB_FETCH_TIMEOUT_SECS: u64 = 15;
@@ -7,6 +9,103 @@ pub const WEB_FETCH_TIMEOUT_SECS: u64 = 15;
 pub const WEB_MAX_HTML_BYTES: usize = 20 * 1024 * 1024;
 /// SPA 空壳判定：转出 markdown trim 后字符数低于此 → 尝试渲染 fallback。
 pub const SPA_SHELL_THRESHOLD: usize = 200;
+
+/// charset 三级嗅探（spec §3）：header > BOM > 前 2KB meta 声明 > UTF-8。纯函数。
+/// to_ascii_lowercase 不改字节位置——lower 后的索引可安全切片 head。
+pub(crate) fn sniff_charset(
+    header_charset: Option<&str>,
+    body_head: &[u8],
+) -> &'static encoding_rs::Encoding {
+    if let Some(name) = header_charset {
+        if let Some(enc) = encoding_rs::Encoding::for_label(name.as_bytes()) {
+            return enc;
+        }
+    }
+    // BOM（UTF-8/UTF-16 由 encoding_rs 的 decode 自动处理——这里显式识别 UTF-16 BOM 交 decode_bom）
+    if body_head.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return encoding_rs::UTF_8;
+    }
+    // meta 声明（前 2KB，大小写不敏感）
+    let head = String::from_utf8_lossy(&body_head[..body_head.len().min(2048)]).to_ascii_lowercase();
+    // 注意：`<meta charset="` 恰 15 字节——brief 原文写 s+17 会截掉前 2 字符（gbk→k），已修正。
+    let meta_named = head
+        .find("<meta charset=\"")
+        .and_then(|s| head[s + 15..].find('"').map(|e| head[s + 15..s + 15 + e].to_string()));
+    let meta_equiv = head.find("charset=").map(|s| {
+        let rest = &head[s + 8..];
+        // brief 补丁：值可能被引号包裹（charset='x' 单引号变体）——跳过开头引号、按同引号截断，
+        // 否则 meta_equiv 直接命中开头引号取到空值。
+        let rest = match rest.chars().next() {
+            Some(q @ ('"' | '\'')) => {
+                let inner = &rest[1..];
+                &inner[..inner.find(q).unwrap_or(inner.len())]
+            }
+            _ => rest,
+        };
+        let end = rest.find(|c: char| c == '"' || c == '\'' || c == ';').unwrap_or(rest.len());
+        rest[..end].to_string()
+    });
+    for candidate in [meta_named, meta_equiv].into_iter().flatten() {
+        if let Some(enc) = encoding_rs::Encoding::for_label(candidate.as_bytes()) {
+            return enc;
+        }
+    }
+    encoding_rs::UTF_8
+}
+
+/// 静态抓取结果：html（已按 charset 解码为 String）、final_url（重定向后，绝对化 base）、title。
+pub struct FetchedPage {
+    pub html: String,
+    pub final_url: String,
+    pub title: Option<String>,
+}
+
+const DESKTOP_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
+
+/// 静态抓取（spec §3）：GET → 状态/类型/大小守卫 → charset 解码 → title。
+/// 网络函数不进单测（编译级 + 手动 e2e）；15s 超时、Chrome UA、gzip。
+/// blocking client——调用方（Tauri 命令层）在 spawn_blocking 上下文里执行。
+pub fn fetch_page(url: &str) -> Result<FetchedPage, ConvertError> {
+    let resp = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS))
+        .user_agent(DESKTOP_UA)
+        .build()
+        .map_err(|e| ConvertError::Html(e.to_string()))?
+        .get(url)
+        // brief 将 header 挂在 ClientBuilder 上——reqwest 0.12 blocking 无此方法，
+        // 移到 RequestBuilder（语义等价：本请求的 Accept-Language）。
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .send()
+        .map_err(|e| ConvertError::Html(format!("网络请求失败: {}", e)))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(ConvertError::Html(format!("HTTP {}", status.as_u16())));
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !content_type.contains("text/html") && !content_type.contains("xhtml") && !content_type.contains("xml") {
+        return Err(ConvertError::Html("该 URL 不是 HTML 页面".into()));
+    }
+    let final_url = resp.url().to_string();
+    let header_charset = content_type
+        .split(';')
+        .find_map(|p| p.trim().strip_prefix("charset=").map(str::to_string));
+    let bytes = resp
+        .bytes()
+        .map_err(|e| ConvertError::Html(format!("读取响应失败: {}", e)))?;
+    if bytes.len() > WEB_MAX_HTML_BYTES {
+        return Err(ConvertError::Html("页面过大（上限 20MB）".into()));
+    }
+    let enc = sniff_charset(header_charset.as_deref(), &bytes);
+    let (html, _, _) = enc.decode(&bytes);
+    let html = html.into_owned();
+    let title = extract_title(&html);
+    Ok(FetchedPage { html, final_url, title })
+}
 
 /// 仅显式 URL（spec §1）：单行且 http:// | https:// | www. 开头（www. 补全 https://）。
 /// 裸域名/IP 不识别——防普通文本误抓。
@@ -110,6 +209,26 @@ pub fn absolutize_md_links(md: &str, base: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sniff_charset_priority() {
+        let utf8 = encoding_rs::UTF_8;
+        let gbk = encoding_rs::GBK;
+        // header 声明优先
+        assert_eq!(sniff_charset(Some("gbk"), b"<html>"), gbk);
+        // 无 header → BOM
+        assert_eq!(sniff_charset(None, [0xEFu8, 0xBB, 0xBF, b'<'].as_slice()), utf8);
+        // 无 header 无 BOM → meta charset
+        assert_eq!(sniff_charset(None, b"<meta charset=\"gbk\">"), gbk);
+        // 全无 → UTF-8
+        assert_eq!(sniff_charset(None, b"<html>"), utf8);
+    }
+
+    #[test]
+    fn test_sniff_charset_meta_variants() {
+        assert_eq!(sniff_charset(None, b"<META HTTP-EQUIV=\"Content-Type\" content=\"text/html; charset=Big5\">"), encoding_rs::BIG5);
+        assert_eq!(sniff_charset(None, b"<meta charset='Shift_JIS'>"), encoding_rs::SHIFT_JIS);
+    }
 
     #[test]
     fn test_is_explicit_url_positive() {
