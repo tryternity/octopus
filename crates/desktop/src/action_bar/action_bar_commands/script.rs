@@ -591,23 +591,58 @@ pub(crate) async fn execute_action_bar_inner(
             Ok(false)
         }
         "markdown" => {
-            // 输入优先级（spec §3）：显式 files > PENDING files > html（显式 > PENDING）> text
+            // 输入优先级（spec §3）：显式 files > PENDING files > html（显式 > PENDING）> text。
+            // 异步执行（spec §5.2 修订 2026-08-18）：立即返回 Ok(false)（外层统一收口隐藏
+            // ActionBar），后台转换 → 写文件 ~/Documents/octopus/markitdown/ → CompactEditor
+            // file tab 打开（编辑保存可写回）；失败开错误 temp tab（agent-task://error 只有
+            // Result 浮窗监听、不一定可见，编辑器反馈更可靠）。
             let files_in = files.filter(|f| !f.is_empty()).unwrap_or(app_state_files);
             let html_in = html.or(pending_html);
             let text_in = text.clone();
-            let title = item.title.clone();
             let write_clipboard = item.write_output_to_clipboard;
-            // 本地转换毫秒级但仍是同步 IO——spawn_blocking 防卡 runtime（对齐 ai 分支）
-            let result = tokio::task::spawn_blocking(move || {
-                crate::action_bar::action_bar_commands::markdown::run_markdown_convert(
-                    files_in, html_in, text_in,
-                )
-            })
-            .await
-            .map_err(|e| format!("转换线程异常: {}", e))??;
-            // 剪贴板写入由 show_result 内部统一处理（对齐 ai 分支模式，spec §5.2）
-            action_bar_show_result(result, String::new(), title, app.clone(), write_clipboard);
-            Ok(true)
+            let ah = app.clone();
+            tokio::spawn(async move {
+                let inputs = (files_in, html_in, text_in);
+                let result = tokio::task::spawn_blocking(move || {
+                    let (f, h, t) = inputs;
+                    crate::action_bar::action_bar_commands::markdown::convert_and_save(f, h, t)
+                })
+                .await
+                .map_err(|e| format!("转换线程异常: {}", e));
+                match result {
+                    Ok(Ok((path, md))) => {
+                        if write_clipboard {
+                            write_clipboard_text(&ah, &md);
+                        }
+                        let path_str = path.to_string_lossy().to_string();
+                        let ah2 = ah.clone();
+                        // create_compact_editor_window 内含 set_dock_icon 需主线程
+                        //（同 action_bar_show_result_internal 的投递模式）
+                        let _ = ah.run_on_main_thread(move || {
+                            if let Err(e) = crate::commands::compact_editor_commands
+                                ::open_disk_file_in_compact_editor(&ah2, &path_str)
+                            {
+                                log::warn!("[action-bar] 打开转换结果失败: {}", e);
+                            }
+                        });
+                    }
+                    Ok(Err(e)) | Err(e) => {
+                        log::warn!("[action-bar] 转 Markdown 异步失败: {}", e);
+                        let payload = crate::commands::compact_editor_commands::TempTabPayload {
+                            text: format!("【转 Markdown 失败】\n{}", e),
+                            ..Default::default()
+                        };
+                        let ah_recv = ah.clone();
+                        let ah_cap = ah_recv.clone();
+                        let _ = ah_recv.run_on_main_thread(move || {
+                            crate::commands::compact_editor_commands::open_temp_compact_editor(
+                                &ah_cap, &payload,
+                            );
+                        });
+                    }
+                }
+            });
+            Ok(false)
         }
         // "copy" 类型已从 Settings UI 删除（2026-07-19）——用户改用 Cmd+C。
         // 旧 DB 残留的 actionType="copy" 菜单走 _ 分支返回错误，提示用户去 Settings 改类型。

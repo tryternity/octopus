@@ -3,7 +3,7 @@
 //! 命令面板的 `@文件名` 引用展开、`~/.octopus/.sync/prompts/` 文件 CRUD，
 //! 以及 `format_paths` / `derive_cwd` 等纯路径辅助函数。
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::AppHandle;
 use crate::core::error_util::e2s_ctx;
 
 /// file:// URL 路径编码：仅编码空格（macOS file:// URL 的最小需求）
@@ -99,32 +99,10 @@ pub fn open_file_in_editor(name: String, category: String, app: AppHandle) -> Re
         .join("prompts")
         .join(&category)
         .join(format!("{}.md", name));
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| e2s_ctx("读取文件失败: {}", e))?;
-    // 文件完整路径 md5 → 取前 8 字节作 i64（固定 id，前端 file:<id> 去重）
-    let path_str = path.to_string_lossy();
-    let hash = octopus_sync::store::md5_hex(path_str.as_bytes());
-    let item_id = i64::from_str_radix(&hash[..16], 16).unwrap_or(0);
-
-    let window_label = crate::commands::compact_editor_window::WINDOW_LABEL;
-    let payload = serde_json::json!({
-        // 第十九轮 P2-1：itemId 必须 string——前端 tab.itemId.slice(-5) 对 number 会
-        // TypeError → React 子树崩溃 → CompactEditor 白屏。:122 pending 路径已用 to_string()。
-        "itemId": item_id.to_string(),
-        "source": "file",
-        "text": text,
-        "filePath": path_str,
-    });
-    if let Some(window) = app.get_webview_window(window_label) {
-        let _ = window.emit("compact-editor://open-tab", payload);
-        let _ = window.show();
-        let _ = window.set_focus();
-    } else {
-        // 窗口不存在 → 建 pending + 开窗（file source 不走 store_pending_temp，走通用 pending）
-        crate::commands::compact_editor_commands::store_pending_file(item_id.to_string(), text, path_str.to_string());
-        crate::commands::compact_editor_window::create_compact_editor_window(&app, None);
-    }
-    Ok(())
+    // 2026-08-18：双路径开窗逻辑（emit/pending + md5 itemId 去重）抽取到
+    // compact_editor_commands::open_disk_file_in_compact_editor 共用（转 Markdown 输出复用）。
+    let path_str = path.to_string_lossy().to_string();
+    crate::commands::compact_editor_commands::open_disk_file_in_compact_editor(&app, &path_str)
 }
 
 /// 新建空白 prompt 文件。在 `~/.octopus/.sync/prompts/<category>/` 下创建空 `<name>.md`。

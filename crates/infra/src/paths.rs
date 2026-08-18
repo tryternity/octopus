@@ -48,6 +48,20 @@ pub fn screens_dir() -> PathBuf {
     }
 }
 
+/// 转 Markdown 输出目录：读 DB `markitdown_output_dir` 配置（绝对路径，支持 `~` 展开）。
+/// 空/未配置时 fallback `~/Documents/octopus/markitdown/`（2026-08-18，spec 2026-08-18 §5.2 修订）。
+/// 不存在时由调用方在写入前创建（mkdir -p）。
+pub fn markitdown_dir() -> PathBuf {
+    let configured = crate::db::load_config_key("markitdown_output_dir")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty());
+    match configured {
+        Some(dir) => expand_tilde(&dir),
+        None => expand_tilde("~/Documents/octopus/markitdown"),
+    }
+}
+
 /// 图片文件完整路径：`<screens_dir>/<hash>.jpg`。
 /// hash 作为文件名天然去重（同图复用同一文件）。
 ///
@@ -119,6 +133,15 @@ pub fn tauri_app_resource(rel: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    // paths 测试含 DB 读取（markitdown_dir → load_config_key）——按测试隔离规约
+    // 切 in-memory DB，防绑定开发库 ~/.octopus/octopus.db。
+    static TEST_DB_SETUP: std::sync::Once = std::sync::Once::new();
+    fn setup_test_db() {
+        TEST_DB_SETUP.call_once(|| {
+            crate::db::init_test_db();
+        });
+    }
+
     /// dev / 裸二进制环境：current_exe() 不在 .app/Contents/MacOS/ 下，
     /// tauri_app_resource 必须返回 None（不能误报）。
     /// （.app 环境难在单测里构造，只验证 None 分支）
@@ -129,5 +152,18 @@ mod tests {
         assert!(tauri_app_resource("seeds").is_none());
         assert!(tauri_app_resource("binaries/octopus-sck-helper").is_none());
         assert!(tauri_app_resource("nonexistent").is_none());
+    }
+
+    /// markitdown_dir 兜底路径：无配置时指向 ~/Documents/octopus/markitdown。
+    #[test]
+    fn markitdown_dir_falls_back_to_documents() {
+        setup_test_db();
+        let dir = markitdown_dir();
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert_eq!(
+            dir,
+            std::path::PathBuf::from(home).join("Documents/octopus/markitdown"),
+            "未配置时应兜底 ~/Documents/octopus/markitdown"
+        );
     }
 }

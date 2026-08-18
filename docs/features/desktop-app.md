@@ -304,7 +304,7 @@ cargo run --profile optimize -p octopus-desktop --features remote-grpc
 - **选区采集**：`detect_selection` 模拟 Cmd+C 后在恢复剪贴板前同窗口读 `public.html` flavor（浏览器才有；TextEdit 等无则 None）——选中网页文本保留粗体/链接/列表/表格的关键。`ActionBarContext` 加 `html: Option<String>`（camelCase 序列化）。
 - **格式分派**（`convert` crate `dispatch.rs` 封闭清单）：办公格式 → anydoc；html → htmd（skip script/style）；md → 原样；源码/文本 → fenced code block（按扩展名标语言）；其余 Binary——单文件报「暂不支持 .xxx」，文件夹场景 `> ⚠️ skipped` 标注不中断。
 - **文件夹守卫**：`MAX_FILES=200`、`MAX_TOTAL_BYTES=50MB`，忽略 `.git/node_modules/target/__pycache__/.venv/dist/build` + 隐藏文件；输出合并单文档（文件树头 + 逐节）。单文件无树头直接输出（便于复制）。
-- 结果走 `action_bar_show_result`（CompactEditor 临时 tab + `write_output_to_clipboard` 由 item 字段控制，seed 默认 1）。
+- **异步执行 + 落盘**（2026-08-18 修订）：分支 `tokio::spawn` 后台执行、立即收口隐藏 ActionBar；完成后写 `~/Documents/octopus/markitdown/<源 stem>_<yyyymmdd-HHMMSS>.md`（`markitdown_output_dir` 配置可覆盖，同秒 `-N` 后缀防碰撞），用 CompactEditor **file tab** 打开（`open_disk_file_in_compact_editor`，与 prompt 文件查看共用；编辑保存写回磁盘，同路径去重聚焦）；`write_output_to_clipboard` 由 item 字段控制（seed 默认 1）。失败开 CompactEditor 错误 temp tab。
 
 ---
 

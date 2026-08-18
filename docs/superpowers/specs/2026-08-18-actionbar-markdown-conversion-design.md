@@ -17,7 +17,7 @@
 
 用途（brainstorm 确认，三者兼容）：喂给 AI 处理、存笔记/归档（保留结构与图片链接）、随手查阅（快）。
 
-**输出**：CompactEditor 临时 tab 展示 Markdown 预览（复用 `action_bar_show_result` 模板），`write_output_to_clipboard=1` 时同时写剪贴板。
+**输出**（2026-08-18 修订）：命令**异步执行**——立即收口隐藏 ActionBar，后台转换完成后把结果写入 `~/Documents/octopus/markitdown/<源名>_<yyyymmdd-HHMMSS>.md`（可经 `markitdown_output_dir` 配置覆盖），并用 CompactEditor **file tab** 打开（编辑保存可写回磁盘；同路径重复打开聚焦同一 tab）；`write_output_to_clipboard=1` 时同时写剪贴板。异步失败时开 CompactEditor 错误 temp tab 反馈。
 
 ### 范围外（v1 明确不做）
 
@@ -61,9 +61,10 @@
    │    单/多文件 → convert_files（anydoc/htmd/codeblock/md 按矩阵分派 + 合并）
    │    文件夹   → convert_folder（walkdir 过滤 + 上限守卫 + 合并单文档）
    │
-   └─ action_bar_show_result（现有）
-        → CompactEditor 临时 tab Markdown 预览
-        → write_output_to_clipboard=1 时写剪贴板
+   └─ 异步收口（2026-08-18 修订）：inner 立即 Ok(false)（外层统一收口隐藏 ActionBar）
+        → tokio::spawn 后台：convert_and_save 写 ~/Documents/octopus/markitdown/<stem>_<时间戳>.md
+        → 主线程 open_disk_file_in_compact_editor（file tab，保存写回）
+        → write_output_to_clipboard=1 时同时写剪贴板；失败开错误 temp tab
 ```
 
 **inner 输入优先级**：显式 `files` 参数 > `PENDING_CONTEXT.files` > `html` > `text`；全空报「没有可转换的内容」。文件路径按 `is_dir` 分流 `convert_folder` / `convert_files`。
@@ -155,8 +156,10 @@ pub fn html_to_markdown(html: &str) -> String                            // htmd
 ### 5.2 执行链路
 
 - `execute_action_bar` 命令（`script.rs:590`）加可选参数 `html: Option<String>`、`files: Option<Vec<String>>`（Tauri camelCase 自动映射），前端 `executeItem` 透传 `ctx?.html` / `ctx?.files`
-- `execute_action_bar_inner`（`script.rs:359`）match 加 `"markdown"` 分支，按 §3 优先级分派；`spawn_blocking` 包裹（对齐 ai 分支）；本地毫秒级不设超时
-- `ConvertError` → `Err(String)` 走现有前端 toast；成功走 `action_bar_show_result(md, text, item.title, app, item.write_output_to_clipboard)`——剪贴板写入由 show_result 内部统一处理（对齐 ai 分支模式）
+- `execute_action_bar_inner`（`script.rs:359`）match 加 `"markdown"` 分支，按 §3 优先级分派
+- **异步执行（2026-08-18 修订）**：分支内 `tokio::spawn` 后台任务（内部 `spawn_blocking` 跑转换），立即返回 `Ok(false)` 走外层统一收口——ActionBar 即刻隐藏，转换完成后写文件 + 主线程 `open_disk_file_in_compact_editor`（从 `prompt_files.rs::open_file_in_editor` 抽取共用的 file tab 打开函数，md5(路径) 做 tab 去重 id）；失败开 `TempTabPayload` 错误 temp tab（`agent-task://error` 只有 Result 浮窗监听、不一定可见）
+- **输出目录**：`infra/paths.rs::markitdown_dir()`——沿用 recordings/screens 约定（DB `markitdown_output_dir` 配置可覆盖，兜底 `~/Documents/octopus/markitdown`）；文件名 `<源 stem>_<yyyymmdd-HHMMSS>.md`（单文件=文件 stem，文件夹=目录名，多选=公共父目录名，text/html=`markitdown`），同秒碰撞追加 `-1/-2` 后缀
+- `ConvertError` → 后台任务错误信息进错误 temp tab；`write_output_to_clipboard=1` 时后台直接写剪贴板
 
 ### 5.3 action_type 与 seed
 
@@ -207,3 +210,13 @@ NSPasteboard HTML flavor 读取是唯一不可单测的 macOS 胶水，保持单
 4. **assets fixture 精简**：xlsx/pdf fixture 未生成（textutil 只产 docx/rtf）——csv + docx 已覆盖 anydoc 接线路径，xlsx/pdf 同代码路径，风险极低。
 5. **worktree 基线补充**：desktop 依赖 gitignore 的 `binaries/octopus-sck-helper`（tauri resource），新 worktree 须先跑 `./scripts/build-macos-helper.sh` 才能 `cargo build/test`。
 6. **plan 测试计数笔误**：Task 7 的 `run_markdown_convert` 测试实际 7 个（plan 误写「8 个测试全过」预期）。
+
+### 9.1 首轮交付后修订（2026-08-18，用户反馈）
+
+用户要求变更输出链路，已实施：
+
+1. **异步执行**：inner 的 markdown 分支由「await 转换 + `action_bar_show_result` 同步展示」改为 `tokio::spawn` 后台执行、立即 `Ok(false)` 收口。前端零改动（通用分支天然适配）。
+2. **落盘**：`markitdown_dir()`（infra paths，DB 键可覆盖）+ `<stem>_<时间戳>.md` 命名 + 同秒 `-N` 后缀；`convert_and_save_to(dir)` 注入目录便于测试。
+3. **CompactEditor file tab 打开**：从 `prompt_files.rs::open_file_in_editor` 抽取 `open_disk_file_in_compact_editor` 共用（prompt 文件查看与转 Markdown 输出同一条打开链路）；prompt_files 重构为薄包装。
+4. **错误反馈**：后台失败开 CompactEditor 错误 temp tab（放弃 `agent-task://error`——其监听方 Result 浮窗不一定可见）。
+5. 新增测试：`markitdown_dir` 兜底（含 `init_test_db` 隔离，防绑开发库）、`output_file_stem` ×4、`convert_and_save_to` ×3（写入/碰撞/错误透传）。

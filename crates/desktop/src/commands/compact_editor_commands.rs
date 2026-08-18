@@ -201,6 +201,34 @@ pub fn open_temp_compact_editor(app: &tauri::AppHandle, payload: &TempTabPayload
     }
 }
 
+/// 打开磁盘文件到 CompactEditor file tab（source="file"，编辑后保存写回磁盘）。
+/// 窗口已存在 → emit open-tab；不存在 → store_pending_file + 建窗。
+/// itemId = md5(路径) 前 16 hex → i64（固定 id，前端 file:&lt;id&gt; 去重——同文件重复打开聚焦同一 tab）。
+/// 2026-08-18 从 prompt_files::open_file_in_editor 抽取共用（转 Markdown 输出文件复用，spec §5.2 修订）。
+pub fn open_disk_file_in_compact_editor(app: &tauri::AppHandle, path: &str) -> Result<(), String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+    let hash = octopus_sync::store::md5_hex(path.as_bytes());
+    // 第十九轮 P2-1：itemId 必须 string——前端 tab.itemId.slice(-5) 对 number 会
+    // TypeError → React 子树崩溃 → CompactEditor 白屏。
+    let item_id = i64::from_str_radix(&hash[..16], 16).unwrap_or(0);
+    let payload = serde_json::json!({
+        "itemId": item_id.to_string(),
+        "source": "file",
+        "text": text,
+        "filePath": path,
+    });
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let _ = window.emit("compact-editor://open-tab", payload);
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else {
+        store_pending_file(item_id.to_string(), text, path.to_string());
+        create_compact_editor_window(app, None);
+    }
+    Ok(())
+}
+
 fn take_pending_tabs() -> Vec<PendingTabFull> {
     std::mem::take(&mut *PENDING_TABS.lock())
 }
