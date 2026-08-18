@@ -178,9 +178,7 @@ export function MarkdownPane({
           {t("editor.charCount", { n: charCount })}
         </span>
         <span className="w-px h-4 bg-border mx-1" />
-        <ToolBtn onClick={() => setViewMode("editor")} title={t("editor.view.editor")} disabled={viewMode === "editor"}>
-          <FileText className="w-4 h-4" />
-        </ToolBtn>
+        {/* 工具栏右区分组：翻译｜编辑 分屏 预览｜保存 */}
         {!readOnly && onTranslate && (
           <>
             <button
@@ -196,6 +194,9 @@ export function MarkdownPane({
             <span className="w-px h-4 bg-border mx-1" />
           </>
         )}
+        <ToolBtn onClick={() => setViewMode("editor")} title={t("editor.view.editor")} disabled={viewMode === "editor"}>
+          <FileText className="w-4 h-4" />
+        </ToolBtn>
         <ToolBtn onClick={() => setViewMode("split")} title={t("editor.view.split")} disabled={viewMode === "split"}>
           <Columns2 className="w-4 h-4" />
         </ToolBtn>
