@@ -301,6 +301,7 @@ cargo run --profile optimize -p octopus-desktop --features remote-grpc
 **转 Markdown 命令**（2026-08-18，v61，[spec](../superpowers/specs/2026-08-18-actionbar-markdown-conversion-design.md)）：
 - `action_type='markdown'`（seed id=12「转 Markdown」，`accepts='any'`——文本/文件/文件夹/无选中都显示）；引擎为 `octopus-convert` crate（anydoc 14 种办公格式 + htmd HTML→md，纯 Rust 无 sidecar）。
 - **输入优先级**：显式 files 参数 > `PENDING_CONTEXT.files`（Quick Execute 热键路径）> html（剪贴板 HTML flavor）> text（直通）。混合文件夹+文件：文件夹逐个 `convert_folder`，结果以 `---` 分隔拼接。
+- **URL 输入**（2026-08-18 增量，[URL spec](../superpowers/specs/2026-08-18-url-to-markdown-design.md)）：files/html 均空且 text 为**显式 URL**（单行 `http://`/`https://` 开头，或 `www.` 开头自动补全 https；裸域名/IP 不识别——防普通文本误抓）→ 静态抓取**快速路径**（`octopus-convert::web::fetch_page`：Chrome UA + gzip + charset 三级嗅探，15s 超时 / 20MB 上限 / 非 HTML 拒绝守卫）；转出 md < 200 字符判定 **SPA 空壳** → `ui/web_render.rs` 离屏 WKWebView 渲染 fallback 后重转（仅 macOS，超时 20s）；md 后处理绝对化链接/图片、title 命名 stem。产出走同款落盘/CompactEditor 链路；抓取/渲染失败走「转 Markdown 失败」错误 temp tab（不落半成品）。
 - **选区采集**：`detect_selection` 模拟 Cmd+C 后在恢复剪贴板前同窗口读 `public.html` flavor（浏览器才有；TextEdit 等无则 None）——选中网页文本保留粗体/链接/列表/表格的关键。`ActionBarContext` 加 `html: Option<String>`（camelCase 序列化）。
 - **格式分派**（`convert` crate `dispatch.rs` 封闭清单）：办公格式 → anydoc；html → htmd（skip script/style）；md → 原样；源码/文本 → fenced code block（按扩展名标语言）；其余 Binary——单文件报「暂不支持 .xxx」，文件夹场景 `> ⚠️ skipped` 标注不中断。
 - **文件夹守卫**：`MAX_FILES=200`、`MAX_TOTAL_BYTES=50MB`，忽略 `.git/node_modules/target/__pycache__/.venv/dist/build` + 隐藏文件；输出合并单文档（文件树头 + 逐节）。单文件无树头直接输出（便于复制）。

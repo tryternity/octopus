@@ -31,7 +31,7 @@
 **Interfaces:**
 - Produces: `web::{is_explicit_url, extract_title, sanitize_stem, absolutize_md_links, SPA_SHELL_THRESHOLD, WEB_FETCH_TIMEOUT_SECS, WEB_MAX_HTML_BYTES}`。Task 2/3 消费。
 
-- [ ] **Step 1: 写失败测试 + 完整实现（web.rs）**
+- [x] **Step 1: 写失败测试 + 完整实现（web.rs）**
 
 `crates/convert/src/web.rs`（TDD：tests 与实现同文件落盘后先跑红再确认——若直接同盘落实现，红步以 git stash 实现段验证一次即可）：
 
@@ -203,7 +203,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Cargo.toml + lib.rs 注册**
+- [x] **Step 2: Cargo.toml + lib.rs 注册**
 
 `crates/convert/Cargo.toml` `[dependencies]` 加：
 
@@ -214,7 +214,7 @@ regex = "1"
 
 `crates/convert/src/lib.rs` 加 `pub mod web;`
 
-- [ ] **Step 3: 跑测试**
+- [x] **Step 3: 跑测试**
 
 ```bash
 cargo test -p octopus-convert --lib 2>&1 | tail -3
@@ -222,7 +222,7 @@ cargo test -p octopus-convert --lib 2>&1 | tail -3
 
 Expected: 30 passed（24 既有 + 7 新；`test_absolutize_md_links` 的 `../up` 断言依赖 `Url::join` 归一化——若实际为 `https://ex.com/up` 之外的形态，按 join 语义修正断言并记录）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/convert
@@ -241,7 +241,7 @@ git commit -m "feat(convert): web 纯函数层——URL 识别/title/sanitize/md
 - Consumes: Task 1 常量
 - Produces: `pub struct FetchedPage { pub html: String, pub final_url: String, pub title: Option<String> }`、`pub fn fetch_page(url: &str) -> Result<FetchedPage, ConvertError>`、`pub(crate) fn sniff_charset(header_charset: Option<&str>, body_head: &[u8]) -> &'static encoding_rs::Encoding`（纯函数，测试）
 
-- [ ] **Step 1: 写 sniff_charset 失败测试（web.rs tests 追加）**
+- [x] **Step 1: 写 sniff_charset 失败测试（web.rs tests 追加）**
 
 ```rust
     #[test]
@@ -265,7 +265,7 @@ git commit -m "feat(convert): web 纯函数层——URL 识别/title/sanitize/md
     }
 ```
 
-- [ ] **Step 2: 实现 sniff_charset + fetch_page（web.rs 追加）**
+- [x] **Step 2: 实现 sniff_charset + fetch_page（web.rs 追加）**
 
 ```rust
 use crate::error::ConvertError;
@@ -354,7 +354,7 @@ pub fn fetch_page(url: &str) -> Result<FetchedPage, ConvertError> {
 }
 ```
 
-- [ ] **Step 3: 跑测试 + 编译**
+- [x] **Step 3: 跑测试 + 编译**
 
 ```bash
 cargo test -p octopus-convert --lib 2>&1 | tail -3
@@ -363,7 +363,7 @@ cargo build -p octopus-convert 2>&1 | grep -cE "^(error|warning)"
 
 Expected: 32 passed（+2 charset）；0 warning（`ConvertError::Html` 变体复用 §6 文案通道）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/convert Cargo.lock
@@ -382,7 +382,7 @@ git commit -m "feat(convert): fetch_page 静态抓取——UA/gzip/charset 三�
 - Consumes: `octopus_convert::web::{is_explicit_url, fetch_page, absolutize_md_links, extract_title, sanitize_stem, FetchedPage, SPA_SHELL_THRESHOLD}`；Task 4 的 `web_render::render_html`（本 task 先用占位绑定——非 macOS 或 Task 4 未接线时返回 Err）
 - Produces: `pub(crate) fn convert_and_save_url_with(url, dir, fetch, render) -> Result<(PathBuf, String), String>` + `convert_and_save` URL 分支接线（`convert_and_save_to` 入口检测）
 
-- [ ] **Step 1: 写失败测试（markdown.rs tests 追加）**
+- [x] **Step 1: 写失败测试（markdown.rs tests 追加）**
 
 ```rust
     // ── URL 编排（spec 2026-08-18-url-to-markdown §2，fake 注入——网络不进单测）──
@@ -461,7 +461,7 @@ git commit -m "feat(convert): fetch_page 静态抓取——UA/gzip/charset 三�
     }
 ```
 
-- [ ] **Step 2: 跑红**
+- [x] **Step 2: 跑红**
 
 ```bash
 cargo test -p octopus-desktop test_url_route 2>&1 | tail -3
@@ -469,7 +469,7 @@ cargo test -p octopus-desktop test_url_route 2>&1 | tail -3
 
 Expected: 编译失败（`convert_and_save_url_with` 未定义）。
 
-- [ ] **Step 3: 实现（markdown.rs）**
+- [x] **Step 3: 实现（markdown.rs）**
 
 先抽公共落盘段（现 `convert_and_save_to` 内 ts/碰撞/写文件逻辑提为私有 fn，原调用点改调）：
 
@@ -554,7 +554,7 @@ pub(crate) fn convert_and_save_to(
 }
 ```
 
-- [ ] **Step 4: 跑绿 + 既有回归**
+- [x] **Step 4: 跑绿 + 既有回归**
 
 ```bash
 cargo test -p octopus-desktop test_url_route 2>&1 | grep "test result"
@@ -563,7 +563,7 @@ cargo test -p octopus-desktop markdown 2>&1 | grep "test result"
 
 Expected: url_route 4 passed；markdown 全过（既有 14 + 4 新）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop
@@ -583,7 +583,7 @@ git commit -m "feat(action-bar): URL 转 Markdown 编排——参数化注入 + 
 - Consumes: Task 3 的 `crate::ui::web_render::render_html` 引用
 - Produces: `pub fn render_html(url: &str) -> Result<String, String>`（outerHTML；阻塞 ≤ `RENDER_TIMEOUT_SECS`）
 
-- [ ] **Step 1: 实现（完整代码）**
+- [x] **Step 1: 实现（完整代码）**
 
 ```rust
 //! URL 渲染 fallback（spec 2026-08-18-url-to-markdown §4）：离屏 WKWebView 加载
@@ -725,7 +725,7 @@ completion block 经 `block2::Block2::new(move |result: *mut objc2::runtime::Any
 
 `cleanup_on_main(app)`：`run_on_main_thread` 中把 slot 指针 `Retained::from_raw` 取回后 drop（释放 webview）。
 
-- [ ] **Step 2: 依赖 + 模块注册**
+- [x] **Step 2: 依赖 + 模块注册**
 
 `crates/desktop/Cargo.toml` macOS 段加：
 
@@ -736,11 +736,11 @@ block2 = "0.6"
 
 `crates/desktop/src/ui/mod.rs` 加 `pub mod web_render;`
 
-- [ ] **Step 3: Task 3 生产绑定补 app 参数**
+- [x] **Step 3: Task 3 生产绑定补 app 参数**
 
 `markdown.rs`：`convert_and_save_url(url, dir)` → `convert_and_save_url(app: &AppHandle, url, dir)`，render 闭包改 `|u| crate::ui::web_render::render_html(app, u)`；`convert_and_save`（生产入口）加 `app` 参数；`script.rs` markdown 分支 `convert_and_save(f, h, t)` 调用点补 `&ah`（grep `convert_and_save(` 定位，一处）。
 
-- [ ] **Step 4: 编译 + 全量**
+- [x] **Step 4: 编译 + 全量**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | grep -cE "^(error|warning)"
@@ -749,7 +749,7 @@ cargo test -p octopus-desktop markdown 2>&1 | grep "test result"
 
 Expected: 0 warning；markdown 测试全过（url_route 4 个的 fake render 不受真实现影响）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop Cargo.lock
@@ -765,7 +765,7 @@ git commit -m "feat(desktop): web_render 离屏 WKWebView 渲染 fallback（comp
 - Modify: `docs/architecture.md`（desktop 模块清单补 `ui/web_render.rs`）
 - Modify: `docs/superpowers/specs/2026-08-18-url-to-markdown-design.md`（实施注记）
 
-- [ ] **Step 1: 全量验证**
+- [x] **Step 1: 全量验证**
 
 ```bash
 cargo build 2>&1 | grep -cE "^(error|warning)"
@@ -781,13 +781,13 @@ cd crates/desktop/frontend && npx tsc --noEmit && npm run build
 4. 选中裸域名文本 → 直通不抓取
 5. 断网/404 URL → 错误 temp tab
 
-- [ ] **Step 3: 文档同步**
+- [x] **Step 3: 文档同步**
 
 - `desktop-app.md` §14 markdown 命令表加输入行：「URL（显式 http/https/www）→ 静态抓取 + SPA 空壳渲染 fallback → 同款落盘/编辑器链路（详见 spec）」
 - `architecture.md` desktop 模块段加：`ui/web_render.rs`——离屏 WKWebView 渲染 fallback（completion-block 链式轮询，slot 裸指针主线程契约）
 - spec 实施注记：dispatch_after 的等效替代（监控线程回投）、`render_html` 携 `AppHandle` 的签名调整、Task 3 `convert_and_save` 增加 app 参数、 absolutize 代码块误改写限制、其他实施偏差
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs
@@ -802,3 +802,21 @@ git commit -m "docs: 同步 URL 抓取转 Markdown（desktop-app/architecture/sp
 - **占位符**：Task 4 骨架含两处标注明确的 `slot 共享` 落实点与 probe_once 签名契约——非 TBD，是给执行者的定向装配指令（完整代码的其余部分均已给出）；其余步骤代码完整。
 - **类型一致性**：`FetchedPage` 三字段、`is_explicit_url -> Option<String>`、`render_html(app, url)`（Task 4 Step 3 显式同步 Task 3 签名）、`convert_and_save_url_with(url, dir, fetch, render)`、`write_markdown_file(dir, stem, md)` 跨 task 一致。
 - **实现期风险**：① `Url::join("../up")` 归一化形态以测试实跑为准微调断言；② objc2 completion block 的 `DynBlock` 构造用 `Block2::new` 产生的类型与 `evaluateJavaScript_completionHandler` 参数的 `Option<&DynBlock<dyn Fn(*mut AnyObject, *mut NSError)>>` 匹配性以编译器为准（block2 0.6 API：`Block2::new` → `&*block` 传参）；③ `tauri::AppHandle` 在 desktop bin 内的获取路径——已改为参数传递规避。
+
+---
+
+## 实施记录（2026-08-18 实施完成）
+
+| Task | Commit | 内容 |
+|---|---|---|
+| Task 1 | `e520e48c` | `octopus-convert::web` 纯函数层——is_explicit_url/extract_title/sanitize_stem/absolutize_md_links + 7 测试（TDD） |
+| Task 2 | `a44d44d2` | `fetch_page` 静态抓取——Chrome UA/gzip/blocking client、charset 三级嗅探（+2 测试）、状态/类型/大小守卫 |
+| Task 3 | `dda1b583` | desktop URL 编排——`convert_and_save_url_with` 参数化注入（fetch/render fake 可单测，4 测试）+ `write_markdown_file` 抽取 + `convert_and_save` URL 分支 |
+| Task 4 | `c366c2ad` | `ui/web_render.rs` 离屏 WKWebView 渲染 fallback——RcBlock completion 链式轮询 + slot 裸指针主线程契约 + `render_html(app, url)` 签名 |
+| Task 5 | 本 commit | 全量验证（build 0w / test 902 passed+1 pre-existing flake / tsc+vite 通过）+ 文档同步（desktop-app §14 URL 输入行 / architecture web_render + convert web.rs / spec §9 实施注记） |
+
+**偏差与决策**（详见 spec §9 实施注记，共 12 条）：dispatch_after 等效替代（监控线程回投）、`render_html`/`convert_and_save` 携 AppHandle、URL 分支在 `convert_and_save`（非 `convert_and_save_to`）、reqwest 补 `blocking` feature、Accept-Language 移 RequestBuilder、sniff_charset 偏移 15 字节 + 引号跳过修正、sanitize_stem 空兜底、objc2-web-kit 三 feature（WKWebView+WKNavigation+block2）、RcBlock（无 Block2 类型）、completion +0 借用（禁 from_raw）、absolutize 代码块误改写已知限制、brief 两处笔误修正。
+
+**验证**：`cargo build` 0 error 0 warning；`cargo test` 全 workspace 902 passed / 1 failed（`test_collect_open_tabs_oversized_image_rejected`，pre-existing flake——Task 4 已在干净 HEAD 验证与本 feature 无关，单跑通过）/ 17 ignored；前端 `tsc --noEmit` + `vite build` 通过。
+
+**未完成**：Task 5 Step 2 手动 e2e（用户侧执行——5 场景见上）。
