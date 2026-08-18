@@ -46,7 +46,7 @@ pub fn trigger_action_bar(app: AppHandle) {
                 *PENDING_CONTEXT.lock() = None;
                 show_action_bar_centered(&app_clone);
             }
-            crate::action_bar::action_bar_commands::Selection::Text { text, mouse } => {
+            crate::action_bar::action_bar_commands::Selection::Text { text, html, mouse } => {
                 // 先同步采集上下文再 show——gather 会调用前台 app（Sublime 的 `subl --command` /
                 // Browser 的 osascript），这些调用激活前台 app、在 show 之后抢走 ActionBar 焦点。
                 // 对照实验铁证：无选中（不 gather）→ 正常获焦；有选中（gather）→ 失焦。
@@ -54,7 +54,7 @@ pub fn trigger_action_bar(app: AppHandle) {
                 // 附带收益：show 前前台确定是源 app，frontmost_app() 读到源 app 上下文更准确
                 // （原异步方案在 ActionBar 获焦后 frontmost 可能变成 octopus 自己）。
                 // 代价：热键到弹出增加 gather 耗时（Sublime ~50-150ms，AX 上限 500ms）。
-                let mut ctx = ActionBarContext::text(text.clone());
+                let mut ctx = ActionBarContext::text(text.clone()).with_html(html.clone());
                 match crate::platform::app_context::gather_context(text) {
                     Ok(extra) => {
                         log_app_context(text, &extra);

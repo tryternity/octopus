@@ -101,8 +101,8 @@ fn quick_execute(item_id: i64, app: &AppHandle) {
     crate::action_bar::action_bar_commands::restore_change_count_baseline(saved_baseline);
 
     match selection {
-        crate::action_bar::action_bar_commands::Selection::Text { text, .. } => {
-            handle_text_selection(item_id, app, text);
+        crate::action_bar::action_bar_commands::Selection::Text { text, html, .. } => {
+            handle_text_selection(item_id, app, text, html);
         }
         crate::action_bar::action_bar_commands::Selection::File { files, .. }
         | crate::action_bar::action_bar_commands::Selection::Folder { folders: files, .. } => {
@@ -120,7 +120,7 @@ fn quick_execute(item_id: i64, app: &AppHandle) {
 ///
 /// 链路：刷新 PENDING_CONTEXT（含 gather_context）→ activate_self 夺焦 →
 /// keep_active hide ActionBar（如可见）→ execute_action_bar_inner → CompactEditor。
-fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
+fn handle_text_selection(item_id: i64, app: &AppHandle, text: String, html: Option<String>) {
     // ── 刷新 PENDING_CONTEXT（发现 2 修复）──
     // quick_execute 此前不写 PENDING_CONTEXT，会读到上次 trigger_action_bar 残留的
     // source/surrounding（甚至更早的 quick_execute 残留）。AI 动作（润色/摘要/解释）经
@@ -130,7 +130,8 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
     //
     // 注意：只在 Text 分支调（File/Folder 走 trigger 路径由 trigger_action_bar 负责），
     // 且 gather 内部已含 run_command_with_deadline 兜底（osascript/lsof 等 500ms 超时）。
-    let mut ctx = crate::action_bar::action_bar_commands::ActionBarContext::text(text.clone());
+    let mut ctx = crate::action_bar::action_bar_commands::ActionBarContext::text(text.clone())
+        .with_html(html);
     match crate::platform::app_context::gather_context(&text) {
         Ok(extra) => {
             ctx.source = Some(extra.source);

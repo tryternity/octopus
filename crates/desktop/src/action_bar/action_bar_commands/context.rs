@@ -32,6 +32,9 @@ pub struct ActionBarContext {
     pub kind: ContextKind,
     pub text: Option<String>,
     pub files: Vec<String>,
+    /// Cmd+C 同窗口读到的 HTML flavor（浏览器复制才有）——转 Markdown 富文本数据源（spec §5.1）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<crate::platform::app_context::AppSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -40,10 +43,15 @@ pub struct ActionBarContext {
 
 impl ActionBarContext {
     pub fn text(text: String) -> Self {
-        Self { kind: ContextKind::Text, text: Some(text), files: vec![], source: None, surrounding: None }
+        Self { kind: ContextKind::Text, text: Some(text), files: vec![], html: None, source: None, surrounding: None }
     }
     pub fn files(files: Vec<String>) -> Self {
-        Self { kind: ContextKind::Files, text: None, files, source: None, surrounding: None }
+        Self { kind: ContextKind::Files, text: None, files, html: None, source: None, surrounding: None }
+    }
+    /// 附带 HTML flavor（detect_selection 读到后调用）。
+    pub fn with_html(mut self, html: Option<String>) -> Self {
+        self.html = html;
+        self
     }
 }
 
@@ -79,9 +87,11 @@ pub(crate) fn restore_change_count_baseline(val: i64) {
 pub(crate) enum Selection {
     /// 无选中——居中搜索模式
     None,
-    /// 选中文本
+    /// 选中文本。html=Cmd+C 同时写入 pasteboard 的 HTML flavor（浏览器才有，
+    /// 是「选中网页文本保留富文本结构」的数据源，spec §5.1）；无则 None。
     Text {
         text: String,
+        html: Option<String>,
         mouse: (f64, f64),
     },
     /// 选中文件（Finder）
@@ -175,7 +185,7 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
         return match crate::platform::app_context::sublime_plugin::get_sublime_selection(deadline) {
             Some(text) => {
                 log::info!("[action-bar] Sublime 插件选区: len={}, mouse=({},{})", text.len(), mouse.0, mouse.1);
-                Selection::Text { text, mouse }
+                Selection::Text { text, html: None, mouse }
             }
             None => {
                 log::info!("[action-bar] Sublime 无选中（插件 sel_start==sel_end）");
@@ -245,10 +255,17 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
 
     // changeCount 递增 → 有选中，读剪贴板拿文本
     let clipboard_after = read_clipboard_text(app);
+    // HTML flavor 同窗口读取（恢复剪贴板前——restore 会覆盖 pasteboard）：
+    // 浏览器 Cmd+C 同时写 text + HTML 两种 flavor（spec §5.1）。
+    let html_after = clip_handle
+        .read_html()
+        .ok()
+        .filter(|h| !h.trim().is_empty());
     log::info!(
-        "[action-bar][detect] changed: before_use={} after={}, clip_after_len={}",
+        "[action-bar][detect] changed: before_use={} after={}, clip_after_len={}, html_len={}",
         change_count_before, change_count_after,
-        clipboard_after.as_deref().map(|t| t.len()).unwrap_or(0)
+        clipboard_after.as_deref().map(|t| t.len()).unwrap_or(0),
+        html_after.as_deref().map(|h| h.len()).unwrap_or(0)
     );
 
     // 恢复原始剪贴板——只要 Cmd+C 改了剪贴板就恢复（含选中图片/文件致文本为空的场景），
@@ -278,7 +295,7 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
     };
 
     log::info!("[action-bar] got text len={}, mouse=({},{})", text.len(), mouse.0, mouse.1);
-    Selection::Text { text, mouse }
+    Selection::Text { text, html: html_after, mouse }
 }
 
 /// AI 结果通过临时 tab 打开 CompactEditor 展示（不写 DB）。
@@ -677,5 +694,16 @@ mod tests {
         std::fs::create_dir_all(&log_path).unwrap();
         let result = write_context_log(&log_path, "test\n");
         assert!(result.is_err(), "路径已是目录时写入应失败");
+    }
+
+    #[test]
+    fn test_context_html_serialization_camel_case() {
+        let ctx = ActionBarContext::text("hi".into()).with_html(Some("<h1>x</h1>".into()));
+        let json = serde_json::to_string(&ctx).unwrap();
+        assert!(json.contains("\"html\":\"<h1>x</h1>\""), "json={}", json);
+
+        let ctx_no_html = ActionBarContext::text("hi".into());
+        let json2 = serde_json::to_string(&ctx_no_html).unwrap();
+        assert!(!json2.contains("\"html\""), "None 时省略，json={}", json2);
     }
 }

@@ -128,6 +128,14 @@ impl ClipboardHandle {
             .map_err(|e| anyhow::anyhow!("Clipboard read files failed: {}", e))
     }
 
+    /// 读 HTML flavor（macOS public.html）——浏览器/WKWebView app 复制时提供；
+    /// 无 HTML flavor 返回 Err（调用方 .ok() → None）。ActionBar 转 Markdown 用（spec §5.1）。
+    pub fn read_html(&self) -> Result<String> {
+        let ctx = self.ctx.lock();
+        ctx.get_html()
+            .map_err(|e| anyhow::anyhow!("Clipboard read html failed: {}", e))
+    }
+
     pub fn has(&self, format: ContentFormat) -> bool {
         let ctx = self.ctx.lock();
         ctx.has(format)
