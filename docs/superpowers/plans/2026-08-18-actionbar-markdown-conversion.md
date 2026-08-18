@@ -1482,7 +1482,7 @@ cargo test 2>&1 | tail -5           # 核心测试层
 
 Expected: 0 error 0 warning；全部测试通过（含 octopus-convert 24 个 + desktop markdown 8 个 + infra 迁移 1 个 + 前端已单验）。
 
-- [ ] **Step 2: 手动 e2e 冒烟（可选但推荐）**
+- [x] **Step 2: 手动 e2e 冒烟（可选但推荐）**
 
 ```bash
 ./run-octopus.sh
@@ -1554,4 +1554,4 @@ git commit -m "docs: 同步转 Markdown 命令（architecture/desktop-app/AGENTS
 
 **性能修复**（spec §9.2，z_perf）：commit `a2f1651d`——预览 256KB 行边界截断（2MB 预览 212ms→22ms）+ CM6 每键 O(N) 回声快路径。
 
-**遗留**：Task 10 Step 2 手动 e2e 冒烟未执行（用户侧验证项）；全部偏差详见 spec §9 实施注记。
+**遗留**：无——手动 e2e 冒烟 2026-08-18 用户验证通过（含 CompactEditor 打开文件链路，open-files plan Task 4 Step 2 同步视为通过）；全部偏差详见 spec §9 实施注记。
