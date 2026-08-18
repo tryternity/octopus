@@ -14,3 +14,5 @@ pub mod i18n;
 pub mod theme;
 pub mod window_factory;
 pub mod window_position;
+// URL 转 Markdown 渲染 fallback（仅 macOS，模块内 #![cfg] 整体 gate）
+pub mod web_render;

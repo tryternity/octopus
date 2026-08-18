@@ -162,7 +162,13 @@ cloud = ["tokio-tungstenite", "tokio-tungstenite?/native-tls", "futures-util", "
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", "NSWindow", "NSApplication", "NSImage", "NSImageView", "NSView", "NSColor", "NSTrackingArea", "NSPasteboard"] }
-objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSData", "NSString"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSData", "NSString", "NSURL", "NSURLRequest", "NSError"] }
+# URL 转 Markdown 渲染 fallback（spec 2026-08-18-url-to-markdown §4）：离屏 WKWebView。
+# WKWebView（含 evaluateJavaScript completion block）+ WKNavigation（loadRequest）。
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKNavigation", "block2"] }
+# WKWebView evaluateJavaScript completion handler 的堆分配 ObjC block（异步回调，
+# 栈 block 不安全——completion 在 evaluate 返回后才触发）。
+block2 = "0.6"
 core-graphics = { version = "0.24", features = ["highsierra", "elcapitan"] }
 core-foundation = "0.10"
 

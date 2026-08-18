@@ -39,18 +39,14 @@ pub(crate) fn output_file_stem(files: &[String], html: Option<&str>, text: &str)
 
 /// 转换并保存到指定目录（dir 注入便于测试），返回 (文件路径, 内容)。
 /// 文件名 `<stem>_<yyyymmdd-HHMMSS>.md`；同秒碰撞追加 `-1/-2...` 后缀。
+/// URL 路由在 `convert_and_save` 分流（渲染 fallback 需 AppHandle——本函数保持
+/// 无 app 依赖，纯文件/文本路径可单测）。
 pub(crate) fn convert_and_save_to(
     files: Vec<String>,
     html: Option<String>,
     text: String,
     dir: &std::path::Path,
 ) -> Result<(std::path::PathBuf, String), String> {
-    // URL 输入（spec 2026-08-18-url-to-markdown §2）：files/html 空 + 显式 URL
-    if files.is_empty() && html.is_none() {
-        if let Some(url) = web::is_explicit_url(&text) {
-            return convert_and_save_url(&url, dir);
-        }
-    }
     let stem = output_file_stem(&files, html.as_deref(), &text);
     let md = run_markdown_convert(files, html, text)?;
     let path = write_markdown_file(dir, &stem, &md)?;
@@ -99,24 +95,50 @@ pub(crate) fn convert_and_save_url_with(
     Ok((path, md))
 }
 
-/// 生产绑定：真静态抓取 + 渲染 fallback（Task 4 接 web_render；未接线/非 macOS 返回 Err）。
-fn convert_and_save_url(url: &str, dir: &std::path::Path) -> Result<(std::path::PathBuf, String), String> {
+/// 渲染 fallback 绑定（Task 4 接线）：macOS 用离屏 WKWebView（web_render），
+/// 非 macOS 平台明确报错（消费点 cfg 模式与 clipboard_window 的 activation 一致）。
+fn render_url(app: &tauri::AppHandle, url: &str) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::ui::web_render::render_html(app, url)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, url);
+        Err("渲染 fallback 仅支持 macOS".to_string())
+    }
+}
+
+/// 生产绑定：真静态抓取 + web_render 渲染 fallback（spec §2 渲染 fallback）。
+fn convert_and_save_url(
+    app: &tauri::AppHandle,
+    url: &str,
+    dir: &std::path::Path,
+) -> Result<(std::path::PathBuf, String), String> {
     convert_and_save_url_with(
         url,
         dir,
         |u| web::fetch_page(u).map_err(|e| e.to_string()),
-        // Task 4 接线 web_render 后替换（spec §2 渲染 fallback）
-        |_u| Err("渲染 fallback 尚未接线".to_string()),
+        |u| render_url(app, u),
     )
 }
 
 /// 生产入口：转换并保存到 markitdown_dir()（~/Documents/octopus/markitdown，可配置覆盖）。
+/// URL 路由（spec 2026-08-18-url-to-markdown §2）：files/html 空 + 显式 URL 时
+/// 走 fetch + 渲染 fallback（需 AppHandle 接 web_render）。
 pub(crate) fn convert_and_save(
+    app: &tauri::AppHandle,
     files: Vec<String>,
     html: Option<String>,
     text: String,
 ) -> Result<(std::path::PathBuf, String), String> {
-    convert_and_save_to(files, html, text, &octopus_infra::paths::markitdown_dir())
+    let dir = octopus_infra::paths::markitdown_dir();
+    if files.is_empty() && html.is_none() {
+        if let Some(url) = web::is_explicit_url(&text) {
+            return convert_and_save_url(app, &url, &dir);
+        }
+    }
+    convert_and_save_to(files, html, text, &dir)
 }
 
 /// 输入分派（优先级 spec §3）：files > html > text；全空 Err。
