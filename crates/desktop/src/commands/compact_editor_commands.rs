@@ -202,7 +202,7 @@ pub fn open_temp_compact_editor(app: &tauri::AppHandle, payload: &TempTabPayload
 
 /// 打开磁盘文件到 CompactEditor file tab（source="file"，编辑后保存写回磁盘）。
 /// 窗口已存在 → emit open-tab；不存在 → store_pending_file + 建窗。
-/// itemId = md5(路径) 前 16 hex → i64（固定 id，前端 file:&lt;id&gt; 去重——同文件重复打开聚焦同一 tab）。
+/// itemId = md5(路径) 前 16 hex → u64（固定 id，前端 file:&lt;id&gt; 去重——同文件重复打开聚焦同一 tab）。
 /// 2026-08-18 从 prompt_files::open_file_in_editor 抽取共用（转 Markdown 输出文件复用，spec §5.2 修订）。
 pub fn open_disk_file_in_compact_editor(app: &tauri::AppHandle, path: &str) -> Result<(), String> {
     let text = std::fs::read_to_string(path)
@@ -210,7 +210,9 @@ pub fn open_disk_file_in_compact_editor(app: &tauri::AppHandle, path: &str) -> R
     let hash = octopus_sync::store::md5_hex(path.as_bytes());
     // 第十九轮 P2-1：itemId 必须 string——前端 tab.itemId.slice(-5) 对 number 会
     // TypeError → React 子树崩溃 → CompactEditor 白屏。
-    let item_id = i64::from_str_radix(&hash[..16], 16).unwrap_or(0);
+    // 终审 Finding 1：u64 解析（i64 在 md5 首位 8-f 时溢出 → unwrap_or(0) → "file:0"
+    // 碰撞）。与 collect_open_tabs 的同型表达式必须一字不差——跨路径去重依赖两处一致。
+    let item_id = u64::from_str_radix(&hash[..16], 16).unwrap_or(0);
     let payload = serde_json::json!({
         "itemId": item_id.to_string(),
         "source": "file",
@@ -250,6 +252,12 @@ fn ingest_image_file(path: &std::path::Path) -> Result<(String, i64, i64), Strin
     let bytes = std::fs::read(path).map_err(|e| format!("读取失败: {}", e))?;
     let dyn_img = ::image::load_from_memory(&bytes)
         .map_err(|_| "图片解码失败".to_string())?;
+    // 超大图守卫（终审 Finding 2，镜像 watcher.rs 超过 40MB 跳过）：估算 RGBA 尺寸
+    // 超限直接拒绝，在 to_rgba8 前拦截——否则 48MP 照片瞬时分配 ~500MB RGBA。
+    let estimated_size = (dyn_img.width() as usize) * (dyn_img.height() as usize) * 4;
+    if estimated_size > 40 * 1024 * 1024 {
+        return Err("图片过大（上限约 40MB 解码后）".to_string());
+    }
     let rgba_img = dyn_img.to_rgba8();
     let (w, h) = (rgba_img.width(), rgba_img.height());
     let rgba = rgba_img.to_vec();
@@ -352,7 +360,9 @@ fn collect_open_tabs(paths: Vec<String>) -> (Vec<PendingTabFull>, Vec<String>) {
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     let hash = octopus_sync::store::md5_hex(p.as_bytes());
-                    let item_id = i64::from_str_radix(&hash[..16], 16).unwrap_or(0).to_string();
+                    // 终审 Finding 1：u64 解析（i64 溢出场景同 open_disk_file_in_compact_editor
+                    // 注释）——两处表达式一字不差，跨路径去重依赖一致。
+                    let item_id = u64::from_str_radix(&hash[..16], 16).unwrap_or(0).to_string();
                     tabs.push(PendingTabFull {
                         item_id,
                         source: "file".into(),
@@ -425,8 +435,12 @@ fn open_tabs_batched(tabs: Vec<PendingTabFull>, app: &tauri::AppHandle) {
         // 防幽灵 tab：上次建窗失败/React 未 mount 即关窗会留 stale pending
         //（close_compact_editor 不清队列）——建窗前先清，只交付本次 tabs。
         let _ = take_pending_tabs();
+        // 首 tab 元数据注入建窗 URL（零 IPC 首屏，docs/architecture.md CompactEditor 段）。
+        // 终审 Finding 3：恢复 Task 2 泛化时丢失的 first-tab 注入（原 open_compact_editor_tabs
+        // 的 pending_data.as_ref() 首参）——否则 URL 注入与前端 readInitialTabFromUrl 成死代码。
+        let first = tabs.first().cloned();
         PENDING_TABS.lock().extend(tabs);
-        create_compact_editor_window(app, None);
+        create_compact_editor_window(app, first.as_ref());
     }
 }
 
@@ -570,10 +584,59 @@ mod tests {
         assert_eq!(tabs[0].source, "file");
         assert_eq!(tabs[0].text, "# hello");
         assert_eq!(tabs[0].file_path.as_deref(), Some(p.to_string_lossy().as_ref()));
-        // itemId = md5(路径) 前 16 hex → i64（与 open_disk_file_in_compact_editor 同规则）
+        // itemId = md5(路径) 前 16 hex → u64（与 open_disk_file_in_compact_editor 同规则）。
+        // 终审 Finding 1：期望值必须用 u64 算——旧测试用同型 i64 表达式自证清白，
+        // 对 i64 溢出（md5 首位 8-f）致 "0" 碰撞的 bug 全盲。
         let hash = octopus_sync::store::md5_hex(p.to_string_lossy().as_bytes());
-        let expect = i64::from_str_radix(&hash[..16], 16).unwrap_or(0).to_string();
+        let expect = u64::from_str_radix(&hash[..16], 16).unwrap_or(0).to_string();
         assert_eq!(tabs[0].item_id, expect);
+    }
+
+    /// md5 溢出探针（终审 Finding 1 回归测试）：固定路径（不掺 pid，md5 可复现）
+    /// `/tmp/octopus-md5-overflow-probe1.md` 的 md5 = `ca911dde477bd18993ea92d817ca59e2`
+    /// ——首位 'c' ≥ '8'，前 16 hex 值 0xca911dde477bd189 > i64::MAX
+    /// (0x7fffffffffffffff)，旧实现 i64::from_str_radix 解析失败 → unwrap_or(0)
+    /// → itemId "0"（~50% 路径碰撞在 tab key "file:0" 上）。同批次重复打开共享
+    /// 同一 itemId（前端 file:<id> 去重聚焦，覆盖 accumulated-minor #4）。
+    #[test]
+    fn test_collect_open_tabs_md5_no_i64_overflow() {
+        let p = std::path::PathBuf::from("/tmp/octopus-md5-overflow-probe1.md");
+        std::fs::write(&p, b"probe").unwrap();
+        let hash = octopus_sync::store::md5_hex(p.to_string_lossy().as_bytes());
+        assert_eq!(hash, "ca911dde477bd18993ea92d817ca59e2", "探针 md5 漂移（路径串变了？）");
+        assert!(hash.as_bytes()[0] >= b'8', "探针 md5 首位须 ≥ '8' 才覆盖溢出分支");
+        let expect = u64::from_str_radix(&hash[..16], 16).unwrap().to_string();
+        assert_ne!(expect, "0");
+
+        let (tabs, errors) = collect_open_tabs(vec![
+            p.to_string_lossy().to_string(),
+            p.to_string_lossy().to_string(),
+        ]);
+        assert!(errors.is_empty(), "errors={:?}", errors);
+        assert_eq!(tabs.len(), 2, "同批次重复打开应产出两个 tab");
+        assert_ne!(tabs[0].item_id, "0", "i64 溢出场景 itemId 不应塌缩为 \"0\"");
+        assert_eq!(tabs[0].item_id, expect, "itemId 应等于 u64 解析期望值");
+        assert_eq!(tabs[0].item_id, tabs[1].item_id, "同一路径重复打开 → 同一 itemId（file:<id> 去重）");
+    }
+
+    /// 超大图守卫（终审 Finding 2）：4000×3000 估算 RGBA ~45.8MiB > 40MiB 上限
+    /// （watcher.rs 同款阈值）——应在 to_rgba8 前拒绝，进 errors 不中断批次。
+    #[test]
+    fn test_collect_open_tabs_oversized_image_rejected() {
+        setup_open_files_test_db();
+        let p = tmp_path("huge.png");
+        let img = ::image::RgbaImage::from_pixel(4000, 3000, ::image::Rgba([200u8, 30, 30, 255]));
+        ::image::DynamicImage::ImageRgba8(img)
+            .write_to(
+                &mut std::io::BufWriter::new(std::fs::File::create(&p).unwrap()),
+                ::image::ImageFormat::Png,
+            )
+            .unwrap();
+        let (tabs, errors) = collect_open_tabs(vec![p.to_string_lossy().to_string()]);
+        assert!(tabs.is_empty(), "超大图不应开 tab");
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("huge.png"), "err={}", errors[0]);
+        assert!(errors[0].contains("图片过大"), "err={}", errors[0]);
     }
 
     #[test]

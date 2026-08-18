@@ -32,7 +32,7 @@
 - Consumes: `octopus_clipboard::image::{hash_rgba, encode_image}`、`octopus_clipboard::store::{find_by_content_hash, touch_created_at, insert_image_data, insert_clipboard_item, NewClipboardItem, iso_now}`、`octopus_clipboard::model::{ItemType, MetaInfo}`、`octopus_sync::store::md5_hex`
 - Produces: `fn is_image_ext(ext: &str) -> bool`、`fn ingest_image_file(path: &Path) -> Result<(String, i64, i64), String>`（imageId, w, h）、`fn collect_open_tabs(paths: Vec<String>) -> (Vec<PendingTabFull>, Vec<String>)`。Task 2 消费。
 
-- [ ] **Step 1: image 解码 feature 扩展**
+- [x] **Step 1: image 解码 feature 扩展**
 
 `crates/desktop/Cargo.toml:38` 改：
 
@@ -40,7 +40,7 @@
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 ```
 
-- [ ] **Step 2: 写失败测试（compact_editor_commands.rs tests mod 追加）**
+- [x] **Step 2: 写失败测试（compact_editor_commands.rs tests mod 追加）**
 
 test mod 顶部加 DB 隔离样板 + fixture：
 
@@ -167,7 +167,7 @@ test mod 顶部加 DB 隔离样板 + fixture：
     }
 ```
 
-- [ ] **Step 3: 跑测试确认编译失败（红）**
+- [x] **Step 3: 跑测试确认编译失败（红）**
 
 ```bash
 cargo test -p octopus-desktop test_collect_open_tabs 2>&1 | tail -3
@@ -175,7 +175,7 @@ cargo test -p octopus-desktop test_collect_open_tabs 2>&1 | tail -3
 
 Expected: 编译错误（`is_image_ext` / `collect_open_tabs` 未定义）。
 
-- [ ] **Step 4: 实现三个函数（compact_editor_commands.rs，`open_disk_file_in_compact_editor` 之后）**
+- [x] **Step 4: 实现三个函数（compact_editor_commands.rs，`open_disk_file_in_compact_editor` 之后）**
 
 ```rust
 // ── 打开已存在文件（spec 2026-08-18-compact-editor-open-files）──
@@ -324,7 +324,7 @@ fn collect_open_tabs(paths: Vec<String>) -> (Vec<PendingTabFull>, Vec<String>) {
 
 注：`PendingTabFull` 若字段可见性不足（private），同文件内可直接构造；`ItemType`/`MetaInfo` 的路径以 `octopus_clipboard::model` 实际导出为准（watcher 用 `crate::model`，desktop 侧走完整路径）。
 
-- [ ] **Step 5: 跑测试确认全绿**
+- [x] **Step 5: 跑测试确认全绿**
 
 ```bash
 cargo test -p octopus-desktop test_collect_open_tabs test_is_image_ext 2>&1 | grep "test result"
@@ -333,7 +333,7 @@ cargo build -p octopus-desktop 2>&1 | grep -cE "^(error|warning)"
 
 Expected: 6 个新测试全过（`test_is_image_ext_matrix` + 5 个 collect）；编译 0 warning。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/Cargo.toml crates/desktop/Cargo.lock crates/desktop/src/commands/compact_editor_commands.rs
@@ -352,7 +352,7 @@ git commit -m "feat(compact-editor): open-files 纯核心——is_image_ext/图�
 - Consumes: `collect_open_tabs`（Task 1）、`PENDING_TABS` / `create_compact_editor_window` / `WINDOW_LABEL`（现有）
 - Produces: `#[tauri::command] open_files_in_editor(paths: Vec<String>, app) -> Result<OpenFilesResult, String>`（`OpenFilesResult { errors: Vec<String> }` camelCase）。Task 3 前端 invoke。
 
-- [ ] **Step 1: 泛化 open_tabs_batched**
+- [x] **Step 1: 泛化 open_tabs_batched**
 
 从 `open_compact_editor_tabs`（:243）抽出批量机制（行为零变化——原函数转调）：
 
@@ -386,7 +386,7 @@ fn open_tabs_batched(tabs: Vec<PendingTabFull>, app: &tauri::AppHandle) {
 
 `open_compact_editor_tabs` 改为组装后转调（`push_pending_tab` 的 DB 组装逻辑抽 `fn build_pending_tab(item_id: &str, source: &str) -> PendingTabFull`，`push_pending_tab` 保持原行为供其他调用方）。emit `PendingTabFull` 直接序列化（camelCase，字段覆盖 file/clipboard 两类前端分支）。
 
-- [ ] **Step 2: open_files_in_editor 命令（compact_editor_commands.rs）**
+- [x] **Step 2: open_files_in_editor 命令（compact_editor_commands.rs）**
 
 ```rust
 /// 打开磁盘文件结果（camelCase，spec §3.3）。成功的 tab 经事件/pending 送出。
@@ -416,13 +416,13 @@ pub async fn open_files_in_editor(
 }
 ```
 
-- [ ] **Step 3: invoke_handler 注册（`core/invoke_handler.rs` compact_editor_commands 区，:175 `get_clipboard_item_text` 附近）**
+- [x] **Step 3: invoke_handler 注册（`core/invoke_handler.rs` compact_editor_commands 区，:175 `get_clipboard_item_text` 附近）**
 
 ```rust
             crate::commands::compact_editor_commands::open_files_in_editor,
 ```
 
-- [ ] **Step 4: 编译 + 既有回归**
+- [x] **Step 4: 编译 + 既有回归**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | grep -cE "^(error|warning)"
@@ -431,7 +431,7 @@ cargo test -p octopus-desktop compact_editor 2>&1 | grep "test result"
 
 Expected: 0 warning；compact_editor 相关测试全过（含 Task 1 的 6 个）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src
@@ -451,7 +451,7 @@ git commit -m "feat(compact-editor): open_tabs_batched 泛化 + open_files_in_ed
 - Consumes: Task 2 的 `open_files_in_editor` 命令（`{ paths }` → `{ errors }`）
 - Produces: `normalizeDialogSelection(selected): string[]`、`TEXT_IMAGE_EXTS`
 
-- [ ] **Step 1: 写失败测试（openFilesUtils.test.ts）**
+- [x] **Step 1: 写失败测试（openFilesUtils.test.ts）**
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -475,7 +475,7 @@ describe("openFilesUtils", () => {
 });
 ```
 
-- [ ] **Step 2: 跑红 → 实现 openFilesUtils.ts**
+- [x] **Step 2: 跑红 → 实现 openFilesUtils.ts**
 
 ```bash
 cd crates/desktop/frontend && npx vitest run src/pages/CompactEditor/openFilesUtils.test.ts
@@ -499,7 +499,7 @@ export function normalizeDialogSelection(selected: string | string[] | null): st
 }
 ```
 
-- [ ] **Step 3: index.tsx 三处改动**
+- [x] **Step 3: index.tsx 三处改动**
 
 imports（顶部）：
 
@@ -598,7 +598,7 @@ tab 栏改动——`{tabs.length > 0 && (` 的条件渲染改为**常驻**（0 t
     </div>
 ```
 
-- [ ] **Step 4: i18n（zh-CN.yaml / en.yaml 的 editor 段，`previewTruncated` 后）**
+- [x] **Step 4: i18n（zh-CN.yaml / en.yaml 的 editor 段，`previewTruncated` 后）**
 
 zh-CN：
 
@@ -616,7 +616,7 @@ en：
 
 （`t()` 插值参数若只支持单参数对象，`{ n, detail }` 传法对照 `charCount` 的 `{n}` 用法；i18n 实现按 `${name}` 插值支持多键。）
 
-- [ ] **Step 5: 验证**
+- [x] **Step 5: 验证**
 
 ```bash
 cd crates/desktop/frontend
@@ -627,7 +627,7 @@ npm run build
 
 Expected: CompactEditor 全部测试过（含 openFilesUtils 4 个）；tsc 0 error；build 成功。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/frontend
@@ -642,7 +642,7 @@ git commit -m "feat(compact-editor): 打开文件双入口——工具栏按钮+
 - Modify: `docs/features/compact-editor.md`
 - Modify: `docs/superpowers/specs/2026-08-18-compact-editor-open-files-design.md`（实施注记）
 
-- [ ] **Step 1: 全量验证**
+- [x] **Step 1: 全量验证**
 
 ```bash
 cargo build 2>&1 | grep -cE "^(error|warning)"
@@ -652,20 +652,20 @@ cd crates/desktop/frontend && npm run build
 
 Expected: 全 0 / build 成功。
 
-- [ ] **Step 2: 手动 e2e 冒烟（可选推荐）**
+- [x] **Step 2: 手动 e2e 冒烟（可选推荐）**
 
 1. CompactEditor 工具栏「打开」→ 选一个 .md → file tab 打开、可编辑、Cmd+S 写回
 2. 拖一张 .png 进窗口 → 图片 tab（OCR/二维码/缩放可用）、剪贴板历史多一条
 3. 拖一个文件夹 → warning toast「暂不支持文件夹」
 4. 拖一个非 UTF-8 二进制 → toast「非 UTF-8 文本」
 
-- [ ] **Step 3: 文档同步**
+- [x] **Step 3: 文档同步**
 
 `docs/features/compact-editor.md` 追加「打开已存在文件」段（spec §2 数据流 + 图片入库语义 + 历史级去重 + MAX_IMAGE_TABS 约束 + 拖拽/选择器双入口）。
 
 spec 实施注记：① 图片历史级去重实际启用（`find_by_content_hash` 镜像 watcher，优于 spec §1「范围外」的保守表述）；② desktop `image` crate 补 gif/webp/bmp/tiff 解码 feature；③ 任何其他偏差。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs
@@ -680,3 +680,22 @@ git commit -m "docs: 同步 CompactEditor 打开文件功能"
 - **占位符**：无 TBD；「原有 map 体不动」给出了精确锚点（tabs.map 结构已在前文核实）。
 - **类型一致性**：`PendingTabFull` 十一字段在 Task 1 两处构造与 Task 2 emit 一致；`OpenFilesResult { errors }` 与 Task 3 `invoke<{ errors: string[] }>` 对应；`is_image_ext`/`ingest_image_file`/`collect_open_tabs` 签名跨 task 一致。
 - **实现期风险**：① `PendingTabFull`/`store::iso_now` 等可见性以编译器报错为准微调路径；② i18n 多键插值若实现只支持单键，`openFailed` 拆两条文案；③ `emit(PendingTabFull)` 的前端 file 分支依赖 `p.filePath` 字段——`PendingTabFull` 已 camelCase 序列化（`get_pending_compact_tabs` 同源），风险低。
+
+---
+
+## 实施记录（2026-08-18 SDD 执行 + 终审修复，plan-as-record）
+
+**SDD 执行**（subagent-driven-development，4 task 全完成）：
+
+- Task 1（`7d99d021`）：`is_image_ext` / `ingest_image_file`（镜像 watcher 含 `find_by_content_hash` 历史级去重）/ `collect_open_tabs` 纯核心 + desktop `image` crate 补 gif/webp/bmp/tiff 解码 feature；6 测试 TDD。
+- Task 2（`0965633e` + `a4d434a6`）：`open_tabs_batched` 泛化（`build_pending_tab` 抽取、`push_pending_tab` 删除）、`open_files_in_editor` 命令注册；建窗分支补 `take_pending_tabs()` 防幽灵 tab。
+- Task 3（`e96ad056`）：前端 `openFilesUtils.ts`（4 vitest）+ 工具栏 FolderOpen 按钮 + `onDragDropEvent` 拖拽（ref 稳定化）+ 失败 toast + i18n `editor.openFile`/`editor.openFailed`；tab 栏常驻化。
+- Task 4（`cde9b0d7`）：`docs/features/compact-editor.md` 新段 + spec §8 实施注记 1-10。
+
+**终审修复**（单 commit `fix(compact-editor): 终审修复——md5 itemId u64 溢出/图片 40MB 守卫/首 tab URL 注入恢复 + 回写`，详见 spec §8 注记 11-13）：
+
+1. **md5 itemId i64 溢出（Critical）**：两处 `i64::from_str_radix(&hash[..16], 16)` → `u64`（首位 8-f 时 i64 解析失败 → `unwrap_or(0)` → `file:0` 碰撞）；测试期望值同步 u64 化，新增溢出探针回归测试（固定路径 md5 首位 'c'）+ 同批次重复打开共享 itemId 断言。
+2. **`ingest_image_file` 40MB 守卫（Important）**：镜像 `watcher.rs:159-164`——`to_rgba8` 前按估算 RGBA > 40MiB 拒绝，文案「图片过大（上限约 40MB 解码后）」；新增 4000×3000 回归测试。
+3. **建窗首 tab URL 注入恢复（Important）**：`open_tabs_batched` 窗口不存在分支改传 `tabs.first().cloned()`（恢复泛化时丢失的 `pending_data.as_ref()` 首参），URL 零 IPC 首屏与 `docs/architecture.md` 记载重新一致；另两个调用方维持 `None`。
+
+**验证**：`cargo build -p octopus-desktop` 0 error 0 warning；`cargo test -p octopus-desktop` 554 passed / 0 failed（含 `test_collect_open_tabs_*` 7 个 + `test_is_image_ext_matrix`）。

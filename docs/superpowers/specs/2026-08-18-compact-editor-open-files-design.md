@@ -128,3 +128,9 @@ pub async fn open_files_in_editor(paths: Vec<String>, app: AppHandle) -> Result<
 8. **`editor.dropHint` 未加**（§4.6「如需」判定为不需）：拖拽反馈用容器 `ring` 视觉高亮，无文字提示。i18n 实际新增 `editor.openFile` / `editor.openFailed`（`zh-CN.yaml` / `en.yaml` 各 2 键）。
 9. **tab 栏常驻化**：原 0 tab 时 tab 栏整条隐藏；为承载「打开」按钮改为常驻（0 tab 也能打开文件），属 spec 未提及的连带 UI 变化。
 10. **svg 归文本路径**：`is_image_ext` 清单不含 svg（svg 是文本、可编辑、Cmd+S 写回），实现注释明确记录。
+
+### 终审修复（2026-08-18 final-review 回写）
+
+11. **md5 itemId i64 溢出修复（pre-existing bug，Critical）**：`open_disk_file_in_compact_editor` 与 `collect_open_tabs` 两处的 `i64::from_str_radix(&hash[..16], 16)` 在 md5 首位为 8-f 时超 `i64::MAX` 解析失败 → `unwrap_or(0)` → itemId "0"（~50% 路径在 tab key `file:0` 上碰撞，多选文本第二 tab 被去重丢弃）。两处统一改 `u64::from_str_radix`（16 hex 恒 ≤ u64::MAX，永不溢出）——表达式一字不差，跨路径去重依赖两处一致。回归测试 `test_collect_open_tabs_md5_no_i64_overflow`：固定探针路径 md5 首位 'c'，断言 itemId ≠ "0" 且等于 u64 期望值 + 同批次重复打开共享 itemId。
+12. **`ingest_image_file` 补 40MB 尺寸守卫（Important）**：镜像 `watcher.rs:159-164` 的超大图跳过——`load_from_memory` 后按 `w * h * 4 > 40 * 1024 * 1024` 拒绝（在 `to_rgba8` 前拦截，否则 48MP 照片瞬时 ~500MB RGBA），错误文案「图片过大（上限约 40MB 解码后）」流入 errors。回归测试 `test_collect_open_tabs_oversized_image_rejected`（4000×3000 ≈ 45.8MiB）。
+13. **建窗首 tab URL 注入恢复（Important，撤销注记 3 的连带丢失）**：`open_tabs_batched` 泛化时窗口不存在分支的 `create_compact_editor_window(app, None)` 丢失了原 `open_compact_editor_tabs` 的 `pending_data.as_ref()` 首参——URL 注入块（`compact_editor_window.rs`）与前端 `readInitialTabFromUrl` 成死代码，与 `docs/architecture.md` 记载的「零 IPC 首屏」矛盾。恢复为传本批次首 tab（`tabs.first().cloned()`；另两个调用方 `open_temp_compact_editor` / `open_disk_file_in_compact_editor` 维持 `None` 不变）。
