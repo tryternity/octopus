@@ -422,6 +422,9 @@ fn open_tabs_batched(tabs: Vec<PendingTabFull>, app: &tauri::AppHandle) {
             PENDING_TABS.lock().extend(tabs);
         }
     } else {
+        // 防幽灵 tab：上次建窗失败/React 未 mount 即关窗会留 stale pending
+        //（close_compact_editor 不清队列）——建窗前先清，只交付本次 tabs。
+        let _ = take_pending_tabs();
         PENDING_TABS.lock().extend(tabs);
         create_compact_editor_window(app, None);
     }
