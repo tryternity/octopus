@@ -298,6 +298,56 @@ pub fn embed_images_with(
     (out, embedded, total)
 }
 
+/// MIME fallback：扩展名映射（spec §3）。未知扩展名 → None（保留原链接，不瞎猜）。
+/// 先去 query string 再取最后一段扩展名——`x.png?w=100` 映射 png。
+fn mime_from_ext(url: &str) -> Option<&'static str> {
+    let lower = url.to_ascii_lowercase();
+    let path = lower.split('?').next().unwrap_or(&lower);
+    let ext = path.rsplit('.').next().unwrap_or("");
+    match ext {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
+/// 生产下载绑定：GET（EMBED_TIMEOUT_SECS、DESKTOP_UA）→ (mime, bytes)。
+/// mime：Content-Type（strip ;charset）优先，fallback 扩展名映射；都不明 → Err。
+/// 网络函数不进单测（编译级验证 + 手动 e2e）——与 fetch_page 同策略。
+fn download_image(url: &str) -> Result<(String, Vec<u8>), String> {
+    let resp = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(EMBED_TIMEOUT_SECS))
+        .user_agent(DESKTOP_UA)
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(url)
+        .send()
+        .map_err(|e| format!("下载失败: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status().as_u16()));
+    }
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(';').next().unwrap_or(s).trim().to_string());
+    let bytes = resp.bytes().map_err(|e| format!("读取失败: {}", e))?.to_vec();
+    let mime = ct
+        .filter(|m| m.starts_with("image/"))
+        .or_else(|| mime_from_ext(url).map(str::to_string))
+        .ok_or_else(|| "未知图片类型".to_string())?;
+    Ok((mime, bytes))
+}
+
+/// 生产入口（spec §2）：embed_images_with + 真下载。编译级验证 + 手动 e2e。
+/// blocking client——调用方（Tauri 命令层）在 spawn_blocking 上下文里执行。
+pub fn embed_images(md: &str) -> (String, usize, usize) {
+    embed_images_with(md, download_image)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
