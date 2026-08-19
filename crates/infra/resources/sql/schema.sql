@@ -557,6 +557,14 @@ INSERT OR IGNORE INTO action_bar_items
 VALUES
     (12, NULL, '转 Markdown', 'file-code', 'markdown', '', 4, 1, 'any', 1);
 
+-- 转 Markdown（内嵌图片）命令（v62）——Markdown 内嵌 base64 图片变体，
+-- 同样 accepts=any + 结果写剪贴板（spec 2026-08-19）
+INSERT OR IGNORE INTO action_bar_items
+    (id, parent_id, title, icon, action_type, action_data,
+     sort_order, is_system, accepts, write_output_to_clipboard)
+VALUES
+    (13, NULL, '转 Markdown（内嵌图片）', 'image-plus', 'markdown', 'embed_images', 5, 1, 'any', 1);
+
 -- 「问豆包」（用 title 去重，不固定 id 避免与用户自建项冲突；放在固定 id seed 之后）
 INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system)
 SELECT NULL, '问豆包', 'sparkles', 'script', '#osascript
