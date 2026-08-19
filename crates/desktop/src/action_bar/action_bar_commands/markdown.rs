@@ -147,22 +147,44 @@ pub(crate) fn route_input(files: &[String], html: Option<&str>, text: &str) -> I
     InputRoute::Text
 }
 
+/// 内嵌后处理（spec §2）：真下载 pass + 统计注释（仅 0 < N < M 时前缀）。
+/// 生产绑定直调真下载（网络）——单测走无图 noop 形态，网络路径手动 e2e。
+fn apply_embed(md: &str) -> String {
+    let (out, n, m) = web::embed_images(md);
+    if n > 0 && n < m {
+        format!("<!-- 内嵌图片 {}/{} 张 -->\n\n{}", n, m, out)
+    } else {
+        out
+    }
+}
+
 /// 生产入口：转换并保存到 markitdown_dir()（~/Documents/octopus/markitdown，可配置覆盖）。
 /// URL 路由（spec 2026-08-18-url-to-markdown §2 修订 ⑬，route_input）：files > url（意图
 /// 优先） > html > text——url 走 fetch + 渲染 fallback（需 AppHandle 接 web_render）。
+/// embed=true 时对结果 md 做图片内嵌后处理并重写文件（spec 2026-08-19 §4 outermost
+/// 设计——不动内部编排签名/测试；md2 == md 跳过重写）。
 pub(crate) fn convert_and_save(
     app: &tauri::AppHandle,
     files: Vec<String>,
     html: Option<String>,
     text: String,
+    embed: bool,
 ) -> Result<(std::path::PathBuf, String), String> {
     let dir = octopus_infra::paths::markitdown_dir();
-    match route_input(&files, html.as_deref(), &text) {
-        InputRoute::Url(u) => convert_and_save_url(app, &u, &dir),
+    let (path, md) = match route_input(&files, html.as_deref(), &text) {
+        InputRoute::Url(u) => convert_and_save_url(app, &u, &dir)?,
         InputRoute::Files | InputRoute::Html | InputRoute::Text => {
-            convert_and_save_to(files, html, text, &dir)
+            convert_and_save_to(files, html, text, &dir)?
         }
+    };
+    if embed {
+        let md2 = apply_embed(&md);
+        if md2 != md {
+            std::fs::write(&path, &md2).map_err(|e| format!("写入文件失败: {}", e))?;
+        }
+        return Ok((path, md2));
     }
+    Ok((path, md))
 }
 
 /// 输入分派（优先级主 spec §3；显式 URL 已在 route_input 层分流，不进本函数）：
@@ -465,5 +487,15 @@ mod tests {
         // §9⑭ 前缀去重回归：编排层唯一前缀（双重前缀会破坏等值断言）
         assert_eq!(err, "渲染失败: 渲染超时");
         assert!(dir.read_dir().map(|mut d| d.next().is_none()).unwrap_or(true), "不落半成品");
+    }
+
+    // ── 图片内嵌接线（spec 2026-08-19）──
+
+    /// apply_embed 是生产绑定直调真下载——网络不进单测。此处测注释规则：
+    /// 用 embed 全失败形态（无 http 图片）断言原样 + 无注释。
+    #[test]
+    fn test_apply_embed_no_remote_images_noop() {
+        let md = "纯文本 ![本地](img/x.png) [链接](https://a.com)";
+        assert_eq!(apply_embed(md), md);
     }
 }
