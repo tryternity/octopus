@@ -208,6 +208,96 @@ pub fn absolutize_md_links(md: &str, base: &str) -> String {
     .into_owned()
 }
 
+// ── 图片 base64 内嵌（spec 2026-08-19-markdown-embed-images §3）──
+
+/// 内嵌守卫（spec §3，变更需回写 spec）。
+pub const EMBED_MAX_IMAGES: usize = 20;
+pub const EMBED_MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+pub const EMBED_MAX_TOTAL_BYTES: usize = 30 * 1024 * 1024;
+pub const EMBED_TIMEOUT_SECS: u64 = 10;
+
+/// `![alt](url "title")` 图片链接正则（title 可选）。extract 与 embed 共用同一
+/// 实例（plan 自审风险②：两处 OnceLock 同 pattern 抽一处，DRY）。
+fn img_re() -> &'static regex::Regex {
+    static IMG_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    IMG_RE.get_or_init(|| {
+        regex::Regex::new(r#"!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)"#).unwrap()
+    })
+}
+
+/// 提取 md 中可内嵌的远程图片链接：仅 `![alt](http/https://...)`；
+/// 文本链接 / data: / file: / 相对路径跳过。
+pub fn extract_image_links(md: &str) -> Vec<(String, String)> {
+    img_re()
+        .captures_iter(md)
+        .filter_map(|c| {
+            let alt = c.get(1)?.as_str().to_string();
+            let url = c.get(2)?.as_str().to_string();
+            let lower = url.to_ascii_lowercase();
+            if lower.starts_with("http://") || lower.starts_with("https://") {
+                Some((alt, url))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// 内嵌 pass（spec §2）：逐张经 download 下载 → 守卫 → data URI 替换。
+/// 返回 (md', embedded, total)。失败/超帽保留原链接继续其余（spec §5）。
+/// 同 URL 出现多次只下载一次（replacements 映射覆盖全部出现）；total 按 md
+/// 中出现次数计（extract_image_links 计所有匹配），embedded 按成功下载的
+/// 不同 URL 计（同一 URL 替换两处也只计 1）。
+pub fn embed_images_with(
+    md: &str,
+    download: impl Fn(&str) -> Result<(String, Vec<u8>), String>,
+) -> (String, usize, usize) {
+    let targets = extract_image_links(md);
+    let total = targets.len();
+    let mut embedded = 0usize;
+    let mut accumulated = 0usize;
+    // 预解析成功的 URL → data URI 映射（守卫决定谁进映射）
+    let mut replacements: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for url in targets.iter().map(|(_, u)| u) {
+        if replacements.len() >= EMBED_MAX_IMAGES || accumulated >= EMBED_MAX_TOTAL_BYTES {
+            break; // 数量/总量帽：停止后续（spec §5）
+        }
+        if replacements.contains_key(url) {
+            continue; // 同 URL 只下载一次
+        }
+        let Ok((mime, bytes)) = download(url) else { continue };
+        if bytes.len() > EMBED_MAX_IMAGE_BYTES {
+            continue;
+        }
+        if accumulated + bytes.len() > EMBED_MAX_TOTAL_BYTES {
+            continue;
+        }
+        accumulated += bytes.len();
+        let b64 = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        };
+        replacements.insert(url.clone(), format!("data:{};base64,{}", mime, b64));
+        embedded += 1;
+    }
+    if embedded == 0 {
+        return (md.to_string(), 0, total); // 全部失败=原样（spec §5）
+    }
+    let out = img_re()
+        .replace_all(md, |caps: &regex::Captures| {
+            let url = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            match replacements.get(url) {
+                Some(data) => {
+                    format!("![{}]({})", caps.get(1).map(|m| m.as_str()).unwrap_or(""), data)
+                }
+                None => caps.get(0).unwrap().as_str().to_string(),
+            }
+        })
+        .into_owned();
+    (out, embedded, total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,5 +377,79 @@ mod tests {
     fn test_absolutize_md_links_bad_base_noop() {
         let md = "[x](/a)";
         assert_eq!(absolutize_md_links(md, "not a url"), md);
+    }
+
+    // ── 图片内嵌（spec 2026-08-19-markdown-embed-images）──
+
+    #[test]
+    fn test_extract_image_links() {
+        let md = "![图一](https://a.com/x.png) [链接](https://a.com/page) \
+![图二](http://b.com/y.jpg \"title\") ![data](data:image/png;base64,xx) \
+![file](file:///tmp/z.png) ![rel](img/w.png) ![无alt](https://c.com/w.svg)";
+        let links = extract_image_links(md);
+        let urls: Vec<&str> = links.iter().map(|(_, u)| u.as_str()).collect();
+        assert_eq!(urls, vec!["https://a.com/x.png", "http://b.com/y.jpg", "https://c.com/w.svg"]);
+        assert_eq!(links[0].0, "图一");
+        assert_eq!(links[2].0, "无alt");
+    }
+
+    #[test]
+    fn test_embed_images_with_success() {
+        use base64::Engine;
+        let md = "前文 ![alt](https://a.com/x.png) 后文";
+        let (out, n, total) = embed_images_with(md, |_u| Ok(("image/png".into(), vec![1u8, 2, 3])));
+        assert_eq!((n, total), (1, 1));
+        let b64 = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3]);
+        assert!(out.contains(&format!("![alt](data:image/png;base64,{})", b64)), "out={}", out);
+        assert!(!out.contains("https://a.com/x.png"));
+    }
+
+    #[test]
+    fn test_embed_images_with_failure_keeps_link() {
+        let md = "![a](https://a.com/x.png) ![b](https://b.com/y.png)";
+        let (out, n, total) = embed_images_with(md, |u| {
+            if u.contains("a.com") { Err("timeout".into()) } else { Ok(("image/png".into(), vec![9u8])) }
+        });
+        assert_eq!((n, total), (1, 2));
+        assert!(out.contains("![a](https://a.com/x.png)"), "失败保留原链接");
+        assert!(out.contains("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn test_embed_images_with_per_image_cap() {
+        let md = "![big](https://a.com/x.png)";
+        let (out, n, _) = embed_images_with(md, |_u| Ok(("image/png".into(), vec![0u8; EMBED_MAX_IMAGE_BYTES + 1])));
+        assert_eq!(n, 0);
+        assert!(out.contains("https://a.com/x.png"), "超单图帽保留链接");
+    }
+
+    #[test]
+    fn test_embed_images_with_total_cap_stops_later() {
+        // brief 原测试 size=TOTAL/2+1=15MB 超 5MB 单图帽，永远到不了总帽判定——修正：
+        // 7 张各恰 5MB（单图帽 `>` 判定，等号放行）：前 6 张累计 30MB=总帽，
+        // 第 7 张触发总帽停止。验证语义不变：先到者内嵌、后续保留原链接。
+        let md: String = (0..7).map(|i| format!("![i{}]({}/{}.png)\n", i, "https://a.com", i)).collect();
+        let (out, n, total) = embed_images_with(&md, |_u| Ok(("image/png".into(), vec![0u8; EMBED_MAX_IMAGE_BYTES])));
+        assert_eq!(total, 7);
+        assert_eq!(n, 6, "第 7 张超总帽停止");
+        assert!(out.contains("![i6](https://a.com/6.png)"), "超总帽保留原链接");
+        assert!(out.contains("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn test_embed_images_with_count_cap() {
+        let md: String = (0..25).map(|i| format!("![i{}]({}/{}.png)\n", i, "https://a.com", i)).collect();
+        let (out, n, total) = embed_images_with(&md, |_u| Ok(("image/png".into(), vec![1u8])));
+        assert_eq!(total, 25);
+        assert_eq!(n, EMBED_MAX_IMAGES);
+        assert!(out.contains("![i20](https://a.com/20.png)"), "第 21 张起保留链接");
+        assert!(out.contains("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn test_embed_images_with_no_images_noop() {
+        let (out, n, total) = embed_images_with("纯文本 [链接](https://a.com)", |_u| panic!("无图不应下载"));
+        assert_eq!((n, total), (0, 0));
+        assert_eq!(out, "纯文本 [链接](https://a.com)");
     }
 }

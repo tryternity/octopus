@@ -5686,6 +5686,7 @@ name = "octopus-convert"
 version = "0.1.0"
 dependencies = [
  "anydoc",
+ "base64 0.22.1",
  "encoding_rs",
  "htmd",
  "regex",
