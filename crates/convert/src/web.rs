@@ -218,21 +218,34 @@ pub const EMBED_TIMEOUT_SECS: u64 = 10;
 
 /// `![alt](url "title")` 图片链接正则（title 可选）。extract 与 embed 共用同一
 /// 实例（plan 自审风险②：两处 OnceLock 同 pattern 抽一处，DRY）。
+/// URL 捕获 `(?:\\\)|[^)\s])+`：字面 `\)`（htmd 会把 URL 中的括号转义为
+/// `\(`/`\)`——Wikimedia 文件名 `Foo_\(bar\).png` 常见），**或**非 `)`/非空白
+/// 字符。`\)` 分支必须在前——leftmost-first 语义下单字符分支先吃掉 `\` 会让
+/// 捕获在 `\)` 处仍截断（旧形态 `[^)\s]+` 即此 bug，终审实证发现）。捕获组内
+/// 是 md 中的**转义形态**，消费前经 [`unescape_md_url`] 还原。
 fn img_re() -> &'static regex::Regex {
     static IMG_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     IMG_RE.get_or_init(|| {
-        regex::Regex::new(r#"!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)"#).unwrap()
+        regex::Regex::new(r#"!\[([^\]]*)\]\(((?:\\\)|[^)\s])+)(?:\s+"[^"]*")?\)"#).unwrap()
     })
 }
 
+/// md URL 反转义（与 img_re 允许的 `\(`/`\)` 对称）：`\(`→`(`、`\)`→`)`。
+/// extract 返回、下载器入参、replacements 查键统一用 unescaped 真实 URL；
+/// 未内嵌链接的原 match 文本不动（保留转义形态，byte-identical）。
+fn unescape_md_url(url: &str) -> String {
+    url.replace("\\(", "(").replace("\\)", ")")
+}
+
 /// 提取 md 中可内嵌的远程图片链接：仅 `![alt](http/https://...)`；
-/// 文本链接 / data: / file: / 相对路径跳过。
+/// 文本链接 / data: / file: / 相对路径跳过。URL 统一返回 **unescaped** 形态
+/// （htmd 转义 `\(`/`\)` 已还原，spec §8 注⑩）。
 pub fn extract_image_links(md: &str) -> Vec<(String, String)> {
     img_re()
         .captures_iter(md)
         .filter_map(|c| {
             let alt = c.get(1)?.as_str().to_string();
-            let url = c.get(2)?.as_str().to_string();
+            let url = unescape_md_url(c.get(2)?.as_str());
             let lower = url.to_ascii_lowercase();
             if lower.starts_with("http://") || lower.starts_with("https://") {
                 Some((alt, url))
@@ -286,8 +299,11 @@ pub fn embed_images_with(
     }
     let out = img_re()
         .replace_all(md, |caps: &regex::Captures| {
-            let url = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-            match replacements.get(url) {
+            // 捕获组是 md 中的转义形态（`\(`/`\)`）——按 unescaped 查 replacements
+            // （下载键来自 extract_image_links，同为 unescaped）；未命中保留原
+            // match 文本（转义形态 byte-identical，spec §8 注⑩）。
+            let url = unescape_md_url(caps.get(2).map(|m| m.as_str()).unwrap_or(""));
+            match replacements.get(&url) {
                 Some(data) => {
                     format!("![{}]({})", caps.get(1).map(|m| m.as_str()).unwrap_or(""), data)
                 }
@@ -501,5 +517,32 @@ mod tests {
         let (out, n, total) = embed_images_with("纯文本 [链接](https://a.com)", |_u| panic!("无图不应下载"));
         assert_eq!((n, total), (0, 0));
         assert_eq!(out, "纯文本 [链接](https://a.com)");
+    }
+
+    #[test]
+    fn test_embed_images_with_escaped_parens_url() {
+        // 终审实证发现（spec §8 注⑩）：htmd 把 URL 中的括号转义为 `\(`/`\)`——
+        // 旧正则 `[^)\s]+` 在 `\)` 处截断捕获（`...Foo_\(bar\`）→ 下载必失败，
+        // Wikimedia 旗舰场景（文件名含括号）永不内嵌。
+        let md = r"![wiki](https://upload.wikimedia.org/w/commons/Foo_\(bar\).png)";
+        // (a) extract 返回 UNESCAPED url
+        let links = extract_image_links(md);
+        assert_eq!(
+            links,
+            vec![("wiki".to_string(), "https://upload.wikimedia.org/w/commons/Foo_(bar).png".to_string())]
+        );
+        // (b) 成功下载 → data URI 整体替换，无 `\(` 残留、无截断尾巴
+        let (out, n, total) = embed_images_with(md, |u| {
+            assert_eq!(u, "https://upload.wikimedia.org/w/commons/Foo_(bar).png", "下载器收到 unescaped URL");
+            Ok(("image/png".into(), vec![1u8, 2]))
+        });
+        assert_eq!((n, total), (1, 1));
+        assert!(out.starts_with("![wiki](data:image/png;base64,"), "out={}", out);
+        assert!(!out.contains('\\'), "无残留转义反斜杠");
+        assert!(!out.contains(".png"), "无原 URL 残留");
+        // (c) 失败下载 → 原 md byte-identical（转义形态原样保留）
+        let (out2, n2, total2) = embed_images_with(md, |_u| Err("timeout".into()));
+        assert_eq!((n2, total2), (0, 1));
+        assert_eq!(out2, md, "失败保留原 escaped md");
     }
 }

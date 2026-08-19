@@ -107,6 +107,7 @@ MIME fallback 映射：png→image/png、jpg/jpeg→image/jpeg、gif→image/gif
 7. **fragment 未剥离**：URL `#fragment` 不剥（只 strip `?query`）——`x.png#frag` 扩展名匹配失败 → 保守退化保留链接（宁可少嵌不瞎猜，与未知 MIME 同策略）。
 8. **v60→v61 断言泛化**：该迁移测试的版本断言从字面量 `61` 改 `CURRENT_SCHEMA_VERSION`（v62 起迁移链会继续过 v61→v62 seed 臂）+ v59→v60 测试注释同步（「升到 61」→「升到 CURRENT」）。
 9. **desktop 增补（spec §4 dispatch 层）**：`convert_and_save` embed 后处理加 `md2 != md` 守卫（内嵌无变化不重写文件）；script.rs 的 `embed` bool 在 spawn 闭包**前**计算（保持 moved set 最小）。
+10. **htmd 转义括号 URL 截断修复（终审实证发现，2026-08-19）**：htmd 会把 URL 中的括号转义为 `\(`/`\)`（Wikimedia 文件名 `Foo_\(bar\).png` 常见），旧 URL 捕获 `[^)\s]+` 过不了 `)`（含转义形态）→ 捕获在 `\)` 处截断 → 下载必失败 → 链接保留（安全但旗舰场景永不内嵌）。修复三件套：① `img_re()` URL 捕获改 `(?:\\\)|[^)\s])+`——`\)` 分支必须**在前**，leftmost-first 语义下单字符分支先吃掉 `\` 仍会截断（审稿建议的 `[^)\s]|\\\)` 顺序实证失败，TDD 红灯捕获）；② 新增 `unescape_md_url`（`\(`→`(`、`\)`→`)`）对称处理——`extract_image_links` 返回 / 下载器入参 / replacements 查键统一 unescaped，未内嵌链接保留原 match 文本（转义形态 byte-identical）；③ 回归测试 `test_embed_images_with_escaped_parens_url`（extract 返回 unescaped / data URI 整体替换无残留 / 失败保留原 md byte-identical）。
 
 **§5 措辞更正**（Task 1 审查建议，已回写上表）：总帽行「累计 > 30MB」→「累计达 30MB（per-item 帽保证永不超额）」——实现是循环顶 `accumulated >= TOTAL` 先停 + 入图前 `accumulated + len > TOTAL` 拒绝，累计字节永不超额。
 

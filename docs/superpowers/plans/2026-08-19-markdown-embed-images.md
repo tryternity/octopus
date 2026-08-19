@@ -520,7 +520,9 @@ git commit -m "docs: 同步内嵌图片命令（desktop-app/architecture/spec �
 
 **中断 dispatch 纪事**：Task 1 的 commit `5d784717` 由一次中断的 dispatch 完成（impl + 测试同 commit）；验证时独立复现了红/绿两步（stub 实现体 → 跑红 5 failed → 恢复 commit 原文 → 跑绿 40 passed），TDD 证据链完整。
 
-**偏差与决策**（详见 spec §8 实施注记，共 9 条）：`fn img_re()` DRY、loop 简化 + contains_key 去重（计数语义写入 doc comment）、brief 总帽测试 bug 修正（15MB+1 超单图帽不可达 → 7×5MB 六张后停）、brief raw-string 编译修正（r#""#）、测试计数笔误（brief「8」实 7，convert 40 passed）、mime_from_ext 冗余行删除 + unwrap_or 不可达分支保留、fragment 未剥离（保守退化保留链接）、v60→v61 断言泛化 CURRENT_SCHEMA_VERSION（+ v59→v60 注释同步）、desktop md2!=md 重写守卫 + embed bool 闭包前计算。
+**偏差与决策**（详见 spec §8 实施注记，共 10 条）：`fn img_re()` DRY、loop 简化 + contains_key 去重（计数语义写入 doc comment）、brief 总帽测试 bug 修正（15MB+1 超单图帽不可达 → 7×5MB 六张后停）、brief raw-string 编译修正（r#""#）、测试计数笔误（brief「8」实 7，convert 40 passed）、mime_from_ext 冗余行删除 + unwrap_or 不可达分支保留、fragment 未剥离（保守退化保留链接）、v60→v61 断言泛化 CURRENT_SCHEMA_VERSION（+ v59→v60 注释同步）、desktop md2!=md 重写守卫 + embed bool 闭包前计算。
+
+**终审修复（2026-08-19，Important）**：htmd 转义括号 URL（Wikimedia `Foo_\(bar\).png`）被旧捕获 `[^)\s]+` 在 `\)` 处截断 → 下载必失败。修复：`img_re()` URL 捕获改 `(?:\\\)|[^)\s])+`（`\)` 分支必须**在前**——leftmost-first 语义下单字符分支先吃掉 `\` 仍截断，审稿建议的相反顺序 TDD 红灯实证失败）+ `unescape_md_url` 对称处理（extract 返回 / 下载键 / 查键统一 unescaped；未内嵌保留原转义 match 文本 byte-identical）+ 回归测试 `test_embed_images_with_escaped_parens_url`（convert 41 passed / build 0 warning）。详见 spec §8 注⑩。
 
 **验证**：`cargo build`（workspace）0 error 0 warning；`cargo test` 全过——唯一失败 `test_collect_open_tabs_oversized_image_rejected` 为 **pre-existing flake**（上一轮 compact-editor 工作 `3d95bc1e` 引入，本 feature 五 commit 未触碰该文件；隔离复跑 `cargo test -p octopus-desktop --bin octopus-desktop test_collect_open_tabs_oversized_image_rejected` → 1 passed）；convert 40 / desktop markdown 21（20 既有 + 1 新）/ infra 197；前端 `tsc --noEmit` 0 error + vitest 532 passed（32 文件）+ `vite build` 成功。
 
