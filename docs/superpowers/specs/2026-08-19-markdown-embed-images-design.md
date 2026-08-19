@@ -74,7 +74,7 @@ MIME fallback 映射：png→image/png、jpg/jpeg→image/jpeg、gif→image/gif
 |---|---|
 | 单张下载失败/超时/非 2xx | 保留原链接，继续其余 |
 | 单张 > 5MB | 保留原链接 |
-| 累计 > 30MB 或总数 > 20 | 停止后续（已替换的保留），统计注释反映 N/M |
+| 累计达 30MB（per-item 帽保证永不超额）或总数达 20 | 停止后续（已替换的保留），统计注释反映 N/M |
 | MIME 未知（无 Content-Type 且扩展名不识） | 保留原链接 |
 | 全部失败 | md 原样（等价 embed=false），无统计注释（N=0 时也省略） |
 
@@ -93,3 +93,21 @@ MIME fallback 映射：png→image/png、jpg/jpeg→image/jpeg、gif→image/gif
 - `docs/features/desktop-app.md` §14：双命令条目 + 内嵌行为/守卫
 - `docs/architecture.md`：v62 一句
 - 本 spec 实施注记回写
+
+## 8. 实施注记（2026-08-19 实施后回写）
+
+实现与 spec/plan/brief 的偏差与补充（全部对照源码核实，commits 5d784717 → 62640f49 → docs 同步）：
+
+1. **`fn img_re()` 共享 static（DRY）**：brief 中 extract 与 embed 各持一个同 pattern 的 `OnceLock<Regex>`——实抽为单例 `fn img_re()`（`crates/convert/src/web.rs`），两处共用（plan 自审风险②的落地）。
+2. **loop 简化 + `contains_key` 去重**：同 URL 出现多次只下载一次（replacements 映射覆盖全部出现）；计数语义写入 doc comment——`total` 按 md 中**出现次数**计（extract 计所有匹配），`embedded` 按**成功下载的不同 URL** 计（同一 URL 替换两处也只计 1）。
+3. **brief 总帽测试 bug 修正**：brief 原测试 `size = TOTAL/2+1`（15MB）超 5MB 单图帽，永远到不了总帽判定（不可达路径）——改为 7 张各恰 5MB（单图帽 `>` 判定、等号放行）：前 6 张累计 30MB=总帽，第 7 张触发停止，总帽语义验证不变。
+4. **brief raw-string 编译修正**：regex 含内嵌双引号，brief 的 `\"` 转义写法落成 `r#"..."#` 原始字符串（语义等价，编译通过为准）。
+5. **测试计数笔误**：plan「33 既有 + 8 新 = 41」实为 **7 个新测试**（extract 1 + embed 6）→ octopus-convert 共 **40 passed**（33 既有 + 7 新）。
+6. **`mime_from_ext` 冗余行删除**：brief 里第一段 `let ext`（未 strip query 的死代码）已删，只留 `path` 分支；`unwrap_or` 不可达分支（`split` 永不返回空迭代）按 brief 原文保留。
+7. **fragment 未剥离**：URL `#fragment` 不剥（只 strip `?query`）——`x.png#frag` 扩展名匹配失败 → 保守退化保留链接（宁可少嵌不瞎猜，与未知 MIME 同策略）。
+8. **v60→v61 断言泛化**：该迁移测试的版本断言从字面量 `61` 改 `CURRENT_SCHEMA_VERSION`（v62 起迁移链会继续过 v61→v62 seed 臂）+ v59→v60 测试注释同步（「升到 61」→「升到 CURRENT」）。
+9. **desktop 增补（spec §4 dispatch 层）**：`convert_and_save` embed 后处理加 `md2 != md` 守卫（内嵌无变化不重写文件）；script.rs 的 `embed` bool 在 spawn 闭包**前**计算（保持 moved set 最小）。
+
+**§5 措辞更正**（Task 1 审查建议，已回写上表）：总帽行「累计 > 30MB」→「累计达 30MB（per-item 帽保证永不超额）」——实现是循环顶 `accumulated >= TOTAL` 先停 + 入图前 `accumulated + len > TOTAL` 拒绝，累计字节永不超额。
+
+**验证数字（2026-08-19 全量）**：workspace `cargo build` 0 error 0 warning；`cargo test` 全过（唯一失败为 pre-existing flake `test_collect_open_tabs_oversized_image_rejected`，隔离复跑通过）；convert 40 / desktop markdown 21（20 既有 + 1 新）/ infra 197；前端 tsc 0 error + vitest 532 passed（32 文件）+ vite build 成功。

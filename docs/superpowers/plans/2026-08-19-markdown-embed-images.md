@@ -30,7 +30,7 @@
 **Interfaces:**
 - Produces: `pub const EMBED_MAX_IMAGES/EMBED_MAX_IMAGE_BYTES/EMBED_MAX_TOTAL_BYTES/EMBED_TIMEOUT_SECS`、`pub fn extract_image_links(md: &str) -> Vec<(String, String)>`、`pub fn embed_images_with(md: &str, download: impl Fn(&str) -> Result<(String, Vec<u8>), String>) -> (String, usize, usize)`
 
-- [ ] **Step 1: 写失败测试（web.rs tests 追加）**
+- [x] **Step 1: 写失败测试（web.rs tests 追加）**
 
 ```rust
     // ── 图片内嵌（spec 2026-08-19-markdown-embed-images）──
@@ -105,7 +105,7 @@
     }
 ```
 
-- [ ] **Step 2: 跑红 → 实现（web.rs 追加）**
+- [x] **Step 2: 跑红 → 实现（web.rs 追加）**
 
 ```rust
 // ── 图片 base64 内嵌（spec 2026-08-19-markdown-embed-images §3）──
@@ -186,7 +186,7 @@ pub fn embed_images_with(
 
 （实现允许微调——如 targets 去重：同一 URL 出现多次只下载一次且 replacement 覆盖全部出现——`replacements` HashMap 天然支持；测试未覆盖去重场景，实现按 HashMap 语义即可，勿额外引入「同 URL 只计一次 total」复杂度。）
 
-- [ ] **Step 3: Cargo.toml + 跑绿**
+- [x] **Step 3: Cargo.toml + 跑绿**
 
 `crates/convert/Cargo.toml` 加 `base64 = "0.22"`。
 
@@ -194,9 +194,9 @@ pub fn embed_images_with(
 cargo test -p octopus-convert --lib 2>&1 | tail -3
 ```
 
-Expected: 41 passed（33 既有 + 7 新 + extract 1 = 实际 33+8=41；以实跑为准记录）。
+Expected: **40 passed**（33 既有 + 7 新——brief/plan 初稿「8 新=41」为计数笔误，实跑 7 个新测试，spec §8 注记⑤）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/convert Cargo.lock
@@ -213,7 +213,7 @@ git commit -m "feat(convert): extract_image_links + embed_images_with 内嵌 pas
 **Interfaces:**
 - Produces: `pub fn embed_images(md: &str) -> (String, usize, usize)`（真下载：EMBED_TIMEOUT_SECS + DESKTOP_UA + MIME fallback 扩展名映射）
 
-- [ ] **Step 1: 实现（追加）**
+- [x] **Step 1: 实现（追加）**
 
 ```rust
 /// MIME fallback：扩展名映射（spec §3）。未知扩展名 → Err（保留原链接，不瞎猜）。
@@ -267,14 +267,14 @@ pub fn embed_images(md: &str) -> (String, usize, usize) {
 
 （`mime_from_ext` 里第一段 `let ext` 是冗余行——删掉只留 `path` 分支；以编译 0 warning 为准。）
 
-- [ ] **Step 2: 验证**
+- [x] **Step 2: 验证**
 
 ```bash
 cargo build -p octopus-convert 2>&1 | grep -cE "^(error|warning)"
 cargo test -p octopus-convert --lib 2>&1 | tail -2
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/convert
@@ -293,7 +293,7 @@ git commit -m "feat(convert): embed_images 生产下载绑定（MIME 双源映�
 - Consumes: `octopus_convert::web::embed_images`
 - Produces: `fn apply_embed(md: &str) -> String`（纯函数：内嵌 + `<!-- N/M -->` 注释规则）；`convert_and_save` 增加 `embed: bool` 参数（**唯一**签名变更，消费点 script.rs 一处同步）
 
-- [ ] **Step 1: 写失败测试（markdown.rs tests 追加）**
+- [x] **Step 1: 写失败测试（markdown.rs tests 追加）**
 
 ```rust
     // ── 图片内嵌接线（spec 2026-08-19）──
@@ -309,7 +309,7 @@ git commit -m "feat(convert): embed_images 生产下载绑定（MIME 双源映�
 
 （注释规则 `<!-- N/M -->` 的拼接逻辑在 apply_embed 内联三行，配合 convert 层的 embed_images_with 已测计数——desktop 侧以无图 noop 为代表性断言 + 编译级。）
 
-- [ ] **Step 2: 实现**
+- [x] **Step 2: 实现**
 
 `markdown.rs`：
 
@@ -365,7 +365,7 @@ let embed = item.action_data == "embed_images"; // spec §1 双命令
 // convert_and_save 调用补第 5 参 embed（grep 定位唯一调用点）
 ```
 
-- [ ] **Step 3: 跑绿 + 回归**
+- [x] **Step 3: 跑绿 + 回归**
 
 ```bash
 cargo test -p octopus-desktop markdown 2>&1 | grep "test result"
@@ -374,7 +374,7 @@ cargo build -p octopus-desktop 2>&1 | grep -cE "^(error|warning)"
 
 Expected: 21 passed（20 既有 + 1 新）；0 warning。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop
@@ -393,7 +393,7 @@ git commit -m "feat(action-bar): convert_and_save embed 后处理接线 + apply_
 **Interfaces:**
 - Produces: seed id=13「转 Markdown（内嵌图片）」（action_type=markdown、action_data=embed_images、icon=image-plus、accepts=any、write_output_to_clipboard=1、sort_order=5）、schema v62
 
-- [ ] **Step 1: 写失败迁移测试（db/mod.rs tests，照抄 v60→v61 模式）**
+- [x] **Step 1: 写失败迁移测试（db/mod.rs tests，照抄 v60→v61 模式）**
 
 ```rust
     /// v61→v62 迁移：seed「转 Markdown（内嵌图片）」菜单项（spec 2026-08-19）。
@@ -424,7 +424,7 @@ git commit -m "feat(action-bar): convert_and_save embed 后处理接线 + apply_
     }
 ```
 
-- [ ] **Step 2: 实现（常量 + 迁移臂 + schema.sql）**
+- [x] **Step 2: 实现（常量 + 迁移臂 + schema.sql）**
 
 `CURRENT_SCHEMA_VERSION: u32 = 62`；`61 =>` 臂（在 60 臂后）：
 
@@ -445,7 +445,7 @@ git commit -m "feat(action-bar): convert_and_save embed 后处理接线 + apply_
 
 schema.sql 在 id=12 INSERT 后加同款 INSERT（注释标 v62）。
 
-- [ ] **Step 3: 前端 icon（ActionBarIcon.tsx LUCIDE_PATHS）**
+- [x] **Step 3: 前端 icon（ActionBarIcon.tsx LUCIDE_PATHS）**
 
 ```tsx
   "image-plus": '<path d="M16 5h6"/><path d="M19 2v6"/><path d="M21 11.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7.5"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
@@ -453,7 +453,7 @@ schema.sql 在 id=12 INSERT 后加同款 INSERT（注释标 v62）。
 
 （lucide image-plus v1.31.0 实测 path。）
 
-- [ ] **Step 4: 验证 + Commit**
+- [x] **Step 4: 验证 + Commit**
 
 ```bash
 cargo test -p octopus-infra --lib 2>&1 | grep -E "test result|FAILED" | head -2
@@ -475,7 +475,7 @@ git commit -m "feat(infra): schema v62 seed 内嵌图片菜单项 + image-plus �
 - Modify: `docs/superpowers/specs/2026-08-19-markdown-embed-images-design.md`（实施注记）
 - Modify: plan（勾选 + 实施记录）
 
-- [ ] **Step 1: 全量验证**
+- [x] **Step 1: 全量验证**
 
 ```bash
 cargo build 2>&1 | grep -cE "^(error|warning)"
@@ -491,7 +491,7 @@ cd crates/desktop/frontend && npx tsc --noEmit && npm run build
 4. 全坏图页面 → md 原样无注释
 5. 喂 AI 场景用原命令照旧
 
-- [ ] **Step 3: 文档同步 + Commit**
+- [x] **Step 3: 文档同步 + Commit**
 
 ```bash
 git add docs
@@ -507,3 +507,21 @@ git commit -m "docs: 同步内嵌图片命令（desktop-app/architecture/spec �
 - **占位符**：Task 1 实现注记允许按 HashMap 语义微调（同 URL 多次出现共享下载）；Task 2 示意代码含一行冗余已标注删除；Task 3 含一段「示意→实际」的替换说明——执行者落实际版。
 - **类型一致性**：`embed_images_with(md, download) -> (String, usize, usize)`、`embed_images(md)` 同型、`apply_embed(md) -> String`、`convert_and_save(+embed)` 跨 task 一致。
 - **实现期风险**：① 测试计数以实跑为准（plan 估算 41/21）；② `regex` 双 OnceLock（extract 与 embed 各一）同 pattern——可共享一个 static，实现者按 DRY 判断（同 pattern 常量提取为 `fn img_re()`）；③ v61→v62 测试若 `open_with_version` 在 61 版本走全迁移链需 62 为 CURRENT 才不 bail——照抄 v60→v61 模式无此问题。
+
+## 实施记录（2026-08-19 实施完成）
+
+| Task | Commit | 内容 |
+|---|---|---|
+| Task 1 | `5d784717` | `extract_image_links` + `embed_images_with` 内嵌 pass + 4 守卫常量 + `fn img_re()` 共享 static（TDD，7 新测试） |
+| Task 2 | `cf3e5808` | `embed_images` 生产下载绑定（EMBED_TIMEOUT_SECS + DESKTOP_UA）+ `mime_from_ext` MIME 双源映射（编译级验证） |
+| Task 3 | `3495a689` | desktop 接线——`apply_embed` 注释规则（仅 0<N<M 前缀 `<!-- 内嵌图片 N/M 张 -->`）+ `convert_and_save` outermost embed 后处理（md2!=md 才重写文件）+ script.rs `embed` bool 闭包前计算 |
+| Task 4 | `62640f49` | schema v62（`61 =>` 迁移臂 seed id=13 + schema.sql 同款 INSERT + CURRENT=62）+ 前端 `image-plus` 图标 |
+| Task 5 | 本 commit | 全量验证（build 0w / test 全过除 pre-existing flake / tsc + vitest 532 + vite build）+ 文档同步（desktop-app §14 双命令条目 / architecture v62 + convert web.rs 内嵌 / spec §8 实施注记 + §5 措辞更正 / 本记录） |
+
+**中断 dispatch 纪事**：Task 1 的 commit `5d784717` 由一次中断的 dispatch 完成（impl + 测试同 commit）；验证时独立复现了红/绿两步（stub 实现体 → 跑红 5 failed → 恢复 commit 原文 → 跑绿 40 passed），TDD 证据链完整。
+
+**偏差与决策**（详见 spec §8 实施注记，共 9 条）：`fn img_re()` DRY、loop 简化 + contains_key 去重（计数语义写入 doc comment）、brief 总帽测试 bug 修正（15MB+1 超单图帽不可达 → 7×5MB 六张后停）、brief raw-string 编译修正（r#""#）、测试计数笔误（brief「8」实 7，convert 40 passed）、mime_from_ext 冗余行删除 + unwrap_or 不可达分支保留、fragment 未剥离（保守退化保留链接）、v60→v61 断言泛化 CURRENT_SCHEMA_VERSION（+ v59→v60 注释同步）、desktop md2!=md 重写守卫 + embed bool 闭包前计算。
+
+**验证**：`cargo build`（workspace）0 error 0 warning；`cargo test` 全过——唯一失败 `test_collect_open_tabs_oversized_image_rejected` 为 **pre-existing flake**（上一轮 compact-editor 工作 `3d95bc1e` 引入，本 feature 五 commit 未触碰该文件；隔离复跑 `cargo test -p octopus-desktop --bin octopus-desktop test_collect_open_tabs_oversized_image_rejected` → 1 passed）；convert 40 / desktop markdown 21（20 既有 + 1 新）/ infra 197；前端 `tsc --noEmit` 0 error + vitest 532 passed（32 文件）+ `vite build` 成功。
+
+**未完成**：Task 5 Step 2 手动 e2e（用户侧执行——5 场景见上，checkbox 保持未勾）。
