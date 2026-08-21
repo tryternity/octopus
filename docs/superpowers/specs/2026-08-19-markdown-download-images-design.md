@@ -90,3 +90,19 @@ pub fn download_images(md: &str, dir: &Path) -> (String, usize, usize)
 - `architecture.md`：v62 描述改 + assetProtocol 一句
 - 旧 plan（embed 版）整体作废重写
 - 本 spec §0 保留替换决策记录
+
+## 9. 实施注记（2026-08-20 实施完成回写）
+
+① **Task 1 brief 测试三处修正**：(a) `image_filename` 尾斜杠兜底断言——brief 原断言 `"image-1.png"` 与前置 `existing={"cover.png"}` 状态不一致（`image.png` 未被占用不应 -N），改为先断言 `"image.png"` 再插入 existing 补 `-N` 分支覆盖；(b) **双扩展名 bug 红跑实证**——brief 实现骨架的 base 含扩展名未先剥尾部 `.ext`，会拼出 `cover.png.png`，TDD 红灯实证后实现补 stem 剥离（有已知扩展名时 `rsplit_once('.')` 去尾）；(c) success 测试并入转义括号覆盖——承接被删 escaped-parens 回归测试（`4de80445`）的关键断言：下载器收到 unescaped URL、输出无 `\(` 残留。
+
+② **Task 2 审查发现 plan 级链接前缀缺陷并修复**（`6a9753de`）：plan 原设计 md 中替换为裸文件名，但 md 落 dir **父**目录、图片落 dir **子**目录——裸文件名相对 md 解析指向不存在路径。修复：链接形态 `![alt](<dir.file_name()>/<filename>)` 子目录前缀（dir 无末段名——根/`.`/`..`——退回裸文件名），spec §3 链接形态段同步回写；desktop `img_dir` 的 `file_stem` 空串显式兜底 `"images"`（不可达防御）。
+
+③ **flake 根因修复**（`cfb48702`，非本 feature 代码但阻塞全量验证）：`test_t_interpolation` 调 `init("en")` 污染全局 DICT 不恢复，cargo test 并行窗口内其他测试的中文 `t()` 断言挂（锚：`test_collect_open_tabs_oversized_image_rejected` 的「图片过大」）。修复：从 `t()` 抽纯插值核心 `interpolate(template, params)`，测试改用本地 dict + interpolate 直测（en/zh 双语 + 多参键），`test_t_missing_key` 去 init。全量 `cargo test -p octopus-desktop` 562 passed / 0 failed 连续 3 次。
+
+④ **v62 原地改**：feature 未发布不升 v63，迁移臂 / `schema.sql` / 迁移测试三处同步改 id=13 三字段（title/action_data/icon）。**dev 库注意**：已 seed 旧 embed 行的开发库 `INSERT OR IGNORE` 不会更新，需手动 `DELETE FROM action_bar_items WHERE id=13` 后重启重 seed。
+
+⑤ **protocol-asset feature 必要性**：Tauri 2 的 `asset://` 协议注册由 tauri crate 的 `protocol-asset` cargo feature 控制（cfg-gated），仅开 `tauri.conf.json` `assetProtocol` 运行时不生效——经 vendored 源码验证后补 `crates/desktop/Cargo.toml` tauri features（Cargo.lock 连带新增 `http-range` 0.1.5）。这是 plan Task 4 文件清单外的必要补充。
+
+⑥ **file: scheme 设计注记（终审裁定）**：`resolveImgSrc` 跳过清单为 `http(s)/data/asset/blob/tci` + `/` 开头绝对路径，**不含 `file:`**——终审裁定范围外接受现状：本管线产出的 md 只含相对路径（下载 pass）与 http(s) 原链接两种形态，不产生 `file:`；外部 md 带 `file:` 图时渲染层误当相对路径 join（仅预览失败，md 源与保存零影响），v1 不扩清单。
+
+⑦ **folder-down icon**：`ActionBarIcon.tsx` LUCIDE_PATHS 删 `image-plus` 加 `folder-down`（lucide 官方 path：folder 主体 + 内部下箭头），与命令「下载到目录」语义对齐。

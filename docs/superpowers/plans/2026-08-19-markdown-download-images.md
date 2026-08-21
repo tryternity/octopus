@@ -33,7 +33,7 @@
 - Deletes: `embed_images` / `embed_images_with` + 其 8 个测试 + `EMBED_*` 常量名
 - Produces: `pub const DOWNLOAD_MAX_IMAGES/DOWNLOAD_MAX_IMAGE_BYTES/DOWNLOAD_MAX_TOTAL_BYTES/DOWNLOAD_TIMEOUT_SECS`、`pub fn image_filename(url: &str, mime: &str, existing: &std::collections::HashSet<String>) -> String`、`pub fn download_images_with(md, dir, download) -> (String, usize, usize)`、`pub fn download_images(md, dir) -> (String, usize, usize)`
 
-- [ ] **Step 1: 写失败测试（替换 embed 的 8 个测试位）**
+- [x] **Step 1: 写失败测试（替换 embed 的 8 个测试位）**
 
 ```rust
     // ── 图片下载到同名目录（spec 2026-08-19-markdown-download-images，替换 base64 内嵌）──
@@ -111,7 +111,7 @@
     }
 ```
 
-- [ ] **Step 2: 跑红 → 实现**
+- [x] **Step 2: 跑红 → 实现**
 
 删 `embed_images`/`embed_images_with` 与其测试/`EMBED_*` 常量；`Cargo.toml` 删 base64。常量改名 `DOWNLOAD_*`（值不变）。新增：
 
@@ -164,14 +164,14 @@ pub fn download_images_with(
 /// 生产绑定。pub fn download_images(md, dir) -> (String, usize, usize) = download_images_with(md, dir, download_image)
 ```
 
-- [ ] **Step 3: 跑绿**
+- [x] **Step 3: 跑绿**
 
 ```bash
 cargo test -p octopus-convert --lib 2>&1 | tail -3   # 预期：33 基础（41 - 8 embed 测试）+ 5 新 ≈ 38（以实跑为准）
 cargo build -p octopus-convert 2>&1 | grep -cE "^(error|warning)"
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/convert Cargo.lock
@@ -186,13 +186,13 @@ git commit -m "feat(convert): 图片下载 pass 替换 base64 内嵌（image_fil
 - Modify: `crates/desktop/src/action_bar/action_bar_commands/markdown.rs`
 - Modify: `crates/desktop/src/action_bar/action_bar_commands/script.rs`
 
-- [ ] **Step 1: 测试改写**——`test_apply_embed_no_remote_images_noop` 改为 `test_apply_download_images_noop`（无远程图 → 原样无注释，dir 用 temp）；注释规则断言不变（`<!-- 下载图片 N/M 张 -->`）。
+- [x] **Step 1: 测试改写**——`test_apply_embed_no_remote_images_noop` 改为 `test_apply_download_images_noop`（无远程图 → 原样无注释，dir 用 temp）；注释规则断言不变（`<!-- 下载图片 N/M 张 -->`）。
 
-- [ ] **Step 2: 实现**——`apply_embed` 删；`apply_download_images(md: &str, dir: &Path) -> String`（`octopus_convert::web::download_images` + 注释规则）；`convert_and_save` 参数 `embed: bool` → `download: bool`；后处理段：`dir = path.parent()`，**图片子目录** `img_dir = path 文件名去 .md`（`path.file_stem()`），调 `apply_download_images(md, &img_dir)`（该函数内部 create_dir_all）+ `md2 != md` 时重写 md 文件（先写 md 后建目录写图——顺序：download pass 落图 + 返回 md' → 重写 md）。`script.rs`：`item.action_data == "download_images"`。
+- [x] **Step 2: 实现**——`apply_embed` 删；`apply_download_images(md: &str, dir: &Path) -> String`（`octopus_convert::web::download_images` + 注释规则）；`convert_and_save` 参数 `embed: bool` → `download: bool`；后处理段：`dir = path.parent()`，**图片子目录** `img_dir = path 文件名去 .md`（`path.file_stem()`），调 `apply_download_images(md, &img_dir)`（该函数内部 create_dir_all）+ `md2 != md` 时重写 md 文件（先写 md 后建目录写图——顺序：download pass 落图 + 返回 md' → 重写 md）。`script.rs`：`item.action_data == "download_images"`。
 
-- [ ] **Step 3: 验证**——`cargo test -p octopus-desktop markdown` 全绿（20 + 1 改写）；`cargo build -p octopus-desktop` 0 warning。
+- [x] **Step 3: 验证**——`cargo test -p octopus-desktop markdown` 全绿（20 + 1 改写）；`cargo build -p octopus-desktop` 0 warning。
 
-- [ ] **Step 4: Commit**——`feat(action-bar): 下载图片接线替换 embed（action_data=download_images）`
+- [x] **Step 4: Commit**——`feat(action-bar): 下载图片接线替换 embed（action_data=download_images）`
 
 ---
 
@@ -203,11 +203,11 @@ git commit -m "feat(convert): 图片下载 pass 替换 base64 内嵌（image_fil
 - Modify: `crates/infra/resources/sql/schema.sql`
 - Modify: `crates/desktop/frontend/src/components/ActionBarIcon.tsx`
 
-- [ ] **Step 1: 测试断言改**——`migrate_v61_to_v62_seeds_embed_images_item` 改名 `..._seeds_download_images_item`，断言 `action_data == "download_images"`、title 改「转 Markdown（下载图片）」（跑红）。
-- [ ] **Step 2: 实现**——迁移臂/schema.sql 的 id=13 INSERT 三字段改（title/icon `folder-down`/action_data）；icon map：删 `image-plus` 加 folder-down：
+- [x] **Step 1: 测试断言改**——`migrate_v61_to_v62_seeds_embed_images_item` 改名 `..._seeds_download_images_item`，断言 `action_data == "download_images"`、title 改「转 Markdown（下载图片）」（跑红）。
+- [x] **Step 2: 实现**——迁移臂/schema.sql 的 id=13 INSERT 三字段改（title/icon `folder-down`/action_data）；icon map：删 `image-plus` 加 folder-down：
   `'<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M12 10v6"/><path d="m15 13-3 3-3-3"/>'`
-- [ ] **Step 3: 验证**——`cargo test -p octopus-infra --lib` 全绿；前端 vitest components + tsc。
-- [ ] **Step 4: Commit**——`feat(infra): v62 seed 改下载图片命令（folder-down）`
+- [x] **Step 3: 验证**
+- [x] **Step 4: Commit**——`feat(infra): v62 seed 改下载图片命令（folder-down）`
 
 ---
 
@@ -220,7 +220,7 @@ git commit -m "feat(convert): 图片下载 pass 替换 base64 内嵌（image_fil
 - Modify: `crates/desktop/frontend/src/pages/CompactEditor/MarkdownPane.tsx`（透传 baseUrl）
 - Modify: `crates/desktop/frontend/src/pages/CompactEditor/index.tsx`（file tab 传 baseUrl = filePath 父目录）
 
-- [ ] **Step 1: resolveImgSrc 纯函数 TDD（红→绿）**
+- [x] **Step 1: resolveImgSrc 纯函数 TDD（红→绿）**
 
 ```ts
 /**
@@ -239,7 +239,7 @@ export function resolveImgSrc(src: string, baseUrl: string | undefined, convert:
 
 测试：http/data 跳过、无 baseUrl 原样、相对 join（`./a.png` 与 `dir/a.png` 形态）、convert 被调/不被调、尾部斜杠归一。
 
-- [ ] **Step 2: tauri.conf.json + MarkdownPreview 接线**
+- [x] **Step 2: tauri.conf.json + MarkdownPreview 接线**
 
 ```json
 "security": { "assetProtocol": { "enable": true, "scope": ["$HOME/Documents/octopus/**"] } }
@@ -248,17 +248,17 @@ export function resolveImgSrc(src: string, baseUrl: string | undefined, convert:
 
 MarkdownPreview：`baseUrl?: string` prop；`useEffect`（html 变化后、与 innerHTML 注入同一 effect 内）：`article.querySelectorAll("img")` → `img.getAttribute("src")` 经 `resolveImgSrc(src, baseUrl, convertFileSrc)` 替换（setAttribute，避免浏览器先解析相对失败缓存）。MarkdownPane `baseUrl?: string` 透传；index.tsx MarkdownPane 调用点：`baseUrl={tab.source === "file" && tab.filePath ? tab.filePath.replace(/\/[^/]*$/, "") : undefined}`。
 
-- [ ] **Step 3: 验证**——vitest CompactEditor 全绿 + tsc 0 + npm run build。
-- [ ] **Step 4: Commit**——`feat(compact-editor): 相对路径图片预览（assetProtocol + convertFileSrc 渲染层）`
+- [x] **Step 3: 验证**——vitest CompactEditor 全绿 + tsc 0 + npm run build。
+- [x] **Step 4: Commit**——`feat(compact-editor): 相对路径图片预览（assetProtocol + convertFileSrc 渲染层）`
 
 ---
 
 ### Task 5: 全量验证 + 文档同步
 
-- [ ] **Step 1**: `cargo build` 0w / `cargo test`（flake 如实注明）/ 前端 tsc + vitest 全量 + build
+- [x] **Step 1**: `cargo build` 0w / `cargo test`（flake 如实注明）/ 前端 tsc + vitest 全量 + build
 - [ ] **Step 2**: 手动 e2e（用户侧）：①双命令（folder-down 图标）②文章页下载 → md 相对引用 + 同名目录图片 + **预览图可见** ③VSCode/Obsidian 打开同款可显示（互操作）④坏图保留链接 + `<!-- N/M -->` ⑤原命令零回归
-- [ ] **Step 3**: 文档——desktop-app §14 改下载方案；architecture v62 描述 + assetProtocol 一句；spec 实施注记；plan（旧 embed plan 文件删除，本文件即记录）
-- [ ] **Step 4**: Commit `docs: 同步下载图片命令`
+- [x] **Step 3**: 文档——desktop-app §14 改下载方案；architecture v62 描述 + assetProtocol 一句；spec 实施注记；plan（旧 embed plan 文件删除，本文件即记录）
+- [x] **Step 4**: Commit `docs: 同步下载图片命令（desktop-app/architecture/spec 注记）`
 
 ---
 
@@ -268,3 +268,17 @@ MarkdownPreview：`baseUrl?: string` prop；`useEffect`（html 变化后、与 i
 - **签名变更面受控**：`convert_and_save` embed→download 改名；MarkdownPane/Preview +1 可选 prop；其余不动。
 - **类型一致性**：`image_filename(url, mime, existing)`、`download_images_with(md, dir, download) -> (String, usize, usize)`、`apply_download_images(md, dir)`、`resolveImgSrc(src, baseUrl, convert)` 跨 task 一致。
 - **实现期风险**：① Task 1 测试基线 = 41 - 8 embed 测试 + 5 新（估算 38，以实跑为准）；② Task 2 的 img_dir 用 `path.file_stem()`——md 同名目录（spec §2）；③ assetProtocol scope 变量 `$HOME` 语法按 Tauri 2 文档（`$HOME/...`）——若 dev 模式不生效查 `assetProtocol` dev 配置；④ jsdom 无 convertFileSrc——渲染层测试全部经注入 convert（identity），生产 import 仅在组件内。
+
+## 实施记录（2026-08-20，SDD 完成回写）
+
+| Task | Commit | 备注 |
+|---|---|---|
+| Task 1 | `d5916cfc` | convert 层删 embed 换 download（40 tests：35 既有 + 5 新）。brief 测试三处修正详见 spec §9① |
+| Task 2 | `48e21a58` + fix `6a9753de` / `cfb48702` | 接线改名；审查发现 **plan 级链接前缀缺陷**（裸文件名相对 md 解析指向不存在路径）→ `dir.file_name()` 前缀修复 + spec §3 回写；`cfb48702` 顺带根除 i18n 测试并行 flake（562/0×3） |
+| Task 3 | `5aa4da04` | v62 原地改（迁移臂/schema.sql/测试三处）+ folder-down icon |
+| Task 4 | `e99f399b` | 预览链路；**偏差**：plan 文件清单外补 `crates/desktop/Cargo.toml` tauri features `protocol-asset`（asset 协议注册是 cfg-gated，只开 tauri.conf.json 不生效——vendored 源码验证），Cargo.lock 连带 `http-range` |
+| Task 5 | 本 commit | 全量验证 + 文档同步（desktop-app §14 / architecture / spec §9 注记 / 本记录） |
+
+- **全量验证**（Task 5 Step 1 实跑）：`cargo build --workspace` 0 error 0 warning；`cargo test --workspace` 全 suite **0 failed**（octopus-desktop 562/0——flake 已根除）；前端 `tsc --noEmit` 0 error、`vitest run` 33 文件 543 tests 全过、`npm run build` ✓（351ms）。
+- **未完成**：Task 5 Step 2 手动 e2e（用户侧职责，checkbox 保持未勾）——双命令/预览可见/VSCode-Obsidian 互操作/坏图保留/原命令零回归。
+- **其他偏差与注记**：见 spec §9 实施注记 ①-⑦（含 v62 dev 库 `DELETE FROM action_bar_items WHERE id=13` 重 seed 提示、file: scheme 终审裁定）。
