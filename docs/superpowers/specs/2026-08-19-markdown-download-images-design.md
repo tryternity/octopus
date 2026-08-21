@@ -24,7 +24,7 @@
 ```
 「转 Markdown（下载图片）」→ markdown 分支 item.action_data == "download_images"
   → convert_and_save(download: bool) 拿到 (path, md)
-  → download_images_pass(md, dir = path.parent())：
+  → download_images_pass(md, dir = parent/<stem>_<ts>/)：
 
 markitdown/
 ├── 我的文章_20260819-143000.md      → ![alt](我的文章_20260819-143000/cover.png)
@@ -106,3 +106,5 @@ pub fn download_images(md: &str, dir: &Path) -> (String, usize, usize)
 ⑥ **file: scheme 设计注记（终审裁定）**：`resolveImgSrc` 跳过清单为 `http(s)/data/asset/blob/tci` + `/` 开头绝对路径，**不含 `file:`**——终审裁定范围外接受现状：本管线产出的 md 只含相对路径（下载 pass）与 http(s) 原链接两种形态，不产生 `file:`；外部 md 带 `file:` 图时渲染层误当相对路径 join（仅预览失败，md 源与保存零影响），v1 不扩清单。
 
 ⑦ **folder-down icon**：`ActionBarIcon.tsx` LUCIDE_PATHS 删 `image-plus` 加 `folder-down`（lucide 官方 path：folder 主体 + 内部下箭头），与命令「下载到目录」语义对齐。
+
+⑧ **assetProtocol scope × `markitdown_output_dir` 覆盖失配**（终审发现）：DB 键 `markitdown_output_dir`（infra `markitdown_dir()`）可把输出目录覆盖到任意路径，而 assetProtocol scope 固定 `$HOME/Documents/octopus/**`——覆盖到范围外时下载流程正常、md/图片文件本身正常落盘，但 CompactEditor 图片预览静默失图（scope 拒绝）。裁定：**不放宽 scope**（文档警告方向），已在 `desktop-app.md` §14「markitdown_output_dir 配置可覆盖」处加 ⚠️ 警告。

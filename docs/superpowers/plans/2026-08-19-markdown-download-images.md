@@ -273,7 +273,7 @@ MarkdownPreview：`baseUrl?: string` prop；`useEffect`（html 变化后、与 i
 
 | Task | Commit | 备注 |
 |---|---|---|
-| Task 1 | `d5916cfc` | convert 层删 embed 换 download（40 tests：35 既有 + 5 新）。brief 测试三处修正详见 spec §9① |
+| Task 1 | `d5916cfc` | convert 层删 embed 换 download（39 tests：34 既有 + 5 新）。brief 测试三处修正详见 spec §9① |
 | Task 2 | `48e21a58` + fix `6a9753de` / `cfb48702` | 接线改名；审查发现 **plan 级链接前缀缺陷**（裸文件名相对 md 解析指向不存在路径）→ `dir.file_name()` 前缀修复 + spec §3 回写；`cfb48702` 顺带根除 i18n 测试并行 flake（562/0×3） |
 | Task 3 | `5aa4da04` | v62 原地改（迁移臂/schema.sql/测试三处）+ folder-down icon |
 | Task 4 | `e99f399b` | 预览链路；**偏差**：plan 文件清单外补 `crates/desktop/Cargo.toml` tauri features `protocol-asset`（asset 协议注册是 cfg-gated，只开 tauri.conf.json 不生效——vendored 源码验证），Cargo.lock 连带 `http-range` |
@@ -281,4 +281,4 @@ MarkdownPreview：`baseUrl?: string` prop；`useEffect`（html 变化后、与 i
 
 - **全量验证**（Task 5 Step 1 实跑）：`cargo build --workspace` 0 error 0 warning；`cargo test --workspace` 全 suite **0 failed**（octopus-desktop 562/0——flake 已根除）；前端 `tsc --noEmit` 0 error、`vitest run` 33 文件 543 tests 全过、`npm run build` ✓（351ms）。
 - **未完成**：Task 5 Step 2 手动 e2e（用户侧职责，checkbox 保持未勾）——双命令/预览可见/VSCode-Obsidian 互操作/坏图保留/原命令零回归。
-- **其他偏差与注记**：见 spec §9 实施注记 ①-⑦（含 v62 dev 库 `DELETE FROM action_bar_items WHERE id=13` 重 seed 提示、file: scheme 终审裁定）。
+- **其他偏差与注记**：见 spec §9 实施注记 ①-⑧（含 v62 dev 库 `DELETE FROM action_bar_items WHERE id=13` 重 seed 提示、file: scheme 终审裁定、assetProtocol scope × markitdown_output_dir 覆盖失配警告）。

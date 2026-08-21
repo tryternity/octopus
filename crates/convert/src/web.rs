@@ -237,7 +237,7 @@ fn unescape_md_url(url: &str) -> String {
     url.replace("\\(", "(").replace("\\)", ")")
 }
 
-/// 提取 md 中可内嵌的远程图片链接：仅 `![alt](http/https://...)`；
+/// 提取 md 中可下载的远程图片链接：仅 `![alt](http/https://...)`；
 /// 文本链接 / data: / file: / 相对路径跳过。URL 统一返回 **unescaped** 形态
 /// （htmd 转义 `\(`/`\)` 已还原，spec §8 注⑩）。
 pub fn extract_image_links(md: &str) -> Vec<(String, String)> {
@@ -607,6 +607,19 @@ mod tests {
         let md2: String = (0..22).map(|i| format!("![i{}](https://a.com/{}.png)\n", i, i)).collect();
         let (_, n2, total2) = download_images_with(&md2, &dir, |_u| Ok(("image/png".into(), vec![1u8])));
         assert_eq!((n2, total2), (DOWNLOAD_MAX_IMAGES, 22));
+    }
+
+    #[test]
+    fn test_download_images_with_total_cap_stops_later() {
+        let dir = std::env::temp_dir().join(format!("octopus-dl-img-{}-cap", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
+        // 7 张各恰 5MB：第 6 张后累计 30MB=总帽，第 7 张停止（镜像 embed 版 6a9753de 前身）
+        let md: String = (0..7).map(|i| format!("![i{}](https://a.com/{}.png)\n", i, i)).collect();
+        let size = DOWNLOAD_MAX_TOTAL_BYTES / 6; // 每张 = 总帽/6 → 6 张恰达帽
+        let (out, n, total) = download_images_with(&md, &dir, |_u| Ok(("image/png".into(), vec![0u8; size])));
+        assert_eq!(total, 7);
+        assert_eq!(n, 6, "第 7 张超总帽停止");
+        assert!(out.contains(&format!("![i6](https://a.com/6.png)")), "保留原链接");
     }
 
     #[test]
