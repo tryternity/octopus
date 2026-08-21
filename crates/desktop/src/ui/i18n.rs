@@ -67,18 +67,21 @@ pub fn reload(ui_language: &str) {
     init(ui_language);
 }
 
+/// 纯插值核心：`${name}` 占位替换（无全局状态，可单测——2026-08-20 从 t() 抽出）。
+fn interpolate(template: &str, params: &[(&str, &str)]) -> String {
+    let mut out = template.to_string();
+    for (name, value) in params {
+        out = out.replace(&format!("${{{name}}}"), value);
+    }
+    out
+}
+
 /// flat key 查找 + ${name} 插值
 pub fn t(key: &str, params: &[(&str, &str)]) -> String {
     let dict = DICT.lock();
-    let mut str = match dict.get(key) {
-        Some(v) => v.clone(),
-        None => key.to_string(),
-    };
+    let template = dict.get(key).cloned().unwrap_or_else(|| key.to_string());
     drop(dict);
-    for (name, value) in params {
-        str = str.replace(&format!("${{{name}}}"), value);
-    }
-    str
+    interpolate(&template, params)
 }
 
 #[cfg(test)]
@@ -99,17 +102,38 @@ mod tests {
         assert_eq!(dict.get("editor.view.split").unwrap(), "Split");
     }
 
+    /// 插值核心不触全局 DICT（2026-08-20 flake 根因修复）：原测试调 init("en") 污染
+    /// 全局 DICT 不恢复——并行窗口内其他测试的中文 t() 断言挂（锚：
+    /// test_collect_open_tabs_oversized_image_rejected 的「图片过大」）。改为本地
+    /// dict_for + 纯 interpolate 直接断言，en/zh 双语 + 多参键全覆盖。
     #[test]
     fn test_t_interpolation() {
-        init("zh-CN");
-        assert_eq!(t("editor.charCount", &[("n", "42")]), "42 字");
-        init("en");
-        assert_eq!(t("editor.charCount", &[("n", "42")]), "42 chars");
+        let zh = dict_for("zh-CN");
+        assert_eq!(
+            interpolate(zh.get("editor.charCount").unwrap(), &[("n", "42")]),
+            "42 字"
+        );
+        // 多参键（zh）："${n} 个文件打开失败：${detail}"
+        assert_eq!(
+            interpolate(zh.get("editor.openFailed").unwrap(), &[("n", "3"), ("detail", "a.md, b.md")]),
+            "3 个文件打开失败：a.md, b.md"
+        );
+        let en = dict_for("en");
+        assert_eq!(
+            interpolate(en.get("editor.charCount").unwrap(), &[("n", "42")]),
+            "42 chars"
+        );
+        assert_eq!(
+            interpolate(en.get("editor.openFailed").unwrap(), &[("n", "3"), ("detail", "x")]),
+            "3 file(s) failed to open: x"
+        );
+        // 无参不改动模板
+        assert_eq!(interpolate(zh.get("editor.undo").unwrap(), &[]), "撤销");
     }
 
+    /// 缺键回退与 DICT 状态无关（空/en/zh dict 均返回 key 原文）——不触全局。
     #[test]
     fn test_t_missing_key() {
-        init("zh-CN");
         assert_eq!(t("nonexistent.key", &[]), "nonexistent.key");
     }
 }
