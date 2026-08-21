@@ -719,6 +719,7 @@ function CompactEditor() {
                     savedFlash={savedFlash}
                     onTranslate={tab.source === 'transcription' ? undefined : () => handleTranslateForTab(i)}
                     translating={translating}
+                    baseUrl={tab.source === 'file' && tab.filePath ? tab.filePath.replace(/\/[^/]*$/, '') : undefined}
                   />
                 )
               ) : (

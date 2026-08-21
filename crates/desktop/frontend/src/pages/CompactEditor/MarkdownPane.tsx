@@ -29,6 +29,8 @@ interface MarkdownPaneProps {
   savedFlash: boolean;
   onTranslate?: () => void;
   translating?: boolean;
+  /** 相对路径图片解析基目录（透传 MarkdownPreview；file tab 传入 md 文件父目录） */
+  baseUrl?: string;
 }
 
 const ToolBtn = ({ onClick, title, disabled, children }: {
@@ -44,7 +46,7 @@ const ToolBtn = ({ onClick, title, disabled, children }: {
 );
 
 export function MarkdownPane({
-  text, readOnly, fontSize, onFontSizeChange, onChange, onClear, onSave, disableSave, savedFlash, onTranslate, translating,
+  text, readOnly, fontSize, onFontSizeChange, onChange, onClear, onSave, disableSave, savedFlash, onTranslate, translating, baseUrl,
 }: MarkdownPaneProps) {
   const t = useT();
   const [viewMode, setViewMode] = useState<ViewMode>(readOnly ? "preview" : "split");
@@ -252,7 +254,7 @@ export function MarkdownPane({
           className="min-h-0 min-w-0 flex flex-col overflow-hidden"
           style={{ display: viewMode === "editor" ? "none" : "flex" }}
         >
-          <MarkdownPreview source={text} fontSize={fontSize} />
+          <MarkdownPreview source={text} fontSize={fontSize} baseUrl={baseUrl} />
         </div>
       </div>
     </div>

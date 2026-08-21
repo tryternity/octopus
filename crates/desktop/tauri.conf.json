@@ -12,7 +12,13 @@
   "app": {
     "withGlobalTauri": true,
     "macOSPrivateApi": true,
-    "windows": []
+    "windows": [],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$HOME/Documents/octopus/**"]
+      }
+    }
   },
   "bundle": {
     "active": true,

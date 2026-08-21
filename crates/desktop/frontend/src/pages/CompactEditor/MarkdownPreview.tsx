@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { renderMarkdown } from "@/lib/markdown";
 import { t } from "@/lib/i18n";
 import { sliceForPreview } from "./previewTruncate";
+import { resolveImgSrc } from "./resolveImgSrc";
 
 interface MarkdownPreviewProps {
   source: string;
   fontSize?: number;
+  /** 相对路径图片解析基目录（md 文件父目录）；file tab 传入，其余 tab 省略（相对路径原样） */
+  baseUrl?: string;
 }
 
 function useDebounced<T>(value: T, delayMs: number): T {
@@ -18,7 +22,7 @@ function useDebounced<T>(value: T, delayMs: number): T {
   return debounced;
 }
 
-export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
+export function MarkdownPreview({ source, fontSize, baseUrl }: MarkdownPreviewProps) {
   const debouncedSource = useDebounced(source, 150);
   const articleRef = useRef<HTMLElement>(null);
   // 第十二轮 P1-2：click listener 委托到容器 div（两分支都渲染的稳定容器）。
@@ -42,7 +46,17 @@ export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
   useEffect(() => {
     if (!articleRef.current) return;
     articleRef.current.innerHTML = html;
-  }, [html]);
+    // 相对路径图片渲染层解析（spec §5）：md 源不动，仅 DOM src 替换为 asset: URL。
+    // 用 getAttribute（非 .src——避免浏览器先解析相对路径失败后缓存），仅在结果变化时写回。
+    if (baseUrl) {
+      for (const img of articleRef.current.querySelectorAll("img")) {
+        const raw = img.getAttribute("src");
+        if (!raw) continue;
+        const resolved = resolveImgSrc(raw, baseUrl, convertFileSrc);
+        if (resolved !== raw) img.setAttribute("src", resolved);
+      }
+    }
+  }, [html, baseUrl]);
 
   // 第十二轮 P1-2 + 第十九轮 P2-2：click listener 委托到单容器 div。
   // 第十二轮修了「空内容 mount 时 articleRef=null listener 不注册」，但两分支条件渲染
