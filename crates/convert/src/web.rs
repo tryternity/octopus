@@ -297,8 +297,10 @@ pub fn image_filename(url: &str, mime: &str, existing: &std::collections::HashSe
 /// 下载 pass（spec §2）：dir = 图片目标目录（desktop 传 md 同名目录）。复用
 /// extract_image_links（含转义括号）+ 守卫语义（数量/单张/总量，值同 DOWNLOAD_*）。
 /// 逐张经 download 下载 → 守卫 → 定名 → 落盘（首张成功时 create_dir_all）→ md 中
-/// URL 替换为相对文件名（图片与 md 同目录由调用方保证）。返回 (md', downloaded,
-/// total)。失败/超帽保留原链接继续其余（spec §5）；全部失败返回原样 md。
+/// URL 替换为 `<dir 末段名>/<filename>` 相对链接（2026-08-20 修复：md 在 dir 的
+/// 父目录、图片在 dir 子目录——裸文件名相对 md 解析会指向不存在的路径；dir 无
+/// 末段名（根/`.`）时退回裸文件名）。返回 (md', downloaded, total)。失败/超帽保留
+/// 原链接继续其余（spec §5）；全部失败返回原样 md。
 /// 同 URL 出现多次只下载一次（replacements 覆盖全部出现，共享同一文件）；total 按
 /// md 中出现次数计，downloaded 按成功落盘的不同 URL 计。
 pub fn download_images_with(
@@ -306,6 +308,12 @@ pub fn download_images_with(
     dir: &std::path::Path,
     download: impl Fn(&str) -> Result<(String, Vec<u8>), String>,
 ) -> (String, usize, usize) {
+    // 链接前缀 = dir 末段名（md 相对解析需要前缀当且仅当 dir 是 md 所在目录的
+    // 子目录——当前唯一生产调用即此形态）；根目录（file_name()=None）不前缀
+    let prefix = dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
     let targets = extract_image_links(md);
     let total = targets.len();
     let mut downloaded = 0usize;
@@ -353,11 +361,17 @@ pub fn download_images_with(
         .replace_all(md, |caps: &regex::Captures| {
             // 捕获组是 md 中的转义形态（`\(`/`\)`）——按 unescaped 查 replacements
             // （下载键来自 extract_image_links，同为 unescaped）；未命中保留原
-            // match 文本（转义形态 byte-identical，spec §8 注⑩）。
+            // match 文本（转义形态 byte-identical，spec §8 注⑩）。命中输出带
+            // 子目录前缀的相对链接（md 相对解析一致性，见函数 doc）。
             let url = unescape_md_url(caps.get(2).map(|m| m.as_str()).unwrap_or(""));
             match replacements.get(&url) {
                 Some(name) => {
-                    format!("![{}]({})", caps.get(1).map(|m| m.as_str()).unwrap_or(""), name)
+                    let link = if prefix.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{}/{}", prefix, name)
+                    };
+                    format!("![{}]({})", caps.get(1).map(|m| m.as_str()).unwrap_or(""), link)
                 }
                 None => caps.get(0).unwrap().as_str().to_string(),
             }
@@ -538,6 +552,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("octopus-dl-img-{}-a", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // 链接前缀 = dir 末段名（2026-08-20 修复：md 在 dir 父目录、图片在 dir
+        // 子目录——裸文件名相对 md 解析指向不存在路径）
+        let prefix = dir.file_name().unwrap().to_string_lossy().to_string();
         // 第二张带 htmd 转义括号 URL——承接被删 escaped-parens 回归测试（4de80445）的
         // 关键断言：下载器收到 unescaped URL、输出无 `\(` 残留
         let md = "# t\n\n![cover](https://a.com/x/cover.png) ![wiki](https://a.com/x/Foo_\\(bar\\).png)\n";
@@ -552,8 +569,8 @@ mod tests {
             vec!["https://a.com/x/cover.png".to_string(), "https://a.com/x/Foo_(bar).png".to_string()],
             "下载器收到 unescaped URL"
         );
-        assert!(out.contains("![cover](cover.png)"), "相对路径引用（md 同目录），out={}", out);
-        assert!(out.contains("![wiki](Foo_(bar).png)"), "转义括号还原后落文件名，out={}", out);
+        assert!(out.contains(&format!("![cover]({}/cover.png)", prefix)), "带子目录前缀的相对引用，out={}", out);
+        assert!(out.contains(&format!("![wiki]({}/Foo_(bar).png)", prefix)), "转义括号还原后落文件名（含前缀），out={}", out);
         assert!(!out.contains("https://a.com"));
         assert!(!out.contains('\\'), "无残留转义反斜杠");
         // convert 层 download_images_with 的 dir 即图片目录（desktop 传入 md 同名目录，
@@ -567,13 +584,14 @@ mod tests {
     fn test_download_images_with_failure_keeps_link() {
         let dir = std::env::temp_dir().join(format!("octopus-dl-img-{}-b", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
+        let prefix = dir.file_name().unwrap().to_string_lossy().to_string();
         let md = "![a](https://a.com/x.png) ![b](https://b.com/y.png)";
         let (out, n, total) = download_images_with(md, &dir, |u| {
             if u.contains("a.com") { Err("timeout".into()) } else { Ok(("image/png".into(), vec![9u8])) }
         });
         assert_eq!((n, total), (1, 2));
         assert!(out.contains("![a](https://a.com/x.png)"));
-        assert!(out.contains("![b](y.png)"));
+        assert!(out.contains(&format!("![b]({}/y.png)", prefix)), "成功图带子目录前缀，out={}", out);
     }
 
     #[test]

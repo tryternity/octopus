@@ -183,11 +183,18 @@ pub(crate) fn convert_and_save(
     };
     if download {
         // 图片子目录 = md 同名目录（spec §2）：path 去 .md 的 stem（含时间戳后缀，
-        // 天然零碰撞可排序）；建目录由 pass 内部首张成功下载时 create_dir_all
+        // 天然零碰撞可排序）；建目录由 pass 内部首张成功下载时 create_dir_all。
+        // stem 空串显式兜底 "images"——不可达防御（path 恒为 write_markdown_file
+        // 产出的 <stem>_<ts>.md，stem 非空），但语义比 join("") 明确
         let img_dir = path
             .parent()
             .unwrap_or(std::path::Path::new("."))
-            .join(path.file_stem().unwrap_or_default());
+            .join(
+                path.file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "images".into()),
+            );
         let md2 = apply_download_images(&md, &img_dir);
         if md2 != md {
             std::fs::write(&path, &md2).map_err(|e| format!("写入文件失败: {}", e))?;

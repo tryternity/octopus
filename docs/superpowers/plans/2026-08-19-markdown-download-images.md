@@ -63,7 +63,10 @@
         let md = "# t\n\n![cover](https://a.com/x/cover.png)\n";
         let (out, n, total) = download_images_with(md, &dir, |_u| Ok(("image/png".into(), vec![1u8, 2])));
         assert_eq!((n, total), (1, 1));
-        assert!(out.contains("![cover](cover.png)"), "相对路径引用（md 同目录），out={}", out);
+        // 链接带子目录前缀（2026-08-20 修复：md 在 dir 父目录、图片在 dir 子目录——
+        // 裸文件名相对 md 解析指向不存在路径）；prefix = dir.file_name() 动态拼接
+        let prefix = dir.file_name().unwrap().to_string_lossy().to_string();
+        assert!(out.contains(&format!("![cover]({}/cover.png)", prefix)), "带子目录前缀的相对引用，out={}", out);
         assert!(!out.contains("https://a.com"));
         // 目录与 md 同名逻辑：pass 只写图片文件到 dir 本身？——不：spec §2 图片落 <stem>_<ts>/ 子目录由 desktop 层拼；
         // convert 层 download_images_with 的 dir 即图片目录（desktop 传入 md 同名目录）。此处直接断言 dir 下文件
@@ -75,13 +78,14 @@
     fn test_download_images_with_failure_keeps_link() {
         let dir = std::env::temp_dir().join(format!("octopus-dl-img-{}-b", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
+        let prefix = dir.file_name().unwrap().to_string_lossy().to_string();
         let md = "![a](https://a.com/x.png) ![b](https://b.com/y.png)";
         let (out, n, total) = download_images_with(md, &dir, |u| {
             if u.contains("a.com") { Err("timeout".into()) } else { Ok(("image/png".into(), vec![9u8])) }
         });
         assert_eq!((n, total), (1, 2));
         assert!(out.contains("![a](https://a.com/x.png)"));
-        assert!(out.contains("![b](y.png)"));
+        assert!(out.contains(&format!("![b]({}/y.png)", prefix)), "成功图带子目录前缀，out={}", out);
     }
 
     #[test]
@@ -151,7 +155,8 @@ pub fn download_images_with(
 ) -> (String, usize, usize) {
     // 结构同 embed_images_with：targets → 逐张守卫+下载 → replacements(url→相对文件名)
     // + created dir（首张成功时 create_dir_all）+ 写文件；全部失败返回原样 md。
-    // md 替换形态：![alt](<filename>)——filename 相对（图片与 md 同目录由调用方保证）。
+    // md 替换形态：![alt](<prefix>/<filename>)——prefix = dir.file_name()（子目录
+    // 前缀，2026-08-20 修复：md 在 dir 父目录、图片在 dir 子目录；根/无末段名退回裸文件名）。
     // 同 URL 两处出现：existing 含已定名 → 同名复用（一张文件、两处引用）。
     // …（实现按上述骨架落全，测试为准）
 }

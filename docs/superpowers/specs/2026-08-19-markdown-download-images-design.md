@@ -42,7 +42,7 @@ markitdown/
 
 ```rust
 /// 内嵌 pass 删除；新增下载 pass（下载器注入，网络零进单测）。
-/// 返回 (md', downloaded, total)。dir = md 文件所在目录。
+/// 返回 (md', downloaded, total)。dir = 图片目标目录（desktop 传 md 同名子目录）。
 pub fn download_images_with(
     md: &str,
     dir: &std::path::Path,
@@ -52,6 +52,8 @@ pub fn download_images_with(
 /// 生产绑定：download_image（复用，EMBED_TIMEOUT_SECS→DOWNLOAD_TIMEOUT_SECS 改名）。
 pub fn download_images(md: &str, dir: &Path) -> (String, usize, usize)
 ```
+
+链接形态：md 中替换为 `![alt](<dir.file_name()>/<filename>)`（子目录前缀——2026-08-20 修复：裸文件名相对 md 解析会指向不存在路径，与图片落 `dir` 子目录不一致；dir 无末段名（根/`.`）时退回裸文件名）。
 
 文件名规则（纯函数 `image_filename(url, mime, existing: &HashSet<String>) -> String`，可单测）：末段去 query → `unescape_md_url` → sanitize（白名单字符集同 sanitize_stem）→ 无扩展名/未知扩展按 MIME 补 → 冲突 `-N`。
 
