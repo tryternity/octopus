@@ -208,16 +208,16 @@ pub fn absolutize_md_links(md: &str, base: &str) -> String {
     .into_owned()
 }
 
-// ── 图片 base64 内嵌（spec 2026-08-19-markdown-embed-images §3）──
+// ── 图片下载到同名目录（spec 2026-08-19-markdown-download-images §3）──
 
-/// 内嵌守卫（spec §3，变更需回写 spec）。
-pub const EMBED_MAX_IMAGES: usize = 20;
-pub const EMBED_MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
-pub const EMBED_MAX_TOTAL_BYTES: usize = 30 * 1024 * 1024;
-pub const EMBED_TIMEOUT_SECS: u64 = 10;
+/// 下载守卫（spec §3，变更需回写 spec；值同原 EMBED_*，2026-08-19 方案改向后仅改名）。
+pub const DOWNLOAD_MAX_IMAGES: usize = 20;
+pub const DOWNLOAD_MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+pub const DOWNLOAD_MAX_TOTAL_BYTES: usize = 30 * 1024 * 1024;
+pub const DOWNLOAD_TIMEOUT_SECS: u64 = 10;
 
-/// `![alt](url "title")` 图片链接正则（title 可选）。extract 与 embed 共用同一
-/// 实例（plan 自审风险②：两处 OnceLock 同 pattern 抽一处，DRY）。
+/// `![alt](url "title")` 图片链接正则（title 可选）。extract 与 download pass 共用
+/// 同一实例（plan 自审风险②：两处 OnceLock 同 pattern 抽一处，DRY）。
 /// URL 捕获 `(?:\\\)|[^)\s])+`：字面 `\)`（htmd 会把 URL 中的括号转义为
 /// `\(`/`\)`——Wikimedia 文件名 `Foo_\(bar\).png` 常见），**或**非 `)`/非空白
 /// 字符。`\)` 分支必须在前——leftmost-first 语义下单字符分支先吃掉 `\` 会让
@@ -232,7 +232,7 @@ fn img_re() -> &'static regex::Regex {
 
 /// md URL 反转义（与 img_re 允许的 `\(`/`\)` 对称）：`\(`→`(`、`\)`→`)`。
 /// extract 返回、下载器入参、replacements 查键统一用 unescaped 真实 URL；
-/// 未内嵌链接的原 match 文本不动（保留转义形态，byte-identical）。
+/// 未下载链接的原 match 文本不动（保留转义形态，byte-identical）。
 fn unescape_md_url(url: &str) -> String {
     url.replace("\\(", "(").replace("\\)", ")")
 }
@@ -256,45 +256,97 @@ pub fn extract_image_links(md: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// 内嵌 pass（spec §2）：逐张经 download 下载 → 守卫 → data URI 替换。
-/// 返回 (md', embedded, total)。失败/超帽保留原链接继续其余（spec §5）。
-/// 同 URL 出现多次只下载一次（replacements 映射覆盖全部出现）；total 按 md
-/// 中出现次数计（extract_image_links 计所有匹配），embedded 按成功下载的
-/// 不同 URL 计（同一 URL 替换两处也只计 1）。
-pub fn embed_images_with(
+/// 图片文件名（spec §3）：URL 末段去 query → unescape → sanitize（白名单同
+/// sanitize_stem 的字符集，另允许 `/` 已剥、末段为空时 image 兜底）→ 无扩展名按
+/// MIME 补 → 冲突 -N。existing 为该目录已用名集合（调用方跨张维护——同一 URL
+/// 两处出现共享同一下载文件）。
+pub fn image_filename(url: &str, mime: &str, existing: &std::collections::HashSet<String>) -> String {
+    let unescaped = unescape_md_url(url);
+    let raw = unescaped.rsplit('/').next().unwrap_or("").split('?').next().unwrap_or("");
+    let ext_by_mime = || match mime {
+        "image/png" => Some("png"), "image/jpeg" => Some("jpg"), "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"), "image/svg+xml" => Some("svg"), _ => None,
+    };
+    let has_known_ext = raw.rsplit('.').next()
+        .map(|e| ["png","jpg","jpeg","gif","webp","svg"].contains(&e)).unwrap_or(false);
+    // 有已知扩展名时 stem 先去掉尾部 `.ext`——brief 骨架漏了这步（base 含扩展名会
+    // 拼出 "cover.png.png"，跑红实证）；无扩展名时 stem=raw 整段
+    let stem = if has_known_ext {
+        raw.rsplit_once('.').map(|(s, _)| s).unwrap_or("")
+    } else {
+        raw
+    };
+    let base: String = if stem.is_empty() {
+        "image".into()
+    } else {
+        stem.chars().map(|c| if c.is_alphanumeric() || " -_.()[]".contains(c) { c } else { '_' })
+            .take(80).collect::<String>().trim().trim_matches('.').to_string()
+    };
+    let base = if base.is_empty() { "image".into() } else { base };
+    let ext = if has_known_ext { raw.rsplit('.').next().unwrap().to_string() }
+              else { ext_by_mime().unwrap_or("bin").to_string() };
+    let mut candidate = format!("{}.{}", base, ext);
+    let mut n = 0;
+    while existing.contains(&candidate) {
+        n += 1;
+        candidate = format!("{}-{}.{}", base, n, ext);
+    }
+    candidate
+}
+
+/// 下载 pass（spec §2）：dir = 图片目标目录（desktop 传 md 同名目录）。复用
+/// extract_image_links（含转义括号）+ 守卫语义（数量/单张/总量，值同 DOWNLOAD_*）。
+/// 逐张经 download 下载 → 守卫 → 定名 → 落盘（首张成功时 create_dir_all）→ md 中
+/// URL 替换为相对文件名（图片与 md 同目录由调用方保证）。返回 (md', downloaded,
+/// total)。失败/超帽保留原链接继续其余（spec §5）；全部失败返回原样 md。
+/// 同 URL 出现多次只下载一次（replacements 覆盖全部出现，共享同一文件）；total 按
+/// md 中出现次数计，downloaded 按成功落盘的不同 URL 计。
+pub fn download_images_with(
     md: &str,
+    dir: &std::path::Path,
     download: impl Fn(&str) -> Result<(String, Vec<u8>), String>,
 ) -> (String, usize, usize) {
     let targets = extract_image_links(md);
     let total = targets.len();
-    let mut embedded = 0usize;
+    let mut downloaded = 0usize;
     let mut accumulated = 0usize;
-    // 预解析成功的 URL → data URI 映射（守卫决定谁进映射）
+    // 预解析成功的 URL → 相对文件名映射（守卫决定谁进映射）
     let mut replacements: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // 该目录已占用文件名（跨张防冲突；同 URL 先于定名前查 replacements 短路，不走这里）
+    let mut existing: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut dir_created = false;
     for url in targets.iter().map(|(_, u)| u) {
-        if replacements.len() >= EMBED_MAX_IMAGES || accumulated >= EMBED_MAX_TOTAL_BYTES {
+        if replacements.len() >= DOWNLOAD_MAX_IMAGES || accumulated >= DOWNLOAD_MAX_TOTAL_BYTES {
             break; // 数量/总量帽：停止后续（spec §5）
         }
         if replacements.contains_key(url) {
-            continue; // 同 URL 只下载一次
+            continue; // 同 URL 只下载一次（两处引用共享同一文件）
         }
         let Ok((mime, bytes)) = download(url) else { continue };
-        if bytes.len() > EMBED_MAX_IMAGE_BYTES {
+        if bytes.len() > DOWNLOAD_MAX_IMAGE_BYTES {
             continue;
         }
-        if accumulated + bytes.len() > EMBED_MAX_TOTAL_BYTES {
+        if accumulated + bytes.len() > DOWNLOAD_MAX_TOTAL_BYTES {
             continue;
+        }
+        let filename = image_filename(url, &mime, &existing);
+        if !dir_created {
+            // 首张成功下载时建目录（无图/全失败不产生空目录）
+            if std::fs::create_dir_all(dir).is_err() {
+                continue;
+            }
+            dir_created = true;
+        }
+        if std::fs::write(dir.join(&filename), &bytes).is_err() {
+            continue; // 落盘失败保留链接（定名未登记，不占 existing）
         }
         accumulated += bytes.len();
-        let b64 = {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.encode(&bytes)
-        };
-        replacements.insert(url.clone(), format!("data:{};base64,{}", mime, b64));
-        embedded += 1;
+        existing.insert(filename.clone());
+        replacements.insert(url.clone(), filename);
+        downloaded += 1;
     }
-    if embedded == 0 {
+    if downloaded == 0 {
         return (md.to_string(), 0, total); // 全部失败=原样（spec §5）
     }
     let out = img_re()
@@ -304,14 +356,14 @@ pub fn embed_images_with(
             // match 文本（转义形态 byte-identical，spec §8 注⑩）。
             let url = unescape_md_url(caps.get(2).map(|m| m.as_str()).unwrap_or(""));
             match replacements.get(&url) {
-                Some(data) => {
-                    format!("![{}]({})", caps.get(1).map(|m| m.as_str()).unwrap_or(""), data)
+                Some(name) => {
+                    format!("![{}]({})", caps.get(1).map(|m| m.as_str()).unwrap_or(""), name)
                 }
                 None => caps.get(0).unwrap().as_str().to_string(),
             }
         })
         .into_owned();
-    (out, embedded, total)
+    (out, downloaded, total)
 }
 
 /// MIME fallback：扩展名映射（spec §3）。未知扩展名 → None（保留原链接，不瞎猜）。
@@ -330,12 +382,12 @@ fn mime_from_ext(url: &str) -> Option<&'static str> {
     }
 }
 
-/// 生产下载绑定：GET（EMBED_TIMEOUT_SECS、DESKTOP_UA）→ (mime, bytes)。
+/// 生产下载绑定：GET（DOWNLOAD_TIMEOUT_SECS、DESKTOP_UA）→ (mime, bytes)。
 /// mime：Content-Type（strip ;charset）优先，fallback 扩展名映射；都不明 → Err。
 /// 网络函数不进单测（编译级验证 + 手动 e2e）——与 fetch_page 同策略。
 fn download_image(url: &str) -> Result<(String, Vec<u8>), String> {
     let resp = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(EMBED_TIMEOUT_SECS))
+        .timeout(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
         .user_agent(DESKTOP_UA)
         .build()
         .map_err(|e| e.to_string())?
@@ -358,10 +410,10 @@ fn download_image(url: &str) -> Result<(String, Vec<u8>), String> {
     Ok((mime, bytes))
 }
 
-/// 生产入口（spec §2）：embed_images_with + 真下载。编译级验证 + 手动 e2e。
-/// blocking client——调用方（Tauri 命令层）在 spawn_blocking 上下文里执行。
-pub fn embed_images(md: &str) -> (String, usize, usize) {
-    embed_images_with(md, download_image)
+/// 生产入口（spec §2）：download_images_with + 真下载，图片落 dir 下。编译级验证 +
+/// 手动 e2e。blocking client——调用方（Tauri 命令层）在 spawn_blocking 上下文里执行。
+pub fn download_images(md: &str, dir: &std::path::Path) -> (String, usize, usize) {
+    download_images_with(md, dir, download_image)
 }
 
 #[cfg(test)]
@@ -445,7 +497,7 @@ mod tests {
         assert_eq!(absolutize_md_links(md, "not a url"), md);
     }
 
-    // ── 图片内嵌（spec 2026-08-19-markdown-embed-images）──
+    // ── 图片链接提取（spec 2026-08-19，embed 时期即有；下载 pass 复用）──
 
     #[test]
     fn test_extract_image_links() {
@@ -459,90 +511,90 @@ mod tests {
         assert_eq!(links[2].0, "无alt");
     }
 
+    // ── 图片下载到同名目录（spec 2026-08-19-markdown-download-images，替换 base64 内嵌）──
+
     #[test]
-    fn test_embed_images_with_success() {
-        use base64::Engine;
-        let md = "前文 ![alt](https://a.com/x.png) 后文";
-        let (out, n, total) = embed_images_with(md, |_u| Ok(("image/png".into(), vec![1u8, 2, 3])));
-        assert_eq!((n, total), (1, 1));
-        let b64 = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3]);
-        assert!(out.contains(&format!("![alt](data:image/png;base64,{})", b64)), "out={}", out);
-        assert!(!out.contains("https://a.com/x.png"));
+    fn test_image_filename_rules() {
+        let mut used = std::collections::HashSet::new();
+        // 基本形态：末段去 query + unescape + sanitize（白名单同 sanitize_stem）
+        assert_eq!(image_filename("https://a.com/x/cover.png?w=100", "image/png", &used), "cover.png");
+        assert_eq!(image_filename("https://a.com/x/Foo_\\(bar\\).png", "image/png", &used), "Foo_(bar).png");
+        // 无扩展名 → 按 MIME 补
+        assert_eq!(image_filename("https://a.com/x/photo", "image/jpeg", &used), "photo.jpg");
+        // 冲突 -N
+        used.insert("cover.png".into());
+        assert_eq!(image_filename("https://a.com/x/cover.png?w=2", "image/png", &used), "cover-1.png");
+        // 未知 MIME 且无扩展 → img.bin 兜底（保守可显示性差但可用）
+        assert_eq!(image_filename("https://a.com/x/file", "application/octet-stream", &used), "file.bin");
+        // URL 末段为空（尾斜杠）→ image 兜底（brief 原断言 "image-1.png" 与 existing={"cover.png"}
+        // 的前置状态内部不一致——按骨架语义应为 "image.png"，已修正并补 -N 分支保覆盖）
+        assert_eq!(image_filename("https://a.com/x/", "image/png", &used), "image.png");
+        used.insert("image.png".into());
+        assert_eq!(image_filename("https://a.com/x/", "image/png", &used), "image-1.png");
     }
 
     #[test]
-    fn test_embed_images_with_failure_keeps_link() {
+    fn test_download_images_with_success() {
+        let dir = std::env::temp_dir().join(format!("octopus-dl-img-{}-a", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 第二张带 htmd 转义括号 URL——承接被删 escaped-parens 回归测试（4de80445）的
+        // 关键断言：下载器收到 unescaped URL、输出无 `\(` 残留
+        let md = "# t\n\n![cover](https://a.com/x/cover.png) ![wiki](https://a.com/x/Foo_\\(bar\\).png)\n";
+        let seen = std::cell::RefCell::new(Vec::new());
+        let (out, n, total) = download_images_with(md, &dir, |u| {
+            seen.borrow_mut().push(u.to_string());
+            Ok(("image/png".into(), vec![1u8, 2]))
+        });
+        assert_eq!((n, total), (2, 2));
+        assert_eq!(
+            *seen.borrow(),
+            vec!["https://a.com/x/cover.png".to_string(), "https://a.com/x/Foo_(bar).png".to_string()],
+            "下载器收到 unescaped URL"
+        );
+        assert!(out.contains("![cover](cover.png)"), "相对路径引用（md 同目录），out={}", out);
+        assert!(out.contains("![wiki](Foo_(bar).png)"), "转义括号还原后落文件名，out={}", out);
+        assert!(!out.contains("https://a.com"));
+        assert!(!out.contains('\\'), "无残留转义反斜杠");
+        // convert 层 download_images_with 的 dir 即图片目录（desktop 传入 md 同名目录，
+        // <stem>_<ts>/ 子目录由 desktop 层拼）。此处直接断言 dir 下文件
+        let written = std::fs::read(dir.join("cover.png")).unwrap();
+        assert_eq!(written, vec![1u8, 2]);
+        assert_eq!(std::fs::read(dir.join("Foo_(bar).png")).unwrap(), vec![1u8, 2]);
+    }
+
+    #[test]
+    fn test_download_images_with_failure_keeps_link() {
+        let dir = std::env::temp_dir().join(format!("octopus-dl-img-{}-b", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
         let md = "![a](https://a.com/x.png) ![b](https://b.com/y.png)";
-        let (out, n, total) = embed_images_with(md, |u| {
+        let (out, n, total) = download_images_with(md, &dir, |u| {
             if u.contains("a.com") { Err("timeout".into()) } else { Ok(("image/png".into(), vec![9u8])) }
         });
         assert_eq!((n, total), (1, 2));
-        assert!(out.contains("![a](https://a.com/x.png)"), "失败保留原链接");
-        assert!(out.contains("data:image/png;base64,"));
+        assert!(out.contains("![a](https://a.com/x.png)"));
+        assert!(out.contains("![b](y.png)"));
     }
 
     #[test]
-    fn test_embed_images_with_per_image_cap() {
+    fn test_download_images_with_guards() {
+        let dir = std::env::temp_dir().join(format!("octopus-dl-img-{}-c", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
+        // 单图帽：超 5MB 保留链接
         let md = "![big](https://a.com/x.png)";
-        let (out, n, _) = embed_images_with(md, |_u| Ok(("image/png".into(), vec![0u8; EMBED_MAX_IMAGE_BYTES + 1])));
+        let (out, n, _) = download_images_with(md, &dir, |_u| Ok(("image/png".into(), vec![0u8; DOWNLOAD_MAX_IMAGE_BYTES + 1])));
         assert_eq!(n, 0);
-        assert!(out.contains("https://a.com/x.png"), "超单图帽保留链接");
+        assert!(out.contains("https://a.com/x.png"));
+        // 数量帽：21+ 张第 21 张起保留
+        let md2: String = (0..22).map(|i| format!("![i{}](https://a.com/{}.png)\n", i, i)).collect();
+        let (_, n2, total2) = download_images_with(&md2, &dir, |_u| Ok(("image/png".into(), vec![1u8])));
+        assert_eq!((n2, total2), (DOWNLOAD_MAX_IMAGES, 22));
     }
 
     #[test]
-    fn test_embed_images_with_total_cap_stops_later() {
-        // brief 原测试 size=TOTAL/2+1=15MB 超 5MB 单图帽，永远到不了总帽判定——修正：
-        // 7 张各恰 5MB（单图帽 `>` 判定，等号放行）：前 6 张累计 30MB=总帽，
-        // 第 7 张触发总帽停止。验证语义不变：先到者内嵌、后续保留原链接。
-        let md: String = (0..7).map(|i| format!("![i{}]({}/{}.png)\n", i, "https://a.com", i)).collect();
-        let (out, n, total) = embed_images_with(&md, |_u| Ok(("image/png".into(), vec![0u8; EMBED_MAX_IMAGE_BYTES])));
-        assert_eq!(total, 7);
-        assert_eq!(n, 6, "第 7 张超总帽停止");
-        assert!(out.contains("![i6](https://a.com/6.png)"), "超总帽保留原链接");
-        assert!(out.contains("data:image/png;base64,"));
-    }
-
-    #[test]
-    fn test_embed_images_with_count_cap() {
-        let md: String = (0..25).map(|i| format!("![i{}]({}/{}.png)\n", i, "https://a.com", i)).collect();
-        let (out, n, total) = embed_images_with(&md, |_u| Ok(("image/png".into(), vec![1u8])));
-        assert_eq!(total, 25);
-        assert_eq!(n, EMBED_MAX_IMAGES);
-        assert!(out.contains("![i20](https://a.com/20.png)"), "第 21 张起保留链接");
-        assert!(out.contains("data:image/png;base64,"));
-    }
-
-    #[test]
-    fn test_embed_images_with_no_images_noop() {
-        let (out, n, total) = embed_images_with("纯文本 [链接](https://a.com)", |_u| panic!("无图不应下载"));
+    fn test_download_images_with_no_images_noop() {
+        let (out, n, total) = download_images_with("纯文本 [链接](https://a.com)", std::path::Path::new("/nonexistent"), |_u| panic!("无图不应下载"));
         assert_eq!((n, total), (0, 0));
         assert_eq!(out, "纯文本 [链接](https://a.com)");
-    }
-
-    #[test]
-    fn test_embed_images_with_escaped_parens_url() {
-        // 终审实证发现（spec §8 注⑩）：htmd 把 URL 中的括号转义为 `\(`/`\)`——
-        // 旧正则 `[^)\s]+` 在 `\)` 处截断捕获（`...Foo_\(bar\`）→ 下载必失败，
-        // Wikimedia 旗舰场景（文件名含括号）永不内嵌。
-        let md = r"![wiki](https://upload.wikimedia.org/w/commons/Foo_\(bar\).png)";
-        // (a) extract 返回 UNESCAPED url
-        let links = extract_image_links(md);
-        assert_eq!(
-            links,
-            vec![("wiki".to_string(), "https://upload.wikimedia.org/w/commons/Foo_(bar).png".to_string())]
-        );
-        // (b) 成功下载 → data URI 整体替换，无 `\(` 残留、无截断尾巴
-        let (out, n, total) = embed_images_with(md, |u| {
-            assert_eq!(u, "https://upload.wikimedia.org/w/commons/Foo_(bar).png", "下载器收到 unescaped URL");
-            Ok(("image/png".into(), vec![1u8, 2]))
-        });
-        assert_eq!((n, total), (1, 1));
-        assert!(out.starts_with("![wiki](data:image/png;base64,"), "out={}", out);
-        assert!(!out.contains('\\'), "无残留转义反斜杠");
-        assert!(!out.contains(".png"), "无原 URL 残留");
-        // (c) 失败下载 → 原 md byte-identical（转义形态原样保留）
-        let (out2, n2, total2) = embed_images_with(md, |_u| Err("timeout".into()));
-        assert_eq!((n2, total2), (0, 1));
-        assert_eq!(out2, md, "失败保留原 escaped md");
     }
 }
