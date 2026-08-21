@@ -492,16 +492,16 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 log::info!("DB migrated v60→v61: seed 转 Markdown 菜单项");
             }
             61 => {
-                // v61→v62：ActionBar seed「转 Markdown（内嵌图片）」（spec 2026-08-19）
+                // v61→v62：ActionBar seed「转 Markdown（下载图片）」（spec 2026-08-19，2026-08-20 改下载图片）
                 conn.execute_batch(
                     "INSERT OR IGNORE INTO action_bar_items
                         (id, parent_id, title, icon, action_type, action_data,
                          sort_order, is_system, accepts, write_output_to_clipboard)
                      VALUES
-                        (13, NULL, '转 Markdown（内嵌图片）', 'image-plus', 'markdown', 'embed_images', 5, 1, 'any', 1);",
+                        (13, NULL, '转 Markdown（下载图片）', 'folder-down', 'markdown', 'download_images', 5, 1, 'any', 1);",
                 )
-                .context("迁移 v61→v62：seed 内嵌图片菜单项")?;
-                log::info!("DB migrated v61→v62: seed 转 Markdown（内嵌图片）");
+                .context("迁移 v61→v62：seed 下载图片菜单项")?;
+                log::info!("DB migrated v61→v62: seed 转 Markdown（下载图片）");
             }
             _ => {
                 anyhow::bail!(
@@ -523,7 +523,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
 /// 当前 schema 版本——db.sql 建出的库就是这个版本。
 /// 升 schema 时：改 db.sql + 改这个常量 + 改 db.sql 顶部注释。
-/// v62（2026-08-19）：ActionBar seed「转 Markdown（内嵌图片）」系统菜单项（id=13，action_type=markdown，action_data=embed_images，spec 2026-08-19）。
+/// v62（2026-08-19，2026-08-20 改下载图片）：ActionBar seed「转 Markdown（下载图片）」系统菜单项（id=13，action_type=markdown，action_data=download_images，icon=folder-down，spec 2026-08-19）。
 /// v61（2026-08-18）：ActionBar seed「转 Markdown」系统菜单项（id=12，action_type=markdown，spec 2026-08-18）。
 /// v60（2026-08-04）：vault_ciphers / vault_folders 的 is_deleted 从 bool 改 i64（0=活跃，>0=删除时刻 epoch 秒，tombstone）——与 hotword/clipboard 统一。
 /// v58（2026-08-02）：hotword_sets 加 set 级软删——is_deleted 存删除时刻 epoch 秒 + UNIQUE(name,is_deleted) 复合约束（建表复制法迁移）。
@@ -1120,9 +1120,9 @@ mod tests {
         assert_eq!(n, 1);
     }
 
-    /// v61→v62 迁移：seed「转 Markdown（内嵌图片）」菜单项（spec 2026-08-19）。
+    /// v61→v62 迁移：seed「转 Markdown（下载图片）」菜单项（spec 2026-08-19，2026-08-20 改下载图片）。
     #[test]
-    fn migrate_v61_to_v62_seeds_embed_images_item() {
+    fn migrate_v61_to_v62_seeds_download_images_item() {
         let conn = open_with_version(61, "true");
         conn.execute("DELETE FROM action_bar_items WHERE id = 13", []).unwrap();
 
@@ -1131,16 +1131,17 @@ mod tests {
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v, 62);
 
-        let (action_type, action_data, accepts): (String, String, String) = conn
+        let (action_type, action_data, accepts, title): (String, String, String, String) = conn
             .query_row(
-                "SELECT action_type, action_data, accepts FROM action_bar_items WHERE id = 13",
+                "SELECT action_type, action_data, accepts, title FROM action_bar_items WHERE id = 13",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
         assert_eq!(action_type, "markdown");
-        assert_eq!(action_data, "embed_images");
+        assert_eq!(action_data, "download_images");
         assert_eq!(accepts, "any");
+        assert_eq!(title, "转 Markdown（下载图片）");
 
         init_schema(&conn).unwrap(); // 幂等
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM action_bar_items WHERE id = 13", [], |r| r.get(0)).unwrap();
