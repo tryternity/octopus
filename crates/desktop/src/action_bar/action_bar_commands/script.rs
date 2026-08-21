@@ -600,16 +600,16 @@ pub(crate) async fn execute_action_bar_inner(
             let html_in = html.or(pending_html);
             let text_in = text.clone();
             let write_clipboard = item.write_output_to_clipboard;
-            // spec §1 双命令：action_data == "embed_images" 时内嵌图片（bool 提前算好
-            // 再 move 进闭包，保持 spawn 内 moved set 最小）
-            let embed = item.action_data == "embed_images";
+            // spec §1 双命令：action_data == "download_images" 时下载图片到 md 同名
+            // 目录（bool 提前算好再 move 进闭包，保持 spawn 内 moved set 最小）
+            let download = item.action_data == "download_images";
             let ah = app.clone();
             tokio::spawn(async move {
                 let inputs = (files_in, html_in, text_in);
                 let ah_sb = ah.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let (f, h, t) = inputs;
-                    crate::action_bar::action_bar_commands::markdown::convert_and_save(&ah_sb, f, h, t, embed)
+                    crate::action_bar::action_bar_commands::markdown::convert_and_save(&ah_sb, f, h, t, download)
                 })
                 .await
                 .map_err(|e| format!("转换线程异常: {}", e));
